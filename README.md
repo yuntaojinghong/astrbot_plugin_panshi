@@ -26,14 +26,25 @@
 
 ## 📦 安装
 
+### 方式一：下载压缩包（推荐，最简单）
+
+1. 前往 [Releases 页面](https://github.com/yuntaojinghong/astrbot_plugin_panshi/releases) 下载 `astrbot_plugin_panshi.zip`
+2. 解压后得到 `astrbot_plugin_panshi/` 文件夹
+3. 把整个文件夹放入 AstrBot 的 `data/plugins/` 目录
+4. **重启 AstrBot**（或在 WebUI 插件管理页点「重载插件」）
+
+### 方式二：Git 克隆
+
 ```bash
 cd AstrBot/data/plugins
 git clone https://github.com/yuntaojinghong/astrbot_plugin_panshi.git
 ```
 
-1. 将 `astrbot_plugin_panshi` 整个目录放入 AstrBot 的 `data/plugins/` 下（或用上面的 git clone）
-2. 重启 AstrBot，或在 WebUI 插件管理页点击「重载插件」
-3. 前往插件配置页按需调整配置（基础 / 防护 / 欢迎 / 警告 / 智能 / 活跃 / 自动化）
+### 安装后配置
+
+前往插件配置页按需调整配置（基础 / 防护 / 欢迎 / 警告 / 智能 / 活跃 / 自动化 七组），
+发送 `/群管帮助` 查看完整指令。
+
 
 ## ⌨️ 指令一览
 
