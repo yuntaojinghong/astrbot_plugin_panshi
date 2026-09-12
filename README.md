@@ -2,7 +2,13 @@
 
 > 稳如磐石的 QQ 群管家 —— 听得懂人话，会智能处理。
 
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0.html)
+[![AstrBot](https://img.shields.io/badge/AstrBot-4.5%2B-orange.svg)](https://github.com/AstrBotDevs/AstrBot)
+
 一个为 [AstrBot](https://github.com/AstrBotDevs/AstrBot) 打造的 QQ 群管理插件，基于 NapCat / OneBot v11（`aiocqhttp`）协议。
+
+**🌐 项目主页：** https://yuntaojinghong.github.io/astrbot_plugin_panshi/
+
 
 ## ✨ 特色
 
@@ -20,7 +26,12 @@
 
 ## 📦 安装
 
-1. 将 `astrbot_plugin_panshi` 整个目录放入 AstrBot 的 `data/plugins/` 下
+```bash
+cd AstrBot/data/plugins
+git clone https://github.com/yuntaojinghong/astrbot_plugin_panshi.git
+```
+
+1. 将 `astrbot_plugin_panshi` 整个目录放入 AstrBot 的 `data/plugins/` 下（或用上面的 git clone）
 2. 重启 AstrBot，或在 WebUI 插件管理页点击「重载插件」
 3. 前往插件配置页按需调整配置（基础 / 防护 / 欢迎 / 警告 / 智能 / 活跃 / 自动化）
 
