@@ -108,10 +108,39 @@ class PanshiPlugin(Star):
         try:
             await self._refresh_groups()
             self.automate.bind_sender(self._send_whole_ban, self._enabled_groups)
-            if self.cfg.automate.get("curfew_enable", False):
-                await self.automate.start_curfew()
+            self.automate.bind_announce_sender(self._send_group_text)
+            self.automate.bind_groups_provider(self._current_group_ids)
+            await self.automate.apply_now()
         except Exception as e:
             logger.warning(f"[磐石] 初始化后置任务异常: {e}")
+
+    async def _current_group_ids(self) -> list[str]:
+        """动态获取 bot 当前所在群列表（宵禁/定时公告每轮执行前调用）。"""
+        try:
+            groups = await self.group_cache.list_groups(force=False)
+            ids = [str(g.get("group_id")) for g in groups if g.get("group_id")]
+            if ids:
+                self._enabled_groups = ids
+            return ids
+        except Exception:
+            return self._enabled_groups
+
+    async def _send_group_text(self, group_id: str, text: str):
+        """向指定群发送纯文本（定时公告用），支持多账号。"""
+        clients = self.group_cache.iter_clients()
+        if not clients:
+            logger.warning("[磐石] 发送群消息时协议端未连接")
+            return
+        for sid, cli in clients:
+            try:
+                params = {"group_id": int(group_id), "message": str(text)}
+                if sid:
+                    params["self_id"] = sid
+                await cli.call_action("send_group_msg", **params)
+                return
+            except Exception as e:
+                logger.warning(f"[磐石] 群消息发送失败(账号 {sid or '默认'}): {e}")
+                continue
 
     async def terminate(self):
         await self.automate.stop_curfew()
@@ -241,6 +270,15 @@ class PanshiPlugin(Star):
                         if result:
                             yield event.plain_result(result)
                             return
+                    elif self.intent.last_error:
+                        # 解析环节本身出错（如未配置模型）：明确告知，不让用户以为机器人挂了。
+                        # LLM 正常回答"无法识别"时保持静默，避免误触发言骚扰。
+                        yield event.plain_result(
+                            "🤔 我暂时没能处理这句话"
+                            + (f"（{self.intent.last_error}）" if "未找到" in self.intent.last_error else "。")
+                            + "\n可发送 /群管帮助 查看支持的指令。"
+                        )
+                        return
                 else:
                     yield event.plain_result("⛔ 抱歉，管理操作需要管理员权限。")
                     return
@@ -659,6 +697,36 @@ class PanshiPlugin(Star):
             return
         yield event.plain_result(await self.normal.send_notice(event, content))
 
+    @filter.llm_tool(name="panshi_set_curfew")
+    async def llm_set_curfew(
+        self,
+        event: AstrMessageEvent,
+        enable: bool = True,
+        start: str = "",
+        end: str = "",
+    ):
+        """设置或开关宵禁（宵禁时段内自动对全群开启/解除全体禁言）。
+
+        Args:
+            enable(boolean): 是否开启宵禁
+            start(string): 开始时间 HH:MM（如 23:30），留空保持不变
+            end(string): 结束时间 HH:MM（如 07:00），留空保持不变
+        """
+        if not self._check(event):
+            yield event.plain_result(self._no_perm())
+            return
+        payload = {}
+        if isinstance(enable, bool):
+            payload["curfew_enable"] = enable
+        if str(start or "").strip():
+            payload["curfew_start"] = str(start).strip()
+        if str(end or "").strip():
+            payload["curfew_end"] = str(end).strip()
+        if not payload:
+            yield event.plain_result(self._curfew_status_text())
+            return
+        yield event.plain_result(await self._set_curfew_config(payload))
+
     # ========== 内部工具 ==========
     def _check(self, event, required: PermLevel = PermLevel.ADMIN) -> bool:
         group_id = get_group_id(event)
@@ -734,6 +802,8 @@ HELP_TEXT = """🪨 磐石 · 智能群管
 /宵禁 开 | 关       — 开启/关闭宵禁
 /宵禁 23:30-07:00   — 设置时段并开启
 （宵禁时段自动全体禁言，过点自动解除）
+定时公告：面板「自动化」里配置内容与间隔，
+到点自动发到所有纳管群，改完即时生效。
 
 【智能交互】
 直接对我说人话即可，例如：

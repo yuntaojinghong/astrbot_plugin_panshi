@@ -47,12 +47,15 @@ class GuardHandle(BaseHandle):
         self._msg_times: dict[tuple, deque] = {}
         # 最近消息缓存（用于撤回）: {gid: deque[{"user_id","message_id","text","ts"}]}
         self._recent: dict[str, deque] = {}
-        # 复读追踪: {gid: deque[text]}
+        # 头部追踪: {gid: deque[text]}
         self._repeat: dict[str, deque] = {}
+        # 上次内存清理时间
+        self._last_cleanup: float = 0.0
 
     # ========== 主入口：每条群消息都过一遍 ==========
     async def inspect(self, event, message_id: str | None = None) -> str | None:
         """检查一条群消息，返回处理结果文本（None 表示无违规）。"""
+        self._cleanup()
         group_id = str(event.get_group_id())
         user_id = str(event.get_sender_id())
         text = self._extract_text(event)
@@ -209,6 +212,32 @@ class GuardHandle(BaseHandle):
                 break
 
     # ========== 辅助 ==========
+    def _cleanup(self) -> None:
+        """定期清理过期的内存缓存，避免长期运行内存缓慢增长。
+
+        每小时最多执行一次；_recent 保留 2 小时（够「撤回/净化」用），
+        _msg_times 清掉刷屏窗口外的空记录，_repeat 自带 maxlen 无需处理。
+        """
+        now = time.time()
+        if now - self._last_cleanup < 3600:
+            return
+        self._last_cleanup = now
+        try:
+            for key in list(self._msg_times.keys()):
+                dq = self._msg_times[key]
+                while dq and now - dq[0] > 3600:
+                    dq.popleft()
+                if not dq:
+                    self._msg_times.pop(key, None)
+            for gid in list(self._recent.keys()):
+                dq = self._recent[gid]
+                while dq and now - dq[0].get("ts", 0) > 7200:
+                    dq.popleft()
+                if not dq:
+                    self._recent.pop(gid, None)
+        except Exception:
+            pass
+
     def _is_exempt(self, event) -> bool:
         """管理员及以上豁免。"""
         try:

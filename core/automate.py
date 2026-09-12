@@ -22,6 +22,40 @@ class AutomateHandle(BaseHandle):
         super().__init__(config, storage)
         self._curfew_task: asyncio.Task | None = None
         self._enforcing = False  # 宵禁时段是否已对全体开启禁言
+        self._announce_task: asyncio.Task | None = None
+        self._announce_last: float = 0.0  # 上次定时公告时间
+        # 可注入的回调（由 main.py 提供）
+        self._notice_sender = None  # 全体禁言: await sender(gid, enable)
+        self._announce_sender = None  # 发公告: await sender(gid, text)
+        self._enabled_groups: list[str] = []
+        self._groups_provider = None  # 动态群列表: await provider() -> [gid]
+
+    def bind_sender(self, sender, groups: list[str]) -> None:
+        """由 main.py 注入发送器与群列表（兼容旧接口）。"""
+        self._notice_sender = sender
+        self._enabled_groups = list(groups or [])
+
+    def bind_announce_sender(self, sender) -> None:
+        """注入定时公告发送器：await sender(gid, text)。"""
+        self._announce_sender = sender
+
+    def bind_groups_provider(self, provider) -> None:
+        """注入动态群列表提供器：await provider() -> [group_id]。
+
+        宵禁/定时公告每轮执行前都会取最新列表，机器人新进的群即刻纳管。
+        """
+        self._groups_provider = provider
+
+    async def _current_groups(self) -> list[str]:
+        if self._groups_provider is not None:
+            try:
+                groups = await self._groups_provider()
+                if groups is not None:
+                    self._enabled_groups = [str(g) for g in groups if str(g)]
+                    return self._enabled_groups
+            except Exception as e:
+                logger.warning(f"[磐石] 刷新群列表失败，沿用上次结果: {e}")
+        return self._enabled_groups
 
     # ---------- 宵禁 ----------
     async def start_curfew(self) -> None:
@@ -62,19 +96,33 @@ class AutomateHandle(BaseHandle):
             await self.stop_curfew()
             was = self._enforcing
             self._enforcing = False
-            return "lifted_now" if was else "off"
-        await self.start_curfew()
-        if self._in_curfew_window():
-            if not self._enforcing:
-                await self._set_all_groups_whole_ban(True)
-                self._enforcing = True
-                return "banned_now"
-            return "in_window"
-        if self._enforcing:
-            await self._set_all_groups_whole_ban(False)
-            self._enforcing = False
-            return "lifted_now"
-        return "waiting"
+            curfew_state = "lifted_now" if was else "off"
+        else:
+            await self.start_curfew()
+            if self._in_curfew_window():
+                if not self._enforcing:
+                    await self._set_all_groups_whole_ban(True)
+                    self._enforcing = True
+                    curfew_state = "banned_now"
+                else:
+                    curfew_state = "in_window"
+            elif self._enforcing:
+                await self._set_all_groups_whole_ban(False)
+                self._enforcing = False
+                curfew_state = "lifted_now"
+            else:
+                curfew_state = "waiting"
+
+        # 定时公告同步启停
+        try:
+            if self.cfg.automate.get("announce_enable", False):
+                await self.start_announce()
+            else:
+                await self.stop_announce()
+        except Exception as e:
+            logger.warning(f"[磐石] 定时公告同步失败: {e}")
+
+        return curfew_state
 
     async def _curfew_loop(self) -> None:
         """每分钟检查一次是否进入/退出宵禁时段。"""
@@ -109,21 +157,70 @@ class AutomateHandle(BaseHandle):
         return now >= start or now < end
 
     async def _set_all_groups_whole_ban(self, enable: bool) -> None:
-        """对所有启用本插件的群开启/关闭全体禁言。
-
-        注意：这里无法直接拿到 bot 实例，需由 main.py 注入 group_ids 与 sender。
-        """
+        """对所有纳管群开启/关闭全体禁言（群列表每轮动态刷新）。"""
         sender = getattr(self, "_notice_sender", None)
         if sender is None:
             return
-        groups = getattr(self, "_enabled_groups", []) or []
+        groups = await self._current_groups()
         for gid in groups:
             try:
                 await sender(gid, enable)
             except Exception as e:
                 logger.warning(f"[磐石] 宵禁操作群 {gid} 失败: {e}")
 
-    def bind_sender(self, sender, groups: list[str]) -> None:
-        """由 main.py 注入发送器与群列表。"""
-        self._notice_sender = sender
-        self._enabled_groups = groups
+    # ---------- 定时公告 ----------
+    async def start_announce(self) -> None:
+        if self._announce_task and not self._announce_task.done():
+            return
+        self._announce_task = asyncio.create_task(self._announce_loop())
+        logger.info("[磐石] 定时公告任务已启动")
+
+    async def stop_announce(self) -> None:
+        if self._announce_task and not self._announce_task.done():
+            self._announce_task.cancel()
+            try:
+                await self._announce_task
+            except asyncio.CancelledError:
+                pass
+            logger.info("[磐石] 定时公告任务已停止")
+        self._announce_task = None
+
+    async def _announce_loop(self) -> None:
+        """定时把公告内容发到所有纳管群。"""
+        while True:
+            try:
+                await asyncio.sleep(60)
+                if not self.cfg.automate.get("announce_enable", False):
+                    continue
+                content = str(
+                    self.cfg.automate.get("announce_content", "") or ""
+                ).strip()
+                if not content:
+                    continue
+                try:
+                    interval_min = max(
+                        10, int(self.cfg.automate.get("announce_interval_minutes", 360))
+                    )
+                except (TypeError, ValueError):
+                    interval_min = 360
+                now = time.time()
+                if self._announce_last and (now - self._announce_last) < interval_min * 60:
+                    continue
+                sender = self._announce_sender
+                if sender is None:
+                    continue
+                groups = await self._current_groups()
+                ok = 0
+                for gid in groups:
+                    try:
+                        await sender(gid, content)
+                        ok += 1
+                    except Exception as e:
+                        logger.warning(f"[磐石] 定时公告发送到群 {gid} 失败: {e}")
+                self._announce_last = now
+                if ok:
+                    logger.info(f"[磐石] 定时公告已发送到 {ok} 个群")
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.warning(f"[磐石] 定时公告循环异常: {e}")

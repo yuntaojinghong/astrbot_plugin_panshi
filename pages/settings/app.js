@@ -708,6 +708,14 @@ function renderContent() {
         el("button", { class: "btn danger-ghost", text: "恢复默认", onClick: resetCurrentGroup })
       );
     }
+    if (sel.is_default) {
+      actions.appendChild(
+        el("button", { class: "btn ghost", text: "导出配置", title: "导出全部配置为 JSON 备份", onClick: exportConfig })
+      );
+      actions.appendChild(
+        el("button", { class: "btn ghost", text: "导入配置", title: "从 JSON 备份恢复全部配置", onClick: importConfig })
+      );
+    }
     actions.appendChild(
       el("button", {
         class: "btn primary",
@@ -882,6 +890,52 @@ function renderField(groupKey, field, readonly) {
 }
 
 /* ==================================================================
+ *  配置备份：导出 / 导入
+ * ================================================================== */
+async function exportConfig() {
+  try {
+    const data = await apiGet("export");
+    const blob = new Blob([JSON.stringify(data, null, 2)], {
+      type: "application/json",
+    });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `panshi_config_${new Date().toISOString().slice(0, 10)}.json`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+    toast("配置已导出为 JSON 备份");
+  } catch (e) {
+    toast("导出失败：" + (e.message || e), "err");
+  }
+}
+
+function importConfig() {
+  const input = document.createElement("input");
+  input.type = "file";
+  input.accept = ".json,application/json";
+  input.onchange = async () => {
+    const file = input.files && input.files[0];
+    if (!file) return;
+    if (
+      !confirm(
+        "导入会覆盖当前的全部配置与各群独立配置，且不可撤销。\n确定继续吗？"
+      )
+    ) {
+      return;
+    }
+    try {
+      const payload = JSON.parse(await file.text());
+      const res = await apiPost("import", payload);
+      toast(`配置已导入（恢复 ${res && res.restored_groups ? res.restored_groups : 0} 个群的独立配置）`);
+      await loadAll(true);
+    } catch (e) {
+      toast("导入失败：" + (e.message || e), "err");
+    }
+  };
+  input.click();
+}
+
+/* ==================================================================
  *  取值 / 赋值
  * ================================================================== */
 function getValue(groupKey, fieldKey) {
@@ -949,6 +1003,12 @@ async function main() {
   });
 
   await loadAll();
+
+  // 连接状态自动轮询：每 30 秒静默刷新一次（页面可见时才请求）
+  setInterval(() => {
+    if (document.visibilityState !== "visible") return;
+    checkConnection();
+  }, 30000);
 }
 
 main();

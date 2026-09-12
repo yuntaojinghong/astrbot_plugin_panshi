@@ -23,14 +23,15 @@ _ACTION_WORDS = [
     "禁言", "解禁", "踢", "拉黑", "撤回", "删了", "删除", "清理", "清屏", "净化",
     "全禁", "全体禁言", "闭嘴", "警告", "改名", "改头衔", "头衔", "上管", "下管",
     "公告", "设精", "精华", "群名", "举报", "处理", "管管", "管一下", "安排",
-    "宵禁", "夜间禁言",
+    "宵禁", "夜间禁言", "违禁词",
 ]
 
 # LLM 输出的意图 -> 合法动作
 VALID_ACTIONS = {
     "ban", "unban", "kick", "block", "recall", "purge", "whole_ban",
     "warn", "set_card", "set_title", "set_admin", "unset_admin",
-    "notice", "set_name", "essence", "query_warn", "set_curfew", "none",
+    "notice", "set_name", "essence", "query_warn", "set_curfew",
+    "banword_add", "banword_del", "none",
 }
 
 SYSTEM_PROMPT = """你是一个 QQ 群管理助理的意图解析器。请把用户的话翻译成结构化 JSON 操作。
@@ -53,6 +54,8 @@ SYSTEM_PROMPT = """你是一个 QQ 群管理助理的意图解析器。请把用
 - essence       设精华，参数: enable(true/false)
 - query_warn    查违规记录，参数: target
 - set_curfew    设置宵禁（夜间自动全体禁言），参数: enable(true/false，可选), start(开始时间), end(结束时间)
+- banword_add   添加违禁词，参数: content(要添加的词)
+- banword_del   删除违禁词，参数: content(要删除的词)
 - none          无法识别或不需要操作
 
 解析 target 时的规则（重要）：
@@ -67,6 +70,10 @@ SYSTEM_PROMPT = """你是一个 QQ 群管理助理的意图解析器。请把用
 - 时间一律归一化为 24 小时制 "HH:MM"（补零），如"晚上十一点半"->"23:30"，"7点"->"07:00"，"23点半"->"23:30"。
 - 只改时间没提开关 -> 省略 enable；只说"开启/关闭宵禁" -> 只给 enable。
 - 用户说"到早上七点"这种只给了结束时间 -> 只填 end。
+
+解析违禁词操作的规则：
+- "把XX加进违禁词/屏蔽词" -> banword_add；"把XX从违禁词里删掉/移除" -> banword_del。
+- XX 原样放入 content，去掉"加进违禁词"等动词短语，只留词本身。
 
 只输出 JSON，不要任何解释。格式：
 {"action": "...", "target": "...", "duration": 秒数, "reason": "...", "content": "...", "name": "...", "title": "...", "count": 数字, "enable": true/false, "start": "HH:MM", "end": "HH:MM"}

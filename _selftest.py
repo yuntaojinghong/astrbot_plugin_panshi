@@ -213,7 +213,7 @@ def main():
 
     # 校验 WebUI 面板路由注册
     assert inst.web is not None, "面板控制器未创建"
-    assert len(ctx.routes) == 10, f"路由数量不对: {len(ctx.routes)}"
+    assert len(ctx.routes) == 12, f"路由数量不对: {len(ctx.routes)}"
     for route, _h, _m, _d in ctx.routes:
         assert route.startswith("/astrbot_plugin_panshi/"), route
     print(f"WEB_ROUTES_OK ({len(ctx.routes)})")
@@ -242,6 +242,7 @@ def main():
     test_errors()
     test_role_precheck()
     test_curfew_intent()
+    test_banword_and_backup(inst)
     test_page_service(inst)
 
     print("ALL_SELFTEST_PASS")
@@ -721,6 +722,64 @@ def test_curfew_intent():
         import shutil
 
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_banword_and_backup(inst):
+    """违禁词自然语言维护 + 面板配置导出/导入回路。"""
+    import asyncio
+
+    from astrbot_plugin_panshi.pages_service import PageService
+
+    ex = inst.executor
+
+    # 1) 添加违禁词
+    r = ex._banword("测试违禁ABC", add=True)
+    assert "已添加" in r, r
+    words = inst.cfg.get("guard", "forbidden_words", []) or []
+    assert "测试违禁ABC" in words, words
+
+    # 2) 重复添加
+    r2 = ex._banword("测试违禁ABC", add=True)
+    assert "存在" in r2, r2
+
+    # 3) 模糊匹配删除（输入词是已有词的子串）
+    r3 = ex._banword("测试违禁", add=False)
+    assert "已删除" in r3 and "测试违禁ABC" in r3, r3
+    words = inst.cfg.get("guard", "forbidden_words", []) or []
+    assert "测试违禁ABC" not in words, words
+
+    # 4) 空词与不存在的词
+    assert "请告诉我" in ex._banword("  ", add=True)
+    assert "没有" in ex._banword("根本不存在XYZ", add=False)
+    print("BANWORD_INTENT_OK")
+
+    # 5) 导出 -> 改动 -> 导入还原
+    svc = PageService(inst.cfg, inst.db, inst.group_cache)
+    backup = svc.export_all()
+    assert backup["plugin"] == "astrbot_plugin_panshi"
+    assert "global_config" in backup and "groups" in backup
+
+    # 导出后改点东西，再导入应恢复
+    svc.update_global_config({"guard": {"forbidden_words": ["导入前临时词"]}})
+    svc.update_group_config("777888", {"follow_default": False, "guard": {"spam_count": 6}})
+    result = svc.import_all(backup)
+    assert result["ok"] is True, result
+
+    snap = inst.cfg.get("guard", "forbidden_words", []) or []
+    assert snap == backup["global_config"]["guard"]["forbidden_words"], snap
+    ov = inst.db.get_group_override("777888")
+    assert ov and ov.get("guard", {}).get("spam_count") == 6, ov
+    print(f"BACKUP_ROUNDTRIP_OK (恢复 {result['restored_groups']} 个群覆盖)")
+
+    # 6) 导入非对象应报错
+    try:
+        svc.import_all(["not", "a", "dict"])
+        raise AssertionError("非法导入竟然通过了")
+    except ValueError:
+        pass
+    # 清理测试群覆盖
+    inst.db.reset_group("777888")
+    print("BACKUP_VALIDATION_OK")
 
 
 def test_page_service(inst):

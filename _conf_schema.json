@@ -382,6 +382,26 @@
           "max": 2592000,
           "step": 60
         }
+      },
+      "announce_enable": {
+        "description": "启用定时公告",
+        "type": "bool",
+        "default": false
+      },
+      "announce_interval_minutes": {
+        "description": "定时公告间隔（分钟）",
+        "type": "int",
+        "default": 360,
+        "slider": {
+          "min": 10,
+          "max": 1440,
+          "step": 10
+        }
+      },
+      "announce_content": {
+        "description": "定时公告内容",
+        "type": "string",
+        "default": ""
       }
     }
   }

@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import copy
 import os
 from typing import Any
 
@@ -21,7 +22,7 @@ FOLLOW_DEFAULT_KEY = "follow_default"
 PLUGIN_NAME = "astrbot_plugin_panshi"
 
 # 与 metadata.yaml 保持一致的插件版本（读取失败时的兜底值）
-FALLBACK_VERSION = "v1.3.0"
+FALLBACK_VERSION = "v1.4.0"
 
 # 按群可覆盖的配置分组（与 _conf_schema.json 的分组保持一致）
 OVERRIDABLE_GROUPS = [
@@ -67,6 +68,75 @@ class PageService:
                 "group_cache_error": self.group_cache.last_error,
                 "connection": self.connection(),
             },
+        }
+
+    # ==================================================================
+    #  配置备份：导出 / 导入
+    # ==================================================================
+    def export_all(self) -> dict:
+        """导出全部配置（全局默认 + 各群独立配置）为可备份的 JSON 结构。"""
+        import time as _time
+
+        data = getattr(self.db, "_data", {}) or {}
+        groups = data.get("groups", {}) if isinstance(data, dict) else {}
+        return {
+            "plugin": PLUGIN_NAME,
+            "version": self.plugin_version(),
+            "exported_at": int(_time.time()),
+            "global_config": self.cfg.config_snapshot(),
+            "groups": copy.deepcopy(groups) if isinstance(groups, dict) else {},
+        }
+
+    def import_all(self, payload: dict) -> dict:
+        """导入备份：覆盖全局配置与各群独立配置。
+
+        Args:
+            payload: export_all() 产出的结构
+
+        Returns:
+            {"ok": True, "groups": 恢复的群覆盖数}
+        """
+        import time as _time
+
+        if not isinstance(payload, dict):
+            raise ValueError("导入内容必须是 JSON 对象")
+        if payload.get("plugin") not in (None, PLUGIN_NAME):
+            raise ValueError("这不是磐石的配置备份文件")
+
+        global_cfg = payload.get("global_config")
+        if not isinstance(global_cfg, dict):
+            raise ValueError("备份缺少 global_config 字段")
+        groups = payload.get("groups", {})
+        if not isinstance(groups, dict):
+            raise ValueError("备份的 groups 字段必须是对象")
+
+        # 1) 全局配置：走类型校验后写回并持久化
+        self.cfg.apply_payload(global_cfg)
+
+        # 2) 各群独立配置：整表替换（公开 API 逐项写入）
+        restored = 0
+        for gid, override in groups.items():
+            if not isinstance(override, dict):
+                continue
+            try:
+                self.db.reset_group(str(gid))
+            except Exception:
+                pass
+            for key, val in override.items():
+                try:
+                    self.db.set_group_override(str(gid), key, val)
+                except Exception as e:
+                    logger.warning(f"[磐石] 导入群 {gid} 覆盖项 {key} 失败: {e}")
+            restored += 1
+        try:
+            self.db.save()
+        except Exception as e:
+            logger.warning(f"[磐石] 导入后保存存储失败: {e}")
+
+        return {
+            "ok": True,
+            "restored_groups": restored,
+            "imported_at": int(_time.time()),
         }
 
     # ==================================================================

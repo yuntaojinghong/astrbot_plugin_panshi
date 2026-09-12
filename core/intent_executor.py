@@ -193,7 +193,44 @@ class IntentExecutor:
             return await self.normal.set_essence(event, enable=bool(intent.get("enable", True)))
         if action == "set_curfew":
             return await self.set_curfew(intent)
+        if action == "banword_add":
+            return self._banword(str(intent.get("content", "")), add=True)
+        if action == "banword_del":
+            return self._banword(str(intent.get("content", "")), add=False)
         return None
+
+    # ========== 违禁词维护（自然语言） ==========
+    def _banword(self, word: str, add: bool) -> str:
+        """添加/删除违禁词，写入配置并持久化。"""
+        word = (word or "").strip().strip("「」\"'‘’“”")
+        if not word:
+            return "🤔 请告诉我具体要添加/删除哪个违禁词。"
+
+        try:
+            words = [str(w) for w in (self.cfg.get("guard", "forbidden_words", []) or [])]
+        except Exception:
+            words = []
+
+        if add:
+            if word in words:
+                return f"⚠️ 违禁词「{word}」已经存在了。"
+            words.append(word)
+            self.cfg.apply_payload({"guard": {"forbidden_words": words}})
+            return f"✅ 已添加违禁词「{word}」，当前共 {len(words)} 个自定义违禁词。"
+
+        if word not in words:
+            hits = [w for w in words if word in w]
+            if not hits:
+                return (
+                    f"⚠️ 自定义违禁词里没有「{word}」。\n"
+                    "提示：内置词库（加微信、刷单等）不支持删除。"
+                )
+            if len(hits) > 1:
+                return "⚠️ 找到多个匹配：" + "、".join(hits) + "，请说得再完整一点。"
+            word = hits[0]
+        words.remove(word)
+        self.cfg.apply_payload({"guard": {"forbidden_words": words}})
+        return f"✅ 已删除违禁词「{word}」，当前共 {len(words)} 个自定义违禁词。"
 
     # ========== 宵禁设置（自然语言） ==========
     async def set_curfew(self, intent: dict) -> str:

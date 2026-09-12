@@ -86,6 +86,8 @@ class PanshiWebController:
             ("/bootstrap", self.api_bootstrap, ["GET"], "面板初始化数据"),
             ("/overview", self.api_overview, ["GET"], "运行状态概览"),
             ("/connection", self.api_connection, ["GET"], "协议端连接诊断"),
+            ("/export", self.api_export, ["GET"], "导出全部配置"),
+            ("/import", self.api_import, ["POST"], "导入配置备份"),
             ("/groups", self.api_groups, ["GET"], "群列表"),
             ("/groups/refresh", self.api_groups_refresh, ["POST"], "刷新群列表"),
             ("/global", self.api_get_global, ["GET"], "全局默认配置"),
@@ -140,6 +142,13 @@ class PanshiWebController:
     async def api_connection(self):
         """协议端连接诊断：供面板「重新检测」使用。"""
         return _ok(self.service.connection())
+
+    async def api_export(self):
+        return _ok(self.service.export_all())
+
+    async def api_import(self):
+        payload = await _json_body()
+        return _ok(self.service.import_all(payload))
 
     async def api_groups(self):
         force = _query_bool("force")
