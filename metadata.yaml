@@ -2,7 +2,7 @@ name: astrbot_plugin_panshi
 display_name: 磐石 · 智能群管
 desc: 稳如磐石的 QQ 群管家。自带图形配置面板，自动识别群聊、可视化改配置；听得懂人话、会智能处理，集基础管理、反垃圾防护、智能入群、警告系统、群活跃与自动化于一体。
 short_desc: 听得懂人话的 QQ 群管家，自带配置面板。
-version: v1.1.1
+version: v1.1.2
 author: yuntaojinghong
 repo: https://github.com/yuntaojinghong/astrbot_plugin_panshi
 astrbot_version: ">=4.24.2"

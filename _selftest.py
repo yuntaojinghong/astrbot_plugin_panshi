@@ -239,6 +239,8 @@ def main():
 
     test_config_layer()
     test_group_cache()
+    test_errors()
+    test_role_precheck()
     test_page_service(inst)
 
     print("ALL_SELFTEST_PASS")
@@ -381,6 +383,145 @@ def test_group_cache():
     print("GROUP_CACHE_EMPTY_MSG_OK")
 
 
+def test_errors():
+    """协议端错误应被翻译成中文可读提示。"""
+    from astrbot_plugin_panshi.core.errors import extract_retcode, hint_for, humanize
+
+    # 用户实际遇到的这条
+    raw = (
+        "<ActionFailed status='failed', retcode=1200, data=None, "
+        "message='cannot ban admin', wording='cannot ban admin', "
+        "echo={'seq': 19}, stream='normal-action'>"
+    )
+    out = humanize(raw)
+    assert "管理员" in out, out
+    assert "ActionFailed" not in out, out
+    assert "retcode" not in out, out
+    assert extract_retcode(raw) == 1200
+    print(f"ERROR_HUMANIZE_OK ({out})")
+
+    # 其它常见错误
+    assert "群主" in humanize("<ActionFailed message='cannot ban owner'>")
+    assert "管理员" in humanize("not group admin")
+    assert "2 分钟" in humanize("<ActionFailed message='msg not found'>")
+    assert "30 天" in humanize("<ActionFailed message='duration invalid'>")
+    # 未识别的错误至少不应残留调试外壳
+    unknown = humanize("<ActionFailed status='failed', message='some weird thing'>")
+    assert unknown == "some weird thing", unknown
+    # 空值兜底
+    assert humanize(None) == "协议端未返回具体原因"
+    print("ERROR_HUMANIZE_MISC_OK")
+
+    # 建议文案
+    assert hint_for("set_group_ban")
+    assert hint_for("delete_msg")
+    assert hint_for("unknown_action") == ""
+    print("ERROR_HINT_OK")
+
+
+def test_role_precheck():
+    """禁言/踢人前的身份校验，避免无意义地调用 API。"""
+    import asyncio
+
+    from astrbot_plugin_panshi.core.normal import NormalHandle
+    from astrbot_plugin_panshi.data import Storage
+    from astrbot_plugin_panshi.config import PluginConfig
+
+    calls = []
+
+    class _Bot:
+        async def get_group_member_info(self, group_id, user_id, no_cache=False):
+            # 99 = 机器人自己（探测机器人身份时用），设为 admin 以便走通后续分支
+            role = {1: "owner", 2: "admin", 3: "member", 99: "admin"}.get(int(user_id), "member")
+            return {"role": role, "card": f"用户{user_id}", "nickname": f"用户{user_id}"}
+
+        async def set_group_ban(self, **kw):
+            calls.append(("set_group_ban", kw))
+            return {"status": "ok", "retcode": 0}
+
+        async def get_group_member_list(self, **kw):
+            return []
+
+    class _Ev:
+        def __init__(self, self_id=99):
+            self.bot = _Bot()
+            self._self_id = self_id
+
+        def get_group_id(self):
+            return 100
+
+        def get_sender_id(self):
+            return 3
+
+        def get_self_id(self):
+            return self._self_id
+
+        def get_messages(self):
+            return []
+
+        def get_sender_name(self):
+            return "测试"
+
+    # 用临时目录的 Storage，避免污染真实数据
+    import tempfile, os
+
+    tmp = tempfile.mkdtemp(prefix="panshi_role_")
+    try:
+        cfg = PluginConfig({})
+        db = Storage(os.path.join(tmp, "t.json"))
+        h = NormalHandle(cfg, db)
+
+        # 目标是群主 -> 应被拦截，且不调用 API
+        calls.clear()
+        r = asyncio.run(h.set_ban(_Ev(), 1, 300))
+        assert "群主" in r, r
+        assert calls == [], f"不该调用 API: {calls}"
+        print(f"PRECHECK_OWNER_OK ({r})")
+
+        # 目标是管理员 -> 应被拦截
+        calls.clear()
+        r = asyncio.run(h.set_ban(_Ev(), 2, 300))
+        assert "管理员" in r, r
+        assert calls == [], f"不该调用 API: {calls}"
+        print("PRECHECK_ADMIN_OK")
+
+        # 目标是普通成员 -> 正常放行
+        calls.clear()
+        r = asyncio.run(h.set_ban(_Ev(), 3, 300))
+        assert calls and calls[0][0] == "set_group_ban", calls
+        assert "已禁言" in r, r
+        print(f"PRECHECK_MEMBER_OK ({r})")
+
+        # 机器人在群里不是管理员 -> 直接拦下
+        calls.clear()
+        class _EvNotAdmin(_Ev):
+            def get_self_id(self):
+                return 3  # 查出来是 member
+
+        r = asyncio.run(h.set_ban(_EvNotAdmin(), 3, 300))
+        assert "不是管理员" in r, r
+        assert calls == [], f"不该调用 API: {calls}"
+        print(f"PRECHECK_BOT_NOT_ADMIN_OK ({r})")
+
+        # 协议端返回 status=failed 的 dict 也应被识别为失败
+        class _BotDictFail(_Bot):
+            async def set_group_ban(self, **kw):
+                return {"status": "failed", "retcode": 1200, "message": "cannot ban admin"}
+
+        class _EvDict(_Ev):
+            def __init__(self):
+                super().__init__()
+                self.bot = _BotDictFail()
+
+        r = asyncio.run(h.set_ban(_EvDict(), 3, 300))
+        assert "管理员" in r, r
+        print(f"PRECHECK_DICT_FAILURE_OK ({r})")
+    finally:
+        import shutil
+
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def test_page_service(inst):
     """面板业务层：群列表、全局配置、按群覆盖。"""
     import asyncio
@@ -421,6 +562,30 @@ def test_page_service(inst):
     assert gc2["effective"]["guard"]["spam_count"] == 20  # 被 slider 裁到上限
     assert gc2["effective"]["warning"]["warning_enable"] is True  # 未覆盖的仍取全局
     print("GROUP_OVERRIDE_OK")
+
+    # 回归：前端漏传 follow_default 时必须保持独立配置，不能退回全局
+    gc2b = svc.update_group_config("123456", {"guard": {"spam_count": 12}})
+    assert gc2b["follow_default"] is False, f"漏传 follow_default 竟退回了全局: {gc2b}"
+    assert gc2b["effective"]["guard"]["spam_count"] == 12, gc2b["effective"]["guard"]
+    print("GROUP_OVERRIDE_NO_FLAG_OK")
+
+    # 显式传 true 才应清空覆盖
+    gc2c = svc.update_group_config("123456", {"follow_default": True})
+    assert gc2c["follow_default"] is True
+    assert gc2c["effective"]["guard"]["spam_count"] == 7
+    print("GROUP_FOLLOW_EXPLICIT_OK")
+
+    # 回归（用户实测：独立配置保存后又变回全局）：重新读盘必须仍是独立配置
+    svc.update_group_config("123456", {"follow_default": False, "guard": {"spam_count": 15}})
+    reread = svc.get_group_config("123456")
+    assert reread["follow_default"] is False, f"重读后又变回全局了: {reread}"
+    assert reread["effective"]["guard"]["spam_count"] == 15, reread["effective"]["guard"]
+    # 换一个新 service 实例读同一份存储，模拟插件重载
+    svc2 = PageService(inst.cfg, inst.db, inst.group_cache)
+    reread2 = svc2.get_group_config("123456")
+    assert reread2["follow_default"] is False, f"重载插件后又变回全局了: {reread2}"
+    assert reread2["effective"]["guard"]["spam_count"] == 15, reread2["effective"]["guard"]
+    print("GROUP_OVERRIDE_PERSIST_OK")
 
     # 恢复默认
     gc3 = svc.reset_group_config("123456")

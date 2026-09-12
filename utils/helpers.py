@@ -80,6 +80,46 @@ def get_group_id(event) -> str:
     return _group_id(event)
 
 
+async def get_member_role(event, user_id: str | int) -> str:
+    """查询某成员在本群的角色。
+
+    Returns:
+        ``"owner"`` / ``"admin"`` / ``"member"``；查询失败返回 ``"unknown"``
+    """
+    uid = int(user_id)
+    gid = _group_id(event)
+    if not gid:
+        return "unknown"
+    try:
+        info = await event.bot.get_group_member_info(
+            group_id=int(gid), user_id=uid, no_cache=False
+        )
+        role = (info or {}).get("role") if isinstance(info, dict) else None
+        if role in ("owner", "admin", "member"):
+            return role
+    except Exception:
+        pass
+    return "unknown"
+
+
+async def get_bot_role(event) -> str:
+    """查询机器人自己在当前群的角色。"""
+    try:
+        self_id = event.get_self_id()
+    except Exception:
+        return "unknown"
+    return await get_member_role(event, self_id)
+
+
+def role_label(role: str) -> str:
+    """角色中文名。"""
+    return {
+        "owner": "群主",
+        "admin": "管理员",
+        "member": "普通成员",
+    }.get(role, "未知身份")
+
+
 def _group_id(event) -> str | None:
     try:
         gid = event.get_group_id()

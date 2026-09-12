@@ -73,6 +73,12 @@ class IntentParser:
         self.cfg = config
         self.db = storage
         self.ctx = context
+        self._last_error: str = ""
+
+    @property
+    def last_error(self) -> str:
+        """最近一次解析失败的原因（供面板展示）。"""
+        return self._last_error
 
     def should_trigger(self, event, message: str) -> bool:
         """判断是否值得走智能识别（省 token）。"""
@@ -134,7 +140,8 @@ class IntentParser:
         try:
             provider = await self._get_provider(event)
             if provider is None:
-                logger.warning("[磐石] 未找到可用的 LLM 供应商，智能识别跳过")
+                # 详细原因已在 _get_provider 里打了日志
+                self._last_error = "未找到可用的 LLM 供应商"
                 return None
 
             resp = await provider.text_chat(
@@ -142,33 +149,72 @@ class IntentParser:
                 system_prompt=SYSTEM_PROMPT,
             )
             text = getattr(resp, "completion_text", None) or str(resp)
+            self._last_error = ""
             return self._extract_json(text)
         except Exception as e:
+            self._last_error = f"意图解析失败: {e}"
             logger.error(f"[磐石] 意图解析失败: {e}")
             return None
 
     async def _get_provider(self, event):
-        provider_id = self.cfg.smart.get("smart_provider_id", "") or ""
+        """按「指定 ID → 会话默认 → 全局第一个」的顺序解析供应商。
+
+        每一层都单独 try，并把真实原因写进日志，便于排查「未找到供应商」。
+        """
+        ctx = None
         try:
-            if provider_id:
-                return self.context_get_provider_by_id(provider_id, event)
-            return await self._default_provider(event)
-        except Exception:
+            ctx = event.get_context()
+        except Exception as e:
+            logger.warning(f"[磐石] 无法获取 AstrBot 上下文: {e}")
             return None
 
-    async def _default_provider(self, event):
-        try:
-            return await event.get_context().get_using_provider_async(
-                umo=event.unified_msg_origin
+        provider_id = (self.cfg.smart.get("smart_provider_id", "") or "").strip()
+
+        # 1) 配置里指定的供应商 ID
+        if provider_id:
+            try:
+                prov = ctx.get_provider_by_id(provider_id=provider_id)
+            except TypeError:
+                # 老版本可能不接受关键字参数
+                prov = ctx.get_provider_by_id(provider_id)
+            except Exception as e:
+                logger.warning(f"[磐石] 按 ID 取供应商失败(id={provider_id}): {e}")
+                prov = None
+            if prov is not None:
+                return prov
+            logger.warning(
+                f"[磐石] 配置的供应商 ID「{provider_id}」不存在，"
+                f"将回退到当前默认供应商。请到面板「智能识别」里重新选择。"
             )
-        except Exception:
-            return None
 
-    def context_get_provider_by_id(self, provider_id, event):
+        # 2) 当前会话使用的供应商
         try:
-            return event.get_context().get_provider_by_id(provider_id=provider_id)
-        except Exception:
-            return None
+            prov = await ctx.get_using_provider_async(
+                umo=getattr(event, "unified_msg_origin", None)
+            )
+            if prov is not None:
+                return prov
+        except Exception as e:
+            logger.warning(f"[磐石] 获取会话默认供应商失败: {e}")
+
+        # 3) 兜底：列表里第一个对话供应商
+        try:
+            all_providers = ctx.get_all_providers() or []
+            if all_providers:
+                logger.info(
+                    f"[磐石] 会话未设置默认模型，回退到第一个可用供应商"
+                    f"（共 {len(all_providers)} 个）"
+                )
+                return all_providers[0]
+        except Exception as e:
+            logger.warning(f"[磐石] 枚举供应商列表失败: {e}")
+
+        logger.warning(
+            "[磐石] 未找到任何可用的对话模型供应商。"
+            "请在 AstrBot「服务提供商」页添加一个对话模型，"
+            "或在插件面板「智能识别」里指定供应商。"
+        )
+        return None
 
     # ---------- 解析输出 ----------
     @staticmethod

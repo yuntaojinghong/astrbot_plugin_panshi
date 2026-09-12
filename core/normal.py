@@ -2,13 +2,43 @@
 
 from __future__ import annotations
 
-from ..utils import format_duration, get_ats, get_nickname
+from ..utils import (
+    format_duration,
+    get_ats,
+    get_bot_role,
+    get_member_role,
+    get_nickname,
+    role_label,
+)
 from ..utils.helpers import extract_image_url, get_reply_id
 from .base_handle import BaseHandle
+from .errors import humanize
 
 
 class NormalHandle(BaseHandle):
     """封装常规群管理操作。"""
+
+    # ---------- 权限前置校验 ----------
+    async def _precheck_bot_is_admin(self, event) -> str | None:
+        """确认机器人自己是管理员；不是则返回提示语。"""
+        role = await get_bot_role(event)
+        if role == "member":
+            return "❌ 我在本群不是管理员，无法执行该操作。请先把我设为管理员。"
+        # unknown 时放行（查询失败不代表没权限，让 API 自己报错）
+        return None
+
+    async def _check_target_role(
+        self, event, target_id: str | int, action_name: str
+    ) -> str | None:
+        """确认目标不是群主/管理员；是则返回提示语。"""
+        role = await get_member_role(event, target_id)
+        name = await get_nickname(event, target_id)
+        if role in ("owner", "admin"):
+            return (
+                f"❌ 无法对 {name} 执行{action_name}："
+                f"对方是{role_label(role)}，机器人无权操作同级或上级。"
+            )
+        return None
 
     # ---------- 禁言 ----------
     async def set_ban(self, event, target_id: str | int | None, seconds: int) -> str:
@@ -19,8 +49,23 @@ class NormalHandle(BaseHandle):
         if not targets:
             return "❓ 请 @某人、引用其消息或直接给出 QQ 号。"
 
+        # 解禁不需要管理员身份（实际仍需要，但让协议端判断）
+        if seconds > 0:
+            denied = await self._precheck_bot_is_admin(event)
+            if denied:
+                return denied
+
         results = []
         for tid in targets:
+            name = await get_nickname(event, tid)
+
+            # 禁言前先看目标身份，避免白跑一次 API
+            if seconds > 0:
+                blocked = await self._check_target_role(event, tid, "禁言")
+                if blocked:
+                    results.append(blocked)
+                    continue
+
             ok, err = await self.call_api(
                 event,
                 "set_group_ban",
@@ -28,14 +73,15 @@ class NormalHandle(BaseHandle):
                 user_id=int(tid),
                 duration=seconds,
             )
-            name = await get_nickname(event, tid)
             if ok:
                 if seconds == 0:
                     results.append(f"✅ 已解除 {name} 的禁言")
                 else:
                     results.append(f"✅ 已禁言 {name} {format_duration(seconds)}")
             else:
-                results.append(f"❌ 对 {name} 的操作失败：{err}")
+                results.append(
+                    f"❌ 对 {name} 的禁言失败：{self.failure_text('set_group_ban', err)}"
+                )
         return "\n".join(results)
 
     async def cancel_ban(self, event, target_id: str | int | None) -> str:
@@ -51,7 +97,7 @@ class NormalHandle(BaseHandle):
             enable=enable,
         )
         if not ok:
-            return f"❌ 操作失败：{err}"
+            return f"❌ 操作失败：{humanize(err)}"
         return "🔇 已开启全体禁言" if enable else "🔊 已解除全体禁言"
 
     # ---------- 踢人 / 拉黑 ----------
@@ -61,9 +107,19 @@ class NormalHandle(BaseHandle):
         if not targets:
             return "❓ 请 @某人、引用其消息或直接给出 QQ 号。"
 
+        denied = await self._precheck_bot_is_admin(event)
+        if denied:
+            return denied
+
         results = []
         for tid in targets:
             name = await get_nickname(event, tid)
+
+            blocked = await self._check_target_role(event, tid, "踢出")
+            if blocked:
+                results.append(blocked)
+                continue
+
             ok, err = await self.call_api(
                 event,
                 "set_group_kick",
@@ -78,7 +134,9 @@ class NormalHandle(BaseHandle):
                 if reject:
                     self.db.add_blacklist(group_id, tid)
             else:
-                results.append(f"❌ 操作 {name} 失败：{err}")
+                results.append(
+                    f"❌ 踢出 {name} 失败：{self.failure_text('set_group_kick', err)}"
+                )
         return "\n".join(results)
 
     # ---------- 撤回 / 净化 ----------
@@ -94,7 +152,11 @@ class NormalHandle(BaseHandle):
         reply_id = get_reply_id(event)
         if reply_id:
             ok, err = await self.call_api(event, "delete_msg", message_id=int(reply_id))
-            return "✅ 已撤回该消息" if ok else f"❌ 撤回失败：{err}"
+            return (
+                "✅ 已撤回该消息"
+                if ok
+                else f"❌ 撤回失败：{self.failure_text('delete_msg', err)}"
+            )
 
         # 撤回最近 N 条（从历史缓存中取）
         msg_ids = self._recent_message_ids(event, count, target_id)
@@ -161,7 +223,7 @@ class NormalHandle(BaseHandle):
                     f"✅ 已将 {name} 的群昵称改为「{card}」" if card else f"✅ 已清除 {name} 的群昵称"
                 )
             else:
-                results.append(f"❌ 修改 {name} 昵称失败：{err}")
+                results.append(f"❌ 修改 {name} 昵称失败：{humanize(err)}")
         return "\n".join(results)
 
     async def set_special_title(self, event, target_id: str | int | None, title: str) -> str:
@@ -183,7 +245,7 @@ class NormalHandle(BaseHandle):
                     f"✅ 已设置 {name} 的头衔为「{title}」" if title else f"✅ 已清除 {name} 的头衔"
                 )
             else:
-                results.append(f"❌ 设置 {name} 头衔失败：{err}")
+                results.append(f"❌ 设置 {name} 头衔失败：{humanize(err)}")
         return "\n".join(results)
 
     # ---------- 管理员任免 ----------
@@ -207,7 +269,7 @@ class NormalHandle(BaseHandle):
                     f"✅ 已设置 {name} 为管理员" if enable else f"✅ 已取消 {name} 的管理员"
                 )
             else:
-                results.append(f"❌ 操作 {name} 失败：{err}")
+                results.append(f"❌ 操作 {name} 失败：{humanize(err)}")
         return "\n".join(results)
 
     # ---------- 精华 ----------
@@ -219,7 +281,7 @@ class NormalHandle(BaseHandle):
         ok, err = await self.call_api(event, action, message_id=int(reply_id))
         if ok:
             return "⭐ 已设为精华消息" if enable else "已取消精华消息"
-        return f"❌ 操作失败：{err}"
+        return f"❌ 操作失败：{humanize(err)}"
 
     # ---------- 群名 / 群头像 / 公告 ----------
     async def set_group_name(self, event, name: str) -> str:
@@ -228,7 +290,7 @@ class NormalHandle(BaseHandle):
         ok, err = await self.call_api(
             event, "set_group_name", group_id=self.group_id(event), group_name=name
         )
-        return f"✅ 群名已更新为「{name}」" if ok else f"❌ 修改群名失败：{err}"
+        return f"✅ 群名已更新为「{name}」" if ok else f"❌ 修改群名失败：{humanize(err)}"
 
     async def set_group_portrait(self, event, image_url: str | None = None) -> str:
         url = image_url or extract_image_url(event)
@@ -237,7 +299,7 @@ class NormalHandle(BaseHandle):
         ok, err = await self.call_api(
             event, "set_group_portrait", group_id=self.group_id(event), file=url
         )
-        return "✅ 群头像已更新" if ok else f"❌ 修改群头像失败：{err}"
+        return "✅ 群头像已更新" if ok else f"❌ 修改群头像失败：{humanize(err)}"
 
     async def send_notice(self, event, content: str, image_url: str | None = None) -> str:
         if not content:
@@ -252,7 +314,7 @@ class NormalHandle(BaseHandle):
         if not ok:
             # 兼容不同接口名
             ok, err = await self.call_api(event, "send_group_notice", **params)
-        return "📢 群公告已发布" if ok else f"❌ 发布公告失败：{err}"
+        return "📢 群公告已发布" if ok else f"❌ 发布公告失败：{self.failure_text('_send_group_notice', err)}"
 
     async def get_notice(self, event) -> str:
         ok, data = await self.call_api(event, "_get_group_notice", group_id=self.group_id(event))

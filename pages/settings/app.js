@@ -261,14 +261,19 @@ async function save() {
       state.global = await apiPost("global", { config: state.draft });
       toast("全局默认配置已保存");
     } else {
-      const payload = { group_id: state.selected.group_id, config: state.draft };
+      // 关键：必须显式带上 follow_default，否则后端会按默认值 true 处理，
+      // 把该群刚保存的独立配置清空、退回跟随全局。
+      const payload = {
+        group_id: state.selected.group_id,
+        config: { follow_default: !!state.followDefault, ...state.draft },
+      };
       const data = await apiPost("group", payload);
       state.selected = data;
       state.followDefault = !!data.follow_default;
       state.draft = deepClone(
         state.followDefault ? data.effective || {} : mergeOverride(data)
       );
-      toast("该群配置已保存");
+      toast(state.followDefault ? "已保存（跟随全局默认）" : "该群独立配置已保存");
     }
     await loadOverview();
     renderGroups();

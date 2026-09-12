@@ -9,6 +9,8 @@ except Exception:
 
     logger = logging.getLogger("panshi")
 
+from .errors import hint_for, humanize
+
 
 class BaseHandle:
     """所有功能 Handle 的基类。"""
@@ -34,17 +36,32 @@ class BaseHandle:
             params: API 参数
 
         Returns:
-            (成功?, 结果或错误信息)
+            (成功?, 结果或中文错误提示)
         """
         try:
             method = getattr(event.bot, action, None)
             if method is None:
                 return False, f"当前适配器不支持 {action}"
             result = await method(**params)
+
+            # 部分适配器不抛异常，而是返回 {"status":"failed", "retcode":N}
+            if isinstance(result, dict):
+                status = result.get("status")
+                retcode = result.get("retcode")
+                if status == "failed" or (retcode not in (None, 0)):
+                    reason = result.get("message") or result.get("wording") or result
+                    return False, humanize(reason)
             return True, result
         except Exception as e:
             logger.warning(f"[磐石] 调用 {action} 失败: {e}")
-            return False, str(e)
+            return False, humanize(e)
+
+    @staticmethod
+    def failure_text(action: str, err: object) -> str:
+        """组装「失败原因 + 操作建议」。"""
+        reason = humanize(err)
+        tip = hint_for(action)
+        return f"{reason}\n💡 {tip}" if tip else reason
 
     def stop(self, event) -> None:
         """阻止事件继续向后传播（避免触发其他插件/LLM）。"""

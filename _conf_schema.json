@@ -311,12 +311,15 @@
         "description": "指定用于意图识别的 LLM 供应商 ID",
         "type": "string",
         "default": "",
-        "hint": "留空使用当前默认供应商"
+        "hint": "留空使用 AstrBot 当前的默认对话模型。不知填什么就用插件面板「智能识别」组里的下拉框选择——会自动列出你已配置的模型。"
       },
       "bot_names": {
         "description": "机器人称呼（用于识别在叫机器人）",
         "type": "list",
-        "default": ["磐石", "群管"]
+        "default": [
+          "磐石",
+          "群管"
+        ]
       }
     }
   },

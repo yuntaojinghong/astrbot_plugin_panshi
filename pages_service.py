@@ -148,12 +148,21 @@ class PageService:
             payload: 两种形态
                 - ``{"follow_default": true}`` —— 恢复继承全局默认（清空覆盖）
                 - ``{"follow_default": false, "guard": {...}, ...}`` —— 保存独立配置
+
+        Note:
+            ``follow_default`` 缺省时**沿用该群当前状态**，而不是一律当作 true。
+            否则前端漏传该字段会把用户刚存的独立配置清掉（历史 bug）。
         """
         gid = self._normalize_gid(group_id)
         if not isinstance(payload, dict):
             raise ValueError("payload 必须是对象")
 
-        follow = _as_bool(payload.get(FOLLOW_DEFAULT_KEY, True))
+        if FOLLOW_DEFAULT_KEY in payload:
+            follow = _as_bool(payload.get(FOLLOW_DEFAULT_KEY))
+        else:
+            # 未显式指定：保持该群既有状态
+            current = self.db.get_group_override(gid) or {}
+            follow = _as_bool(current.get(FOLLOW_DEFAULT_KEY, True))
 
         if follow:
             # 跟随默认 = 清掉该群的所有覆盖
