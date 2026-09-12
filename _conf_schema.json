@@ -1,0 +1,299 @@
+{
+  "basic": {
+    "description": "基础设置",
+    "type": "object",
+    "items": {
+      "super_admins": {
+        "description": "插件超级管理员 QQ 号列表",
+        "type": "list",
+        "default": [],
+        "hint": "这些用户在本插件中拥有最高权限（高于群主）"
+      },
+      "default_ban_time": {
+        "description": "默认禁言时长（秒）",
+        "type": "int",
+        "default": 60,
+        "hint": "执行禁言且未指定时长时使用"
+      },
+      "max_ban_time": {
+        "description": "单次最大禁言时长（秒）",
+        "type": "int",
+        "default": 2592000,
+        "hint": "30 天，防止误操作超长禁言"
+      },
+      "enable_groups": {
+        "description": "启用本插件的群号列表",
+        "type": "list",
+        "default": [],
+        "hint": "留空或包含 'all' 表示对所有群生效"
+      },
+      "operation_notice": {
+        "description": "执行管理操作后在群内播报结果",
+        "type": "bool",
+        "default": true
+      }
+    }
+  },
+  "guard": {
+    "description": "反垃圾防护",
+    "type": "object",
+    "items": {
+      "forbidden_enable": {
+        "description": "启用违禁词检测",
+        "type": "bool",
+        "default": true
+      },
+      "forbidden_words": {
+        "description": "违禁词列表",
+        "type": "list",
+        "default": [],
+        "hint": "支持普通词与正则（以 re: 开头，如 re:\\d{11}）"
+      },
+      "forbidden_builtin": {
+        "description": "启用内置违禁词",
+        "type": "bool",
+        "default": true,
+        "hint": "内置广告、政治敏感等常见词库"
+      },
+      "forbidden_ban_time": {
+        "description": "违禁词触发禁言时长（秒）",
+        "type": "int",
+        "default": 600,
+        "hint": "0 表示仅撤回不禁言"
+      },
+      "spam_enable": {
+        "description": "启用刷屏检测",
+        "type": "bool",
+        "default": true
+      },
+      "spam_count": {
+        "description": "刷屏判定：时间窗内消息条数",
+        "type": "int",
+        "default": 5
+      },
+      "spam_window": {
+        "description": "刷屏判定：时间窗（秒）",
+        "type": "int",
+        "default": 5
+      },
+      "spam_ban_time": {
+        "description": "刷屏触发禁言时长（秒）",
+        "type": "int",
+        "default": 300
+      },
+      "ad_enable": {
+        "description": "启用广告链接拦截",
+        "type": "bool",
+        "default": true
+      },
+      "repeat_enable": {
+        "description": "启用复读打断",
+        "type": "bool",
+        "default": false,
+        "hint": "连续多人复读同一内容时打断"
+      },
+      "repeat_count": {
+        "description": "复读判定人数阈值",
+        "type": "int",
+        "default": 4
+      }
+    }
+  },
+  "welcome": {
+    "description": "入群欢迎",
+    "type": "object",
+    "items": {
+      "welcome_enable": {
+        "description": "启用入群欢迎",
+        "type": "bool",
+        "default": true
+      },
+      "welcome_templates": {
+        "description": "欢迎语文案模板（随机选取一条）",
+        "type": "list",
+        "default": [
+          "欢迎 {at} 加入本群！你是第 {人数} 位成员～",
+          "{at} 你好呀，欢迎来到「{群名}」，有问题随时提问～"
+        ],
+        "hint": "可用变量：{at} {昵称} {群名} {人数} {时间}"
+      },
+      "welcome_image": {
+        "description": "欢迎图片 URL（可选）",
+        "type": "string",
+        "default": ""
+      },
+      "welcome_delay": {
+        "description": "欢迎语延迟发送（秒）",
+        "type": "int",
+        "default": 1,
+        "hint": "避免与验证消息冲突，0 表示立即"
+      },
+      "verify_enable": {
+        "description": "启用入群算术验证",
+        "type": "bool",
+        "default": false,
+        "hint": "新人需答对算术题才通过，超时自动拒绝"
+      },
+      "verify_timeout": {
+        "description": "验证超时时间（秒）",
+        "type": "int",
+        "default": 120
+      },
+      "join_ban_time": {
+        "description": "新成员入群自动禁言时长（秒）",
+        "type": "int",
+        "default": 0,
+        "hint": "0 表示不禁言"
+      },
+      "leave_notify": {
+        "description": "启用退群通知",
+        "type": "bool",
+        "default": true
+      },
+      "leave_block": {
+        "description": "退群后自动拉黑",
+        "type": "bool",
+        "default": false
+      },
+      "join_review_enable": {
+        "description": "启用进群申请审核",
+        "type": "bool",
+        "default": false
+      },
+      "join_accept_words": {
+        "description": "自动批准关键词",
+        "type": "list",
+        "default": []
+      },
+      "join_reject_words": {
+        "description": "自动拒绝关键词",
+        "type": "list",
+        "default": []
+      },
+      "join_no_match_reject": {
+        "description": "未命中白词时自动拒绝",
+        "type": "bool",
+        "default": false
+      }
+    }
+  },
+  "warning": {
+    "description": "警告系统",
+    "type": "object",
+    "items": {
+      "warning_enable": {
+        "description": "启用警告系统",
+        "type": "bool",
+        "default": true
+      },
+      "warn_ban_threshold": {
+        "description": "警告达此次数自动禁言",
+        "type": "int",
+        "default": 3
+      },
+      "warn_ban_time": {
+        "description": "自动禁言时长（秒）",
+        "type": "int",
+        "default": 3600
+      },
+      "warn_kick_threshold": {
+        "description": "警告达此次数自动踢出",
+        "type": "int",
+        "default": 5,
+        "hint": "0 表示不自动踢出"
+      },
+      "warn_expire_days": {
+        "description": "警告记录有效期（天）",
+        "type": "int",
+        "default": 30,
+        "hint": "超过有效期自动清除，0 表示永久"
+      }
+    }
+  },
+  "smart": {
+    "description": "智能识别（听得懂人话）",
+    "type": "object",
+    "items": {
+      "smart_enable": {
+        "description": "启用智能意图识别",
+        "type": "bool",
+        "default": true,
+        "hint": "关闭后仅响应 /指令，不再理解自然语言"
+      },
+      "trigger_on_at": {
+        "description": "@机器人时启用智能识别",
+        "type": "bool",
+        "default": true
+      },
+      "trigger_on_keyword": {
+        "description": "消息含管理动作词时启用智能识别",
+        "type": "bool",
+        "default": true
+      },
+      "smart_confirm_dangerous": {
+        "description": "高风险操作（踢人/拉黑）需回复确认",
+        "type": "bool",
+        "default": true,
+        "hint": "防止 AI 误判造成不可逆操作"
+      },
+      "smart_provider_id": {
+        "description": "指定用于意图识别的 LLM 供应商 ID",
+        "type": "string",
+        "default": "",
+        "hint": "留空使用当前默认供应商"
+      },
+      "bot_names": {
+        "description": "机器人称呼（用于识别在叫机器人）",
+        "type": "list",
+        "default": ["磐石", "群管"]
+      }
+    }
+  },
+  "activity": {
+    "description": "群活跃",
+    "type": "object",
+    "items": {
+      "checkin_enable": {
+        "description": "启用签到",
+        "type": "bool",
+        "default": true
+      },
+      "checkin_points": {
+        "description": "每次签到基础积分",
+        "type": "int",
+        "default": 10
+      },
+      "checkin_random_bonus": {
+        "description": "签到随机额外积分上限",
+        "type": "int",
+        "default": 10
+      }
+    }
+  },
+  "automate": {
+    "description": "自动化",
+    "type": "object",
+    "items": {
+      "curfew_enable": {
+        "description": "启用宵禁",
+        "type": "bool",
+        "default": false
+      },
+      "curfew_start": {
+        "description": "宵禁开始时间 HH:MM",
+        "type": "string",
+        "default": "23:00"
+      },
+      "curfew_end": {
+        "description": "宵禁结束时间 HH:MM",
+        "type": "string",
+        "default": "07:00"
+      },
+      "curfew_ban_time": {
+        "description": "宵禁期间违规禁言时长（秒）",
+        "type": "int",
+        "default": 600
+      }
+    }
+  }
+}

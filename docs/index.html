@@ -1,0 +1,401 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>磐石 · 智能群管 — AstrBot QQ群管插件</title>
+<meta name="description" content="磐石：听得懂人话的 AstrBot QQ 群管理插件。禁言、踢人、反垃圾、入群验证、警告系统，全部支持自然语言操作。">
+<style>
+:root {
+  --bg: #ffffff;
+  --bg2: #f7f7f5;
+  --bg3: #f1efe8;
+  --fg: #1f1f1e;
+  --fg2: #5f5e5a;
+  --fg3: #888780;
+  --line: rgba(0,0,0,0.12);
+  --accent: #534AB7;
+  --accent-bg: #EEEDFE;
+  --ok: #0F6E56;
+  --ok-bg: #E1F5EE;
+  --warn: #854F0B;
+  --warn-bg: #FAEEDA;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html { scroll-behavior: smooth; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+               "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  background: var(--bg); color: var(--fg);
+  font-size: 15px; line-height: 1.7;
+  -webkit-font-smoothing: antialiased;
+}
+.wrap { max-width: 920px; margin: 0 auto; padding: 0 24px; }
+
+/* ---- nav ---- */
+nav {
+  position: sticky; top: 0; z-index: 50;
+  background: rgba(255,255,255,0.86);
+  backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--line);
+}
+nav .wrap { display: flex; align-items: center; height: 58px; gap: 20px; }
+.brand { font-weight: 500; font-size: 16px; letter-spacing: -0.01em; }
+.brand span { color: var(--accent); }
+nav .links { margin-left: auto; display: flex; gap: 4px; }
+nav a {
+  color: var(--fg2); text-decoration: none; font-size: 14px;
+  padding: 6px 11px; border-radius: 8px; transition: background .15s;
+}
+nav a:hover { background: var(--bg3); color: var(--fg); }
+
+/* ---- hero ---- */
+header { padding: 78px 0 56px; }
+.stone {
+  font-size: 12px; letter-spacing: .14em; text-transform: uppercase;
+  color: var(--accent); font-weight: 500; margin-bottom: 18px;
+}
+h1 {
+  font-size: 46px; line-height: 1.15; font-weight: 500;
+  letter-spacing: -0.028em; margin-bottom: 20px;
+}
+h1 em { font-style: normal; color: var(--accent); }
+.lede { font-size: 17px; color: var(--fg2); max-width: 620px; margin-bottom: 30px; }
+.btns { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 46px; }
+.btn {
+  display: inline-flex; align-items: center; gap: 7px;
+  padding: 9px 18px; border-radius: 9px; text-decoration: none;
+  font-size: 14px; font-weight: 500; border: 1px solid var(--line);
+  color: var(--fg); background: var(--bg); transition: .15s;
+}
+.btn:hover { background: var(--bg3); }
+.btn.primary { background: var(--fg); color: var(--bg); border-color: var(--fg); }
+.btn.primary:hover { opacity: .85; }
+
+/* ---- terminal ---- */
+.term {
+  background: var(--bg3); border: 1px solid var(--line);
+  border-radius: 12px; padding: 16px 18px; font-family: var(--mono);
+  font-size: 13px; line-height: 1.85; overflow-x: auto; color: var(--fg2);
+}
+.term .c { color: var(--fg3); }
+.term .k { color: var(--accent); font-weight: 500; }
+.term .s { color: var(--ok); }
+
+/* ---- sections ---- */
+section { padding: 52px 0; border-top: 1px solid var(--line); }
+h2 {
+  font-size: 25px; font-weight: 500; letter-spacing: -0.02em;
+  margin-bottom: 8px;
+}
+.sub { color: var(--fg3); font-size: 14px; margin-bottom: 30px; }
+h3 { font-size: 16px; font-weight: 500; margin-bottom: 8px; }
+
+/* ---- cards ---- */
+.grid { display: grid; gap: 14px; }
+.g2 { grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
+.g3 { grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); }
+.card {
+  background: var(--bg); border: 1px solid var(--line);
+  border-radius: 12px; padding: 20px;
+}
+.card .icon {
+  width: 34px; height: 34px; border-radius: 9px;
+  background: var(--accent-bg); color: var(--accent);
+  display: flex; align-items: center; justify-content: center;
+  font-family: var(--mono); font-size: 15px; font-weight: 500;
+  margin-bottom: 13px;
+}
+.card p { color: var(--fg2); font-size: 13.5px; }
+.card.hl { border-color: var(--accent); border-width: 2px; }
+
+/* ---- comparison table ---- */
+.cmp { width: 100%; border-collapse: collapse; font-size: 14px; }
+.cmp th, .cmp td {
+  text-align: left; padding: 12px 14px;
+  border-bottom: 1px solid var(--line); vertical-align: top;
+}
+.cmp th { font-weight: 500; color: var(--fg3); font-size: 12.5px;
+  text-transform: uppercase; letter-spacing: .06em; }
+.cmp td:first-child { color: var(--fg3); width: 26%; }
+.cmp .new { color: var(--ok); font-weight: 500; }
+
+/* ---- chat demo ---- */
+.chat {
+  background: var(--bg2); border: 1px solid var(--line);
+  border-radius: 12px; padding: 20px;
+}
+.bubble {
+  border-radius: 10px; padding: 10px 14px; margin-bottom: 10px;
+  font-size: 14px; max-width: 88%; position: relative;
+}
+.bubble.user { background: var(--bg); border: 1px solid var(--line); }
+.bubble.bot { background: var(--accent-bg); color: var(--accent); margin-left: auto; }
+.bubble.bot.warn { background: var(--warn-bg); color: var(--warn); }
+.bubble.bot.ok { background: var(--ok-bg); color: var(--ok); }
+
+/* ---- cmd table ---- */
+.cmds { font-size: 14px; }
+.cmds code {
+  font-family: var(--mono); font-size: 12.5px;
+  background: var(--bg3); padding: 2px 7px; border-radius: 5px;
+  color: var(--fg);
+}
+
+/* ---- steps ---- */
+.step { display: flex; gap: 16px; margin-bottom: 22px; }
+.step .n {
+  flex: 0 0 26px; height: 26px; border-radius: 50%;
+  background: var(--fg); color: var(--bg);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 13px; font-weight: 500;
+}
+.step .body { flex: 1; padding-top: 2px; }
+.step .body p { color: var(--fg2); font-size: 14px; margin-bottom: 8px; }
+
+/* ---- footer ---- */
+footer {
+  padding: 40px 0 56px; border-top: 1px solid var(--line);
+  color: var(--fg3); font-size: 13.5px;
+}
+footer a { color: var(--accent); text-decoration: none; }
+footer a:hover { text-decoration: underline; }
+
+@media (max-width: 640px) {
+  h1 { font-size: 33px; }
+  header { padding: 50px 0 40px; }
+  nav .links { display: none; }
+  section { padding: 40px 0; }
+}
+</style>
+</head>
+<body>
+
+<nav>
+  <div class="wrap">
+    <div class="brand">磐石<span>.</span></div>
+    <div class="links">
+      <a href="#features">功能</a>
+      <a href="#smart">智能</a>
+      <a href="#compare">对比</a>
+      <a href="#install">安装</a>
+      <a href="https://github.com/yuntaojinghong/astrbot_plugin_panshi" target="_blank">GitHub</a>
+    </div>
+  </div>
+</nav>
+
+<header>
+  <div class="wrap">
+    <div class="stone">AstrBot · NapCat · OneBot v11</div>
+    <h1>稳如磐石的 QQ 群管家，<br><em>听得懂人话</em>。</h1>
+    <p class="lede">
+      不用记指令。说一句「把刚才刷屏的禁言十分钟」，它就知道该做什么。
+      禁言、踢人、反垃圾、入群验证、违规警告、签到排行 —— 一个插件全部搞定。
+    </p>
+    <div class="btns">
+      <a class="btn primary" href="#install">开始安装 →</a>
+      <a class="btn" href="https://github.com/yuntaojinghong/astrbot_plugin_panshi" target="_blank">查看源码</a>
+    </div>
+    <div class="term">
+      <div><span class="c">$</span> cd AstrBot/data/plugins</div>
+      <div><span class="c">$</span> git clone https://github.com/yuntaojinghong/astrbot_plugin_panshi.git</div>
+      <div><span class="s">✓</span> 重启 AstrBot，即可在插件页看到「磐石 · 智能群管」</div>
+    </div>
+  </div>
+</header>
+
+<section id="features">
+  <div class="wrap">
+    <h2>七类功能，覆盖群管全场景</h2>
+    <p class="sub">每个模块独立开关，按需启用，不干扰正常聊天。</p>
+    <div class="grid g2">
+      <div class="card">
+        <div class="icon">01</div>
+        <h3>基础管理</h3>
+        <p>禁言 / 解禁 / 全体禁言 / 踢人 / 拉黑 / 撤回 / 净化 / 改名片 / 头衔 / 管理员任免 / 群名 / 群公告 / 群精华。</p>
+      </div>
+      <div class="card">
+        <div class="icon">02</div>
+        <h3>反垃圾防护</h3>
+        <p>违禁词（支持正则）、刷屏检测、广告链接拦截、复读打断。命中自动撤回 + 禁言 + 记警告。</p>
+      </div>
+      <div class="card">
+        <div class="icon">03</div>
+        <h3>入群欢迎（增强）</h3>
+        <p>多模板随机、变量替换 <code>{at}{昵称}{群名}{人数}{时间}</code>、支持图片与延时发送。</p>
+      </div>
+      <div class="card">
+        <div class="icon">04</div>
+        <h3>算术验证</h3>
+        <p>新人答对算数题才通过，超时自动拒绝。有效拦截广告机器人批量进群。</p>
+      </div>
+      <div class="card">
+        <div class="icon">05</div>
+        <h3>进群审核</h3>
+        <p>白词自动批准、黑词自动拒绝、未命中策略可选、黑名单管理、退群通知与拉黑。</p>
+      </div>
+      <div class="card">
+        <div class="icon">06</div>
+        <h3>三级警告</h3>
+        <p>违规累计自动升级：达阈值自动禁言 → 再达阈值自动踢出。支持撤销与历史查询。</p>
+      </div>
+      <div class="card">
+        <div class="icon">07</div>
+        <h3>群活跃</h3>
+        <p>每日签到、积分系统、积分榜与发言榜。零数据库依赖，JSON 文件持久化。</p>
+      </div>
+      <div class="card">
+        <div class="icon">08</div>
+        <h3>自动化</h3>
+        <p>宵禁时段自动全体禁言，定时公告发布。到点自动执行，无需值守。</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="smart">
+  <div class="wrap">
+    <h2>核心：混合模式的智能识别</h2>
+    <p class="sub">指令秒回不耗 token，模糊表述交给 AI —— 既快又聪明。</p>
+
+    <div class="chat">
+      <div class="bubble user">张三又在群里发广告，处理一下</div>
+      <div class="bubble bot">⚠️ 检测到广告链接，已撤回并禁言 10分钟（累计警告 1 次）</div>
+      <div class="bubble user">把刚才那个刷屏的也禁言半小时</div>
+      <div class="bubble bot ok">✅ 已禁言 李四 30分钟</div>
+      <div class="bubble user">@王五 再发链接就把你踢了</div>
+      <div class="bubble bot warn">⚠️ 即将执行高风险操作：踢出 王五，原因：发链接<br>请在 60 秒内回复「确认」执行，或「取消」放弃。</div>
+      <div class="bubble user">确认</div>
+      <div class="bubble bot">✅ 已将 王五 踢出（原因：发链接）</div>
+    </div>
+
+    <div style="margin-top:26px" class="term">
+      <div><span class="c">消息进来</span></div>
+      <div> ├─ 是 /指令 &nbsp;→ <span class="k">直接执行</span>（零 token，毫秒级）</div>
+      <div> └─ 像在指挥机器人 → 交给 <span class="k">LLM 解析意图</span></div>
+      <div> &nbsp;&nbsp;&nbsp;&nbsp;├─ 收集上下文（引用 / 最近发言 / @对象 / 群成员）</div>
+      <div> &nbsp;&nbsp;&nbsp;&nbsp;├─ 输出结构化 JSON</div>
+      <div> &nbsp;&nbsp;&nbsp;&nbsp;├─ 目标解析（名字模糊匹配 / 刷屏者推断）</div>
+      <div> &nbsp;&nbsp;&nbsp;&nbsp;├─ 权限校验</div>
+      <div> &nbsp;&nbsp;&nbsp;&nbsp;└─ 高风险操作 → <span class="k">确认后执行</span></div>
+    </div>
+
+    <div class="grid g3" style="margin-top:22px">
+      <div class="card">
+        <h3>四路目标定位</h3>
+        <p>引用消息 &gt; @某人 &gt; QQ号 &gt; 名字模糊匹配，自动选择最准确的一种。</p>
+      </div>
+      <div class="card">
+        <h3>上下文推断</h3>
+        <p>结合最近发言记录，理解「刚才刷屏的」「发广告的那个」到底指谁。</p>
+      </div>
+      <div class="card">
+        <h3>高危确认</h3>
+        <p>踢人、拉黑等不可逆操作先复述再执行，杜绝 AI 误判造成损失。</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="compare">
+  <div class="wrap">
+    <h2>相对传统群管插件的改进</h2>
+    <p class="sub">站在成熟方案的肩膀上，重新设计交互体验。</p>
+    <table class="cmp">
+      <thead>
+        <tr><th>维度</th><th>传统做法</th><th>磐石</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>时长输入</td>
+          <td><code>/禁言 600 @某人</code>（要心算秒数）</td>
+          <td class="new">/禁言 @某人 10m（支持 30s/2h/1d）</td>
+        </tr>
+        <tr>
+          <td>操作目标</td>
+          <td>主要靠 @</td>
+          <td class="new">引用 &gt; @ &gt; QQ号 &gt; 名字模糊匹配</td>
+        </tr>
+        <tr>
+          <td>交互方式</td>
+          <td>只认固定指令</td>
+          <td class="new">自然语言，听得懂人话</td>
+        </tr>
+        <tr>
+          <td>违规处理</td>
+          <td>直接禁言</td>
+          <td class="new">三级警告，累计自动升级</td>
+        </tr>
+        <tr>
+          <td>入群欢迎</td>
+          <td>固定文案</td>
+          <td class="new">多模板 + 变量 + 图片 + 算术验证</td>
+        </tr>
+        <tr>
+          <td>数据存储</td>
+          <td>依赖数据库</td>
+          <td class="new">JSON 文件，零依赖即装即用</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section id="install">
+  <div class="wrap">
+    <h2>三步装好</h2>
+    <p class="sub">需要 AstrBot 4.5+ 与 NapCat（OneBot v11）协议端。</p>
+
+    <div class="step">
+      <div class="n">1</div>
+      <div class="body">
+        <h3>拉取插件</h3>
+        <p>进入 AstrBot 的插件目录，克隆本仓库。</p>
+        <div class="term">
+          <div>cd AstrBot/data/plugins</div>
+          <div>git clone https://github.com/yuntaojinghong/astrbot_plugin_panshi.git</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="step">
+      <div class="n">2</div>
+      <div class="body">
+        <h3>重启并配置</h3>
+        <p>重启 AstrBot，在 WebUI 插件页找到「磐石 · 智能群管」，按分组调整配置：基础设置、反垃圾防护、入群欢迎、警告系统、智能识别、群活跃、自动化。</p>
+      </div>
+    </div>
+
+    <div class="step">
+      <div class="n">3</div>
+      <div class="body">
+        <h3>开始使用</h3>
+        <p>发送 <code>/群管帮助</code> 查看完整指令，或直接对机器人说人话。</p>
+        <div class="term">
+          <div><span class="k">/禁言</span> @某人 10m &nbsp;&nbsp;&nbsp;<span class="c">禁言十分钟</span></div>
+          <div><span class="k">/踢</span> @某人 发广告 &nbsp;&nbsp;&nbsp;<span class="c">踢出并注明原因</span></div>
+          <div><span class="k">/警告</span> @某人 刷屏 &nbsp;&nbsp;&nbsp;<span class="c">记一次违规</span></div>
+          <div><span class="k">/净化</span> 30 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="c">批量撤回最近30条</span></div>
+          <div><span class="k">/签到</span> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="c">每日签到得积分</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <p>
+      <strong>磐石 · 智能群管</strong> · 采用 GPL-3.0 许可 ·
+      功能设计参考 <a href="https://github.com/Zhalslar/astrbot_plugin_qqadmin" target="_blank">astrbot_plugin_qqadmin</a>（作者 Zhalslar）
+    </p>
+    <p style="margin-top:8px">
+      <a href="https://github.com/yuntaojinghong/astrbot_plugin_panshi" target="_blank">GitHub 仓库</a> ·
+      <a href="https://github.com/yuntaojinghong/astrbot_plugin_panshi/issues" target="_blank">问题反馈</a>
+    </p>
+  </div>
+</footer>
+
+</body>
+</html>

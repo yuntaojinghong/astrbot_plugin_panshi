@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+
+# 虚拟环境
+venv/
+.venv/
+env/
+
+# 测试/缓存
+.pytest_cache/
+.coverage
+htmlcov/
+.ruff_cache/
+
+# 本地数据（插件运行时生成）
+panshi_data/
+plugin_data/
+
+# 编辑器
+.vscode/
+.idea/
+*.swp
+
+# 系统
+.DS_Store
+Thumbs.db

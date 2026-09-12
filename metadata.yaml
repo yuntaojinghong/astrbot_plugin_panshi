@@ -1,0 +1,10 @@
+name: astrbot_plugin_panshi
+display_name: 磐石 · 智能群管
+desc: 稳如磐石的 QQ 群管家。听得懂人话、会智能处理，集基础管理、反垃圾防护、智能入群、警告系统、群活跃与自动化于一体。
+short_desc: 听得懂人话的 QQ 群管家，稳如磐石。
+version: v1.0.0
+author: WorkBuddy
+repo: ""
+astrbot_version: ">=4.5.0"
+support_platforms:
+  - aiocqhttp
