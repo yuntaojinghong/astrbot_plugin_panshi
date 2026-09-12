@@ -107,8 +107,12 @@ class GroupInfoCache:
         """遍历平台适配器，调用 get_group_list。"""
         platforms = self._iter_platforms()
         if not platforms:
-            return [], "未找到可用的平台适配器，请确认已连接 NapCat"
+            return [], (
+                "未找到平台适配器。请在 AstrBot「平台」页确认已添加并启用 "
+                "aiocqhttp 适配器（NapCat 反向 WebSocket）"
+            )
 
+        reachable = 0          # 拿到了客户端对象的适配器数
         last_err = ""
         for platform in platforms:
             client = None
@@ -119,11 +123,13 @@ class GroupInfoCache:
                 last_err = str(e)
                 continue
             if client is None:
+                # 适配器已加载但尚未建立连接（NapCat 没连上）
                 continue
 
             call = getattr(client, "call_action", None)
             if not callable(call):
                 continue
+            reachable += 1
             try:
                 resp = await call("get_group_list")
             except Exception as e:
@@ -135,25 +141,72 @@ class GroupInfoCache:
                 return groups, ""
             last_err = last_err or "协议端返回了无法识别的数据"
 
+        if reachable == 0:
+            return [], (
+                "已找到平台适配器，但尚未与协议端建立连接。"
+                "请检查 NapCat 是否已连接 AstrBot（反向 WebSocket 地址/Token）"
+            )
         return [], last_err or "未能从协议端获取群列表"
 
     def _iter_platforms(self) -> list[Any]:
-        """枚举所有平台实例。"""
-        out: list[Any] = []
-        try:
-            pm = getattr(self.context, "platform_manager", None)
-            if pm is None:
+        """枚举所有平台实例。
+
+        AstrBot 的 ``PlatformManager`` 把已加载的适配器实例存放在
+        ``platform_insts`` 列表中，并提供同步访问器 ``get_insts()``。
+        这里按 方法 → 属性 的顺序做多层兜底，兼容不同版本。
+        """
+        pm = getattr(self.context, "platform_manager", None)
+        if pm is None:
+            return []
+
+        # 1) 官方访问器 get_insts()（同步，返回 list[Platform]）
+        for name in ("get_insts", "get_platform_insts"):
+            getter = getattr(pm, name, None)
+            if not callable(getter):
+                continue
+            try:
+                got = getter()
+            except Exception as e:
+                logger.warning(f"[磐石] 调用 platform_manager.{name}() 失败: {e}")
+                continue
+            out = self._collect(got)
+            if out:
                 return out
-            instances = getattr(pm, "get_instances", None)
-            if callable(instances):
-                got = instances()
-                if isinstance(got, dict):
-                    out.extend(got.values())
-                elif isinstance(got, (list, tuple)):
-                    out.extend(got)
-        except Exception as e:
-            logger.warning(f"[磐石] 枚举平台实例失败: {e}")
-        return out
+
+        # 2) 直接读属性
+        for name in ("platform_insts", "platforms", "insts"):
+            got = getattr(pm, name, None)
+            if got is None or callable(got):
+                continue
+            out = self._collect(got)
+            if out:
+                return out
+
+        logger.warning(
+            "[磐石] 未能从 platform_manager 枚举到平台适配器，"
+            "请确认 AstrBot 已连接 NapCat（OneBot v11）"
+        )
+        return []
+
+    @staticmethod
+    def _collect(got: Any) -> list[Any]:
+        """把各种容器形态统一成平台实例列表。"""
+        if got is None:
+            return []
+        if isinstance(got, dict):
+            # {"aiocqhttp": inst} 或 {"id": {"inst": ...}}
+            out: list[Any] = []
+            for val in got.values():
+                if isinstance(val, dict):
+                    inst = val.get("inst")
+                    if inst is not None:
+                        out.append(inst)
+                elif val is not None:
+                    out.append(val)
+            return out
+        if isinstance(got, (list, tuple, set)):
+            return [x for x in got if x is not None]
+        return []
 
     @staticmethod
     def _normalize(g: dict) -> dict:

@@ -177,9 +177,12 @@ class _Ctx:
     @property
     def platform_manager(self):
         class _PM:
+            platform_insts = []
+
             @staticmethod
-            def get_instances():
-                return {}
+            def get_insts():
+                # 对齐 AstrBot PlatformManager.get_insts()（同步，返回 list）
+                return []
 
         return _PM()
 
@@ -327,21 +330,55 @@ def test_group_cache():
             return _Client()
 
     class _PM:
-        @staticmethod
-        def get_instances():
-            return {"aiocqhttp": _Platform()}
+        def __init__(self, insts):
+            self.platform_insts = insts
+
+        def get_insts(self):
+            return self.platform_insts
 
     class _C:
-        platform_manager = _PM()
+        def __init__(self, pm):
+            self.platform_manager = pm
 
-    cache = GroupInfoCache(_C())
+    # 正常路径：get_insts() 返回 list[Platform]
+    cache = GroupInfoCache(_C(_PM([_Platform()])))
     groups = asyncio.run(cache.list_groups(force=True))
     assert len(groups) == 2
     # 应按人数降序
     assert groups[0]["group_id"] == "2", groups
     assert groups[0]["group_name"] == "大群"
     assert groups[1]["member_count"] == 3
+    assert cache.last_error == "", cache.last_error
     print("GROUP_CACHE_OK")
+
+    # 兜底路径：没有 get_insts()，只有 platform_insts 属性
+    class _PM2:
+        def __init__(self, insts):
+            self.platform_insts = insts
+
+    cache2 = GroupInfoCache(_C(_PM2([_Platform()])))
+    groups = asyncio.run(cache2.list_groups(force=True))
+    assert len(groups) == 2, groups
+    print("GROUP_CACHE_FALLBACK_OK")
+
+    # 适配器存在但未连接协议端 -> 应给出「未连接」而非「未找到适配器」
+    class _Offline:
+        @staticmethod
+        def get_client():
+            return None
+
+    cache3 = GroupInfoCache(_C(_PM([_Offline()])))
+    groups = asyncio.run(cache3.list_groups(force=True))
+    assert groups == []
+    assert "尚未与协议端建立连接" in cache3.last_error, cache3.last_error
+    print("GROUP_CACHE_OFFLINE_MSG_OK")
+
+    # 完全没有适配器 -> 应提示去启用 aiocqhttp
+    cache4 = GroupInfoCache(_C(_PM([])))
+    groups = asyncio.run(cache4.list_groups(force=True))
+    assert groups == []
+    assert "未找到平台适配器" in cache4.last_error, cache4.last_error
+    print("GROUP_CACHE_EMPTY_MSG_OK")
 
 
 def test_page_service(inst):

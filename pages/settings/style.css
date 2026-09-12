@@ -190,9 +190,23 @@ body {
   padding: 11px 14px;
   border-radius: var(--radius);
   font-size: 13px;
+  display: block;
+}
+.alert-head {
   display: flex;
   align-items: flex-start;
   gap: 8px;
+}
+.alert-hints {
+  margin: 9px 0 0;
+  padding-left: 20px;
+  display: grid;
+  gap: 4px;
+  line-height: 1.6;
+  opacity: 0.92;
+}
+.alert-hints li {
+  list-style: disc;
 }
 .alert.error {
   background: var(--danger-soft);
@@ -374,6 +388,16 @@ body {
   color: var(--fg-3);
   text-align: center;
   line-height: 1.7;
+}
+.sidebar-tip {
+  margin: 12px 13px 0;
+  padding: 9px 11px;
+  font-size: 11.5px;
+  line-height: 1.75;
+  color: var(--fg-3);
+  background: var(--bg-soft);
+  border: 1px dashed var(--border);
+  border-radius: 8px;
 }
 
 /* ---------- 内容区 ---------- */

@@ -56,21 +56,59 @@ function toast(text, type = "ok") {
   }, 2400);
 }
 
-function showError(msg) {
+function showError(msg, hints) {
   const box = $("#alertBox");
   box.innerHTML = "";
   if (!msg) return;
   const node = el("div", { class: "alert error" });
-  node.appendChild(el("strong", { text: "出错了：" }));
-  node.appendChild(document.createTextNode(msg));
-  const close = el("button", {
-    class: "btn tiny",
-    text: "关闭",
-    style: "margin-left:auto",
-    onClick: () => (box.innerHTML = ""),
-  });
-  node.appendChild(close);
+  const head = el("div", { class: "alert-head" });
+  head.appendChild(el("strong", { text: "出错了：" }));
+  head.appendChild(document.createTextNode(msg));
+  head.appendChild(
+    el("button", {
+      class: "btn tiny",
+      text: "关闭",
+      style: "margin-left:auto",
+      onClick: () => (box.innerHTML = ""),
+    })
+  );
+  node.appendChild(head);
+
+  const list = hints || groupErrorHints(msg);
+  if (list && list.length) {
+    const ul = el("ul", { class: "alert-hints" });
+    for (const h of list) ul.appendChild(el("li", { text: h }));
+    node.appendChild(ul);
+  }
   box.appendChild(node);
+}
+
+/** 针对「群列表拉取失败」给出可操作的排查步骤。 */
+function groupErrorHints(msg) {
+  const text = String(msg || "");
+  if (text.includes("未找到平台适配器")) {
+    return [
+      "打开 AstrBot 控制台 →「平台」页，确认已添加 aiocqhttp 适配器且已启用。",
+      "适配器类型需为 aiocqhttp（适用于 NapCat / OneBot v11，反向 WebSocket）。",
+      "保存后重启 AstrBot，回到本页面点击「同步」重试。",
+    ];
+  }
+  if (text.includes("尚未与协议端建立连接")) {
+    return [
+      "NapCat 已启动，但还没连上 AstrBot——两个程序之间是「NapCat 主动连接 AstrBot」。",
+      "在 NapCat 的「网络配置」中新增一个「WebSocket 客户端」，URL 填 ws://<AstrBot 地址>:<端口>/ws。",
+      "端口取 AstrBot aiocqhttp 适配器配置里的「反向 WebSocket 端口」（默认 6199）。",
+      "若设置了 Token，两边必须填一致；NapCat 侧的 Access Token 与 AstrBot 的 ws_reverse_token 要相同。",
+      "注意：NapCat 容器/面板内要用宿主机可达的 IP，不能用 127.0.0.1（除非同机同网络命名空间）。",
+    ];
+  }
+  if (text.includes("无法识别") || text.includes("未能从协议端")) {
+    return [
+      "协议端返回了异常数据，可在 AstrBot 日志中查看 [磐石] 相关输出定位原因。",
+      "确认 NapCat 版本支持 OneBot v11 的 get_group_list 接口。",
+    ];
+  }
+  return [];
 }
 
 function setOnline(ok) {
@@ -346,7 +384,9 @@ function renderGroups() {
         class: "group-empty",
         text: state.keyword
           ? "没有匹配的群"
-          : "未发现群聊。请确认协议端（NapCat）已连接，然后点上方「同步」。",
+          : state.meta.group_cache_error
+            ? "未能获取群列表，请按上方红色提示排查后点「同步」。"
+            : "未发现群聊。请确认协议端（NapCat）已连接，然后点上方「同步」。",
       })
     );
     return;
