@@ -413,6 +413,146 @@ footer strong { color: var(--fg2); font-weight: 600; }
 footer a { color: var(--accent); text-decoration: none; transition: .2s; }
 footer a:hover { color: var(--accent2); }
 
+/* ===== 动效：英雄区入场 ===== */
+@keyframes riseIn {
+  from { opacity: 0; transform: translateY(26px); }
+  to   { opacity: 1; transform: none; }
+}
+header .tag  { animation: riseIn .7s .05s cubic-bezier(.22,.61,.36,1) both; }
+header h1    { animation: riseIn .8s .15s cubic-bezier(.22,.61,.36,1) both; }
+header .lede { animation: riseIn .8s .28s cubic-bezier(.22,.61,.36,1) both; }
+header .btns { animation: riseIn .8s .42s cubic-bezier(.22,.61,.36,1) both; }
+header .term { animation: riseIn .9s .58s cubic-bezier(.22,.61,.36,1) both; }
+
+/* ===== 动效：标题流光 ===== */
+h1 em {
+  background-size: 200% 100%;
+  animation: hueShift 6s ease-in-out infinite alternate;
+}
+@keyframes hueShift {
+  from { background-position: 0% 50%; }
+  to   { background-position: 100% 50%; }
+}
+
+/* ===== 动效：品牌呼吸 ===== */
+.brand .dot { animation: dotGlow 3s ease-in-out infinite; }
+@keyframes dotGlow {
+  0%,100% { box-shadow: 0 0 14px rgba(139,124,255,.9); }
+  50%     { box-shadow: 0 0 28px rgba(77,201,255,.9); }
+}
+
+/* ===== 动效：背景光球漂浮 ===== */
+@keyframes floatA { 0%,100% { transform: translate(0,0); } 50% { transform: translate(46px,34px); } }
+@keyframes floatB { 0%,100% { transform: translate(0,0); } 50% { transform: translate(-38px,44px); } }
+@keyframes floatC { 0%,100% { transform: translate(0,0); } 50% { transform: translate(-30px,-40px); } }
+.orb.a { animation: floatA 18s ease-in-out infinite; }
+.orb.b { animation: floatB 22s ease-in-out infinite; }
+.orb.c { animation: floatC 26s ease-in-out infinite; }
+
+/* ===== 动效：滚动浮现 ===== */
+.reveal { transition: opacity .75s cubic-bezier(.22,.61,.36,1), transform .75s cubic-bezier(.22,.61,.36,1); transition-delay: var(--rd, 0s); }
+.reveal:not(.in) { opacity: 0; transform: translateY(28px); }
+.reveal.in { opacity: 1; transform: translateY(0); }
+/* 浮现结束后不抢 hover 位移 */
+.card.reveal.in:hover { transform: translateY(-3px); }
+.dl a.reveal.in:hover { transform: translateY(-2px); }
+
+/* ===== 动效：卡片鼠标跟随光斑 ===== */
+.card::after {
+  content: ""; position: absolute; inset: 0; border-radius: inherit;
+  opacity: 0; transition: opacity .35s; pointer-events: none;
+  background: radial-gradient(220px circle at var(--mx,50%) var(--my,50%),
+    rgba(139,124,255,.14), transparent 65%);
+}
+.card:hover::after { opacity: 1; }
+
+/* ===== 动效：主按钮流光 ===== */
+.btn.primary::after {
+  content: ""; position: absolute; top: 0; left: -80%;
+  width: 45%; height: 100%;
+  background: linear-gradient(100deg, transparent, rgba(255,255,255,.4), transparent);
+  transform: skewX(-22deg);
+  animation: shine 4.2s ease-in-out 1.4s infinite;
+}
+@keyframes shine { 0% { left: -80%; } 45%,100% { left: 150%; } }
+
+/* ===== 动效：终端逐行亮起 ===== */
+header .term .body > div { opacity: 0; animation: riseIn .5s cubic-bezier(.22,.61,.36,1) both; }
+header .term .body > div:nth-child(1) { animation-delay: .85s; }
+header .term .body > div:nth-child(2) { animation-delay: 1.35s; }
+header .term .body > div:nth-child(3) { animation-delay: 1.85s; }
+header .term .body > div:nth-child(4) { animation-delay: 2.35s; }
+.caret {
+  display: inline-block; width: 8px; height: 14px; margin-left: 7px;
+  vertical-align: -2px; background: var(--accent2);
+  animation: blink 1s steps(1) infinite;
+}
+@keyframes blink { 50% { opacity: 0; } }
+
+/* ===== 动效：聊天气泡逐条弹出 ===== */
+.chat.seq .bubble { opacity: 0; }
+.chat.seq.play .bubble {
+  animation: bubbleIn .55s cubic-bezier(.34,1.4,.44,1) both;
+  animation-delay: var(--bd, 0s);
+}
+@keyframes bubbleIn {
+  from { opacity: 0; transform: translateY(16px) scale(.96); }
+  to   { opacity: 1; transform: none; }
+}
+
+/* ===== 动效：导航滚动高亮 ===== */
+nav a.act { color: var(--fg); background: var(--panel-hi); }
+
+/* ===== 动效：数字滚动 ===== */
+.k[data-count] { font-variant-numeric: tabular-nums; }
+
+/* ===== 动效：面板开关微光 ===== */
+.mock-sw.on { box-shadow: 0 0 12px rgba(139,124,255,.55); }
+
+/* ===== 功能卡展开详情 ===== */
+.card.more { cursor: pointer; }
+.card.more:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.card .card-more {
+  max-height: 0; opacity: 0; overflow: hidden;
+  transition: max-height .5s cubic-bezier(.22,.61,.36,1), opacity .4s, margin .5s cubic-bezier(.22,.61,.36,1);
+}
+.card.open .card-more { max-height: 560px; opacity: 1; margin-top: 12px; }
+.card-more-in { border-top: 1px dashed var(--line); padding-top: 12px; }
+.card-more-in ul { list-style: none; }
+.card-more-in li {
+  position: relative; padding: 4px 0 4px 16px;
+  font-size: 13px; color: var(--fg2); line-height: 1.65;
+}
+.card-more-in li::before {
+  content: ""; position: absolute; left: 2px; top: 12px;
+  width: 5px; height: 5px; border-radius: 50%;
+  background: var(--accent); box-shadow: 0 0 6px rgba(139,124,255,.8);
+}
+.card-more-in code {
+  font-family: var(--mono); font-size: 11.5px;
+  background: rgba(139,124,255,.13); color: #c3b9ff;
+  padding: 1px 5px; border-radius: 4px;
+}
+.card-hint {
+  display: flex; align-items: center; gap: 6px; margin-top: 12px;
+  font-size: 11.5px; color: var(--fg3); letter-spacing: .04em;
+}
+.card-hint i { font-style: normal; color: var(--accent); font-size: 10px; display: inline-block; transition: transform .35s; }
+.card.open .card-hint { color: var(--accent); }
+.card.open .card-hint i { transform: rotate(180deg); }
+
+/* ===== 动效：减弱动态偏好 ===== */
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  *, *::before, *::after {
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important;
+  }
+  .reveal:not(.in) { opacity: 1; transform: none; }
+  .chat.seq .bubble { opacity: 1; }
+}
+
 @media (max-width: 640px) {
   h1 { font-size: 34px; }
   h2 { font-size: 24px; }
@@ -470,7 +610,7 @@ footer a:hover { color: var(--accent2); }
         <div><span class="c">$</span> cd AstrBot/data/plugins</div>
         <div><span class="c">$</span> git clone https://github.com/yuntaojinghong/astrbot_plugin_panshi.git</div>
         <div><span class="s">✓</span> 重启 AstrBot，插件页出现「磐石 · 智能群管」</div>
-        <div><span class="p">→</span> <span class="k">23</span> 个指令 · <span class="k">7</span> 个 LLM 工具 · <span class="k">图形配置面板</span> 已就绪</div>
+        <div><span class="p">→</span> <span class="k" data-count="23">23</span> 个指令 · <span class="k" data-count="7">7</span> 个 LLM 工具 · <span class="k">图形配置面板</span> 已就绪</div>
       </div>
     </div>
   </div>
@@ -550,17 +690,41 @@ footer a:hover { color: var(--accent2); }
     </div>
 
     <div class="grid g3" style="margin-top:22px">
-      <div class="card">
+      <div class="card more">
         <h3>自动识别群聊</h3>
         <p>启动后自动拉取机器人所在的所有群，带群名、群号、人数与机器人角色，支持搜索与一键同步。</p>
+        <div class="card-more"><div class="card-more-in">
+<ul>
+<li>启动与进群时自动调用 OneBot 接口拉取群列表</li>
+<li>显示群名、群号、人数与机器人角色（群主 / 管理员 / 成员）</li>
+<li>支持手动刷新与搜索定位，多账号协议端逐个探测</li>
+</ul>
+</div></div>
+<div class="card-hint"><span>详细说明</span><i>▼</i></div>
       </div>
-      <div class="card">
+      <div class="card more">
         <h3>按群独立配置</h3>
         <p>默认所有群继承全局模板。少数特殊群可「改为独立配置」单独设置，随时「恢复默认」回到继承状态。</p>
+        <div class="card-more"><div class="card-more-in">
+<ul>
+<li>默认全部群继承全局模板，配置文件只存差异，干净不冗余</li>
+<li>特殊群一键改为独立配置，随时恢复默认继承</li>
+<li>支持单群一键重置，改坏了不怕</li>
+</ul>
+</div></div>
+<div class="card-hint"><span>详细说明</span><i>▼</i></div>
       </div>
-      <div class="card">
+      <div class="card more">
         <h3>每项都有说明</h3>
         <p>47 个配置项全部配中文标签与提示，数值项带推荐范围，不用去翻文档猜字段含义。</p>
+        <div class="card-more"><div class="card-more-in">
+<ul>
+<li>50 个配置项分七组，全部中文标签 + 说明文字</li>
+<li>数值项带推荐范围滑块，保存即生效</li>
+<li>面板另有连接诊断、配置导出 / 导入与 30 秒自动刷新</li>
+</ul>
+</div></div>
+<div class="card-hint"><span>详细说明</span><i>▼</i></div>
       </div>
     </div>
   </div>
@@ -572,45 +736,117 @@ footer a:hover { color: var(--accent2); }
     <h2>七类功能，覆盖群管全场景</h2>
     <p class="sub">每个模块独立开关，按需启用，不干扰正常聊天。</p>
     <div class="grid g2">
-      <div class="card">
+      <div class="card more">
         <div class="icon">01</div>
         <h3>基础管理</h3>
         <p>禁言 / 解禁 / 全体禁言 / 踢人 / 拉黑 / 撤回 / 净化 / 改名片 / 头衔 / 管理员任免 / 群名 / 群公告 / 群精华。</p>
+        <div class="card-more"><div class="card-more-in">
+<ul>
+<li>时长支持人性化单位：<code>30s</code> <code>10m</code> <code>2h</code> <code>1d</code>，不用再心算秒数</li>
+<li>目标定位四选一：引用消息 &gt; @某人 &gt; QQ号 &gt; 名字模糊匹配</li>
+<li><code>/禁言</code> <code>/解禁</code> <code>/全体禁言</code> <code>/踢</code> <code>/拉黑</code> <code>/撤回</code> <code>/净化</code> 等 13 个指令全覆盖</li>
+<li><code>/踢</code> <code>/拉黑</code> 等高危操作支持附带原因，机器人复述后执行并留痕</li>
+</ul>
+</div></div>
+<div class="card-hint"><span>详细说明</span><i>▼</i></div>
       </div>
-      <div class="card">
+      <div class="card more">
         <div class="icon">02</div>
         <h3>反垃圾防护</h3>
         <p>违禁词（支持正则）、刷屏检测、广告链接拦截、复读打断。命中自动撤回 + 禁言 + 记警告。</p>
+        <div class="card-more"><div class="card-more-in">
+<ul>
+<li>违禁词支持普通关键词与正则表达式，命中即 撤回 + 禁言 + 记警告，三个动作均可单独开关</li>
+<li>刷屏检测：时间窗 + 条数双参数可调（默认 10 秒 8 条），可触发打断与自动处罚</li>
+<li>广告链接识别常见推广域名与邀请码模式，白名单域名放行</li>
+<li>复读打断：识别恶意复读接龙，及时掐断刷屏氛围</li>
+</ul>
+</div></div>
+<div class="card-hint"><span>详细说明</span><i>▼</i></div>
       </div>
-      <div class="card">
+      <div class="card more">
         <div class="icon">03</div>
         <h3>入群欢迎（增强）</h3>
         <p>多模板随机、变量替换 <code>{at}{昵称}{群名}{人数}{时间}</code>、支持图片与延时发送。</p>
+        <div class="card-more"><div class="card-more-in">
+<ul>
+<li>多模板随机轮播，每天进群看到不一样的欢迎语</li>
+<li>变量替换：<code>{at}</code> <code>{昵称}</code> <code>{群名}</code> <code>{人数}</code> <code>{时间}</code> 自由组合</li>
+<li>支持图片 URL 图文混排，欢迎语更有温度</li>
+<li>可设置延时发送（如进群 3 秒后），每个群可用独立模板</li>
+</ul>
+</div></div>
+<div class="card-hint"><span>详细说明</span><i>▼</i></div>
       </div>
-      <div class="card">
+      <div class="card more">
         <div class="icon">04</div>
         <h3>算术验证</h3>
         <p>新人答对算数题才通过，超时自动拒绝。有效拦截广告机器人批量进群。</p>
+        <div class="card-more"><div class="card-more-in">
+<ul>
+<li>新人进群自动出题，限时作答：答对放行，超时或答错自动移出</li>
+<li>题目难度（位数范围）与超时时长均可配置</li>
+<li>可选验证失败后自动拉黑，拦截批量注册的小号</li>
+<li>对广告机器人批量进群几乎是零误放的拦截方案</li>
+</ul>
+</div></div>
+<div class="card-hint"><span>详细说明</span><i>▼</i></div>
       </div>
-      <div class="card">
+      <div class="card more">
         <div class="icon">05</div>
         <h3>进群审核</h3>
         <p>白词自动批准、黑词自动拒绝、未命中策略可选、黑名单管理、退群通知与拉黑。</p>
+        <div class="card-more"><div class="card-more-in">
+<ul>
+<li>白词命中自动批准，黑词命中自动拒绝并通知管理员</li>
+<li>未命中任何词时可选择策略：人工审核 / 自动批准 / 自动拒绝</li>
+<li>黑名单 QQ 永久拒绝入群申请</li>
+<li>成员退群可发通知提醒，并可选自动拉黑防止反复进群</li>
+</ul>
+</div></div>
+<div class="card-hint"><span>详细说明</span><i>▼</i></div>
       </div>
-      <div class="card">
+      <div class="card more">
         <div class="icon">06</div>
         <h3>三级警告</h3>
         <p>违规累计自动升级：达阈值自动禁言 → 再达阈值自动踢出。支持撤销与历史查询。</p>
+        <div class="card-more"><div class="card-more-in">
+<ul>
+<li>每次违规记一条警告，附带原因与操作人，有据可查</li>
+<li>达到第一阈值自动禁言（时长可配），达到第二阈值自动踢出，逐级升级</li>
+<li><code>/警告记录 @某人</code> 随时查询历史，<code>/撤销警告</code> 可回退误判</li>
+<li>警告数据按群独立存储，互不干扰</li>
+</ul>
+</div></div>
+<div class="card-hint"><span>详细说明</span><i>▼</i></div>
       </div>
-      <div class="card">
+      <div class="card more">
         <div class="icon">07</div>
         <h3>群活跃</h3>
         <p>每日签到、积分系统、积分榜与发言榜。零数据库依赖，JSON 文件持久化。</p>
+        <div class="card-more"><div class="card-more-in">
+<ul>
+<li><code>/签到</code> 每日一次得积分，连续签到有递增加成</li>
+<li>积分榜、发言榜一键查看，活跃度一目了然</li>
+<li>纯 JSON 文件持久化，零数据库依赖，备份就是拷文件</li>
+<li>签到分、加成上限等数值均可在面板调整</li>
+</ul>
+</div></div>
+<div class="card-hint"><span>详细说明</span><i>▼</i></div>
       </div>
-      <div class="card">
+      <div class="card more">
         <div class="icon">08</div>
         <h3>自动化</h3>
         <p>宵禁时段自动全体禁言，定时公告发布。到点自动执行，无需值守。</p>
+        <div class="card-more"><div class="card-more-in">
+<ul>
+<li>宵禁：按时段自动全体禁言、出段自动解除，支持跨零点（如 <code>23:30-07:00</code>）</li>
+<li>定时公告：按设定间隔自动向所有纳管群推送公告内容</li>
+<li>群列表动态刷新，新进群即刻纳管，退群自动移除</li>
+<li>面板改配置即时生效，无需重启 AstrBot</li>
+</ul>
+</div></div>
+<div class="card-hint"><span>详细说明</span><i>▼</i></div>
       </div>
     </div>
   </div>
@@ -650,17 +886,41 @@ footer a:hover { color: var(--accent2); }
     </div>
 
     <div class="grid g3" style="margin-top:22px">
-      <div class="card">
+      <div class="card more">
         <h3>四路目标定位</h3>
         <p>引用消息 &gt; @某人 &gt; QQ号 &gt; 名字模糊匹配，自动选择最准确的一种。</p>
+        <div class="card-more"><div class="card-more-in">
+<ul>
+<li>解析优先级：引用消息 &gt; @某人 &gt; 消息中的 QQ 号 &gt; 名字模糊匹配</li>
+<li>遇到重名时结合最近发言与活跃度消歧</li>
+<li>目标不存在或权限不足时明确提示原因，不静默失败</li>
+</ul>
+</div></div>
+<div class="card-hint"><span>详细说明</span><i>▼</i></div>
       </div>
-      <div class="card">
+      <div class="card more">
         <h3>上下文推断</h3>
         <p>结合最近发言记录，理解「刚才刷屏的」「发广告的那个」到底指谁。</p>
+        <div class="card-more"><div class="card-more-in">
+<ul>
+<li>「刚才刷屏的」「发广告的那个」结合最近消息缓存直接定位到人</li>
+<li>谁触发过刷屏检测、谁的消息被撤回过，都记录在案可推断</li>
+<li>缓存定期自动清理，长期运行不膨胀</li>
+</ul>
+</div></div>
+<div class="card-hint"><span>详细说明</span><i>▼</i></div>
       </div>
-      <div class="card">
+      <div class="card more">
         <h3>高危确认</h3>
         <p>踢人、拉黑等不可逆操作先复述再执行，杜绝 AI 误判造成损失。</p>
+        <div class="card-more"><div class="card-more-in">
+<ul>
+<li>踢人、拉黑等不可逆操作先复述「做什么 + 为什么」</li>
+<li>60 秒内回复「确认」才执行，「取消」或超时自动放弃</li>
+<li>杜绝 AI 误判误伤正常群友</li>
+</ul>
+</div></div>
+<div class="card-hint"><span>详细说明</span><i>▼</i></div>
       </div>
     </div>
   </div>
@@ -786,6 +1046,136 @@ footer a:hover { color: var(--accent2); }
     </p>
   </div>
 </footer>
+
+<script>
+(function () {
+  var reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  /* ===== 1. 滚动浮现 ===== */
+  var targets = document.querySelectorAll(
+    'section .eyebrow, section h2, section .sub, section .card, section .chat, section .term, section .cmp, section .mock, section .dl, section .step'
+  );
+  targets.forEach(function (el) {
+    el.classList.add('reveal');
+    var parent = el.parentElement;
+    var sibs = parent ? Array.prototype.filter.call(parent.children, function (c) {
+      return c.classList && c.classList.contains('reveal');
+    }) : [el];
+    var idx = sibs.indexOf(el);
+    el.style.setProperty('--rd', Math.min(idx * 0.09, 0.45) + 's');
+  });
+  if ('IntersectionObserver' in window) {
+    var io = new IntersectionObserver(function (entries) {
+      entries.forEach(function (e) {
+        if (e.isIntersecting) { e.target.classList.add('in'); io.unobserve(e.target); }
+      });
+    }, { threshold: 0.1, rootMargin: '0px 0px -6% 0px' });
+    targets.forEach(function (el) { io.observe(el); });
+  } else {
+    targets.forEach(function (el) { el.classList.add('in'); });
+  }
+
+  /* ===== 2. 聊天气泡逐条弹出 ===== */
+  var chat = document.querySelector('.chat');
+  if (chat) {
+    chat.classList.add('seq');
+    chat.querySelectorAll('.bubble').forEach(function (b, i) {
+      b.style.setProperty('--bd', (i * 0.38) + 's');
+    });
+    if ('IntersectionObserver' in window && !reduced) {
+      var cio = new IntersectionObserver(function (entries) {
+        entries.forEach(function (e) {
+          if (e.isIntersecting) {
+            setTimeout(function () { chat.classList.add('play'); }, 350);
+            cio.disconnect();
+          }
+        });
+      }, { threshold: 0.25 });
+      cio.observe(chat);
+    } else {
+      chat.classList.add('play');
+    }
+  }
+
+  /* ===== 3. 数字滚动 ===== */
+  document.querySelectorAll('[data-count]').forEach(function (el) {
+    var end = parseInt(el.getAttribute('data-count'), 10);
+    if (isNaN(end)) return;
+    if (!('IntersectionObserver' in window) || reduced) return;
+    var t0 = null, dur = 1100;
+    var tio = new IntersectionObserver(function (entries) {
+      entries.forEach(function (e) {
+        if (!e.isIntersecting) return;
+        tio.disconnect();
+        el.textContent = '0';
+        function tick(ts) {
+          if (t0 === null) t0 = ts;
+          var p = Math.min((ts - t0) / dur, 1);
+          el.textContent = String(Math.round(end * (1 - Math.pow(1 - p, 3))));
+          if (p < 1) requestAnimationFrame(tick);
+        }
+        requestAnimationFrame(tick);
+      });
+    }, { threshold: 0 });
+    tio.observe(el);
+  });
+
+  /* ===== 4. 卡片鼠标跟随光斑 ===== */
+  if (!reduced) {
+    document.querySelectorAll('.card').forEach(function (card) {
+      card.addEventListener('mousemove', function (ev) {
+        var r = card.getBoundingClientRect();
+        card.style.setProperty('--mx', (ev.clientX - r.left) + 'px');
+        card.style.setProperty('--my', (ev.clientY - r.top) + 'px');
+      });
+    });
+  }
+
+  /* ===== 5. 导航滚动高亮 ===== */
+  var links = document.querySelectorAll('nav .links a[href^="#"]');
+  var map = {};
+  links.forEach(function (a) { map[a.getAttribute('href').slice(1)] = a; });
+  if ('IntersectionObserver' in window) {
+    var sio = new IntersectionObserver(function (entries) {
+      entries.forEach(function (e) {
+        var a = map[e.target.id];
+        if (!a) return;
+        if (e.isIntersecting) {
+          links.forEach(function (x) { x.classList.remove('act'); });
+          a.classList.add('act');
+        }
+      });
+    }, { rootMargin: '-40% 0px -55% 0px' });
+    Object.keys(map).forEach(function (id) {
+      var s = document.getElementById(id);
+      if (s) sio.observe(s);
+    });
+  }
+
+  /* ===== 6. 终端光标 ===== */
+  var lastLine = document.querySelector('header .term .body > div:last-child');
+  if (lastLine && !reduced) {
+    var caret = document.createElement('span');
+    caret.className = 'caret';
+    lastLine.appendChild(caret);
+  }
+
+  /* ===== 7. 功能卡展开详情 ===== */
+  document.querySelectorAll('.card.more').forEach(function (card) {
+    card.setAttribute('tabindex', '0');
+    card.setAttribute('role', 'button');
+    card.setAttribute('aria-expanded', 'false');
+    function toggle() {
+      var open = card.classList.toggle('open');
+      card.setAttribute('aria-expanded', open ? 'true' : 'false');
+    }
+    card.addEventListener('click', toggle);
+    card.addEventListener('keydown', function (ev) {
+      if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); toggle(); }
+    });
+  });
+})();
+</script>
 
 </body>
 </html>
