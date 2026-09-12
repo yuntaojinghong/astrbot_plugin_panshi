@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import os
+import re
 
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, filter
@@ -72,7 +73,7 @@ class PanshiPlugin(Star):
         self.ctx = ContextCollector()
         self.intent = IntentParser(self.cfg, self.db, self.ctx)
         self.executor = IntentExecutor(
-            self.cfg, self.db, self.ctx, self.normal, self.warning
+            self.cfg, self.db, self.ctx, self.normal, self.warning, self.automate
         )
 
         # 已解析的群列表（宵禁用）
@@ -94,6 +95,8 @@ class PanshiPlugin(Star):
 
             service = PageService(self.cfg, self.db, self.group_cache)
             self.web = PanshiWebController(context, service)
+            # 面板保存全局配置后，让宵禁等自动化设置立即生效（不用重载插件）
+            self.web.on_config_saved = self._apply_automate_sync
             self.web.register_routes()
         except Exception as e:
             logger.warning(f"[磐石] 配置面板注册失败（不影响群管功能）: {e}")
@@ -135,6 +138,15 @@ class PanshiPlugin(Star):
             self._enabled_groups = [str(g.get("group_id")) for g in groups if g.get("group_id")]
         except Exception as e:
             logger.warning(f"[磐石] 获取群列表失败: {e}")
+
+    async def _apply_automate_sync(self):
+        """配置保存后即时同步宵禁状态（面板保存 / 智能设置共用）。"""
+        try:
+            state = await self.automate.apply_now()
+            if state != "off":
+                logger.info(f"[磐石] 宵禁状态已即时同步: {state}")
+        except Exception as e:
+            logger.warning(f"[磐石] 宵禁即时同步失败: {e}")
 
     async def _send_whole_ban(self, group_id: str, enable: bool):
         """宵禁时对指定群开/关全体禁言。
@@ -481,6 +493,76 @@ class PanshiPlugin(Star):
         else:
             yield event.plain_result(await self.activity.rank_points(event))
 
+    # ========== 指令：宵禁 ==========
+    @filter.command("宵禁", alias={"夜间禁言"})
+    async def cmd_curfew(self, event: AstrMessageEvent, arg: str = ""):
+        """宵禁：/宵禁 状态 | /宵禁 开|关 | /宵禁 23:30-07:00"""
+        if not self._check(event):
+            yield event.plain_result(self._no_perm())
+            return
+        yield event.plain_result(await self._handle_curfew(arg.strip()))
+
+    async def _handle_curfew(self, text: str) -> str:
+        """处理 /宵禁 的四种形态：状态 / 开 / 关 / 时间段。"""
+        if not text or text in ("状态", "查看", "查询"):
+            return self._curfew_status_text()
+
+        if text in ("开", "开启", "打开", "on", "true", "1"):
+            return await self._set_curfew_config({"curfew_enable": True})
+        if text in ("关", "关闭", "停用", "off", "false", "0"):
+            return await self._set_curfew_config({"curfew_enable": False})
+
+        # 时间段：23:30-07:00 / 23:30~07:00 / 23:30 到 07:00 / 23:30 07:00
+        normalized = text.replace("：", ":")
+        times = re.findall(r"(\d{1,2}):([0-5]\d)", normalized)
+        if times:
+            if len(times) < 2:
+                return "❌ 请同时给出开始和结束时间，例如：/宵禁 23:30-07:00"
+            h1, m1 = times[0]
+            h2, m2 = times[1]
+            start, end = f"{int(h1):02d}:{m1}", f"{int(h2):02d}:{m2}"
+            if start == end:
+                return "❌ 宵禁开始和结束时间不能相同。"
+            return await self._set_curfew_config(
+                {"curfew_enable": True, "curfew_start": start, "curfew_end": end}
+            )
+
+        return (
+            "🤔 没看懂参数。用法：\n"
+            "· /宵禁 状态 —— 查看当前设置\n"
+            "· /宵禁 开 或 /宵禁 关\n"
+            "· /宵禁 23:30-07:00 —— 设置时段并开启"
+        )
+
+    async def _set_curfew_config(self, payload: dict) -> str:
+        """写宵禁配置并立即启停后台任务，返回给用户的结果文案。"""
+        try:
+            self.cfg.apply_payload({"automate": payload})
+        except ValueError as e:
+            return f"❌ 参数无效：{e}"
+        await self._apply_automate_sync()
+
+        start = self.cfg.get("automate", "curfew_start", "23:00")
+        end = self.cfg.get("automate", "curfew_end", "07:00")
+        enabled = bool(self.cfg.get("automate", "curfew_enable", False))
+        state = self.automate.is_enforcing()
+        base = f"🌙 宵禁{'已开启' if enabled else '已关闭'} · 时段 {start} ~ {end}"
+        if enabled and state:
+            base += "\n🔴 当前正处于宵禁时段，已自动开启全体禁言。"
+        elif enabled:
+            base += "\n🟢 当前不在宵禁时段，到点会自动全体禁言。"
+        return base
+
+    def _curfew_status_text(self) -> str:
+        enabled = bool(self.cfg.get("automate", "curfew_enable", False))
+        start = self.cfg.get("automate", "curfew_start", "23:00")
+        end = self.cfg.get("automate", "curfew_end", "07:00")
+        if not enabled:
+            return "🌙 宵禁：未开启\n提示：/宵禁 23:00-07:00 可设置时段并开启。"
+        in_window = self.automate.is_in_curfew()
+        state = "🔴 当前正处于宵禁时段（全体禁言中）" if in_window else "🟢 当前不在宵禁时段"
+        return f"🌙 宵禁：已开启 · 时段 {start} ~ {end}\n{state}"
+
     # ========== 指令：帮助 ==========
     @filter.command("群管帮助", alias={"磐石帮助", "群管"})
     async def cmd_help(self, event: AstrMessageEvent):
@@ -606,8 +688,6 @@ class PanshiPlugin(Star):
         """从参数中移除 @/QQ号，得到纯文本内容。"""
         if not arg:
             return ""
-        import re
-
         text = re.sub(r"\[CQ:at,qq=\d+\]", "", arg)
         text = re.sub(r"@\S+", "", text)
         return text.strip()
@@ -649,11 +729,18 @@ HELP_TEXT = """🪨 磐石 · 智能群管
 【群活跃】
 /签到  /积分 [@某人]  /排行 [积分|发言]
 
+【自动化】
+/宵禁 状态          — 查看宵禁设置
+/宵禁 开 | 关       — 开启/关闭宵禁
+/宵禁 23:30-07:00   — 设置时段并开启
+（宵禁时段自动全体禁言，过点自动解除）
+
 【智能交互】
 直接对我说人话即可，例如：
  「把刚才刷屏的禁言十分钟」
  「@张三 再发广告就踢了」
  「全群安静一下，禁言全体1小时」
+ 「宵禁改到23点半到7点」
 （踢人/拉黑等高危操作会先请你确认）
 """
 

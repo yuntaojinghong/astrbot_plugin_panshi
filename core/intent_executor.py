@@ -8,6 +8,8 @@
 
 from __future__ import annotations
 
+import re
+
 try:
     from astrbot.api import logger
 except Exception:
@@ -21,12 +23,14 @@ from ..utils import get_ats, parse_duration
 class IntentExecutor:
     """执行智能识别的结果。"""
 
-    def __init__(self, config, storage, context, normal, warning):
+    def __init__(self, config, storage, context, normal, warning, automate=None):
         self.cfg = config
         self.db = storage
         self.ctx = context
         self.normal = normal
         self.warning = warning
+        # AutomateHandle（可选）：set_curfew 需要它即时启停宵禁任务
+        self.automate = automate
         # 待确认操作: {(gid, uid): {"intent": dict, "expire": ts}}
         self._pending_confirm: dict[tuple, dict] = {}
 
@@ -187,7 +191,66 @@ class IntentExecutor:
             return await self.normal.set_group_name(event, str(intent.get("name", "")))
         if action == "essence":
             return await self.normal.set_essence(event, enable=bool(intent.get("enable", True)))
+        if action == "set_curfew":
+            return await self.set_curfew(intent)
         return None
+
+    # ========== 宵禁设置（自然语言） ==========
+    async def set_curfew(self, intent: dict) -> str:
+        """处理 set_curfew 意图：写配置 + 立即启停宵禁任务。
+
+        支持「宵禁改到23点半到7点」「开启宵禁」「关闭宵禁」等说法；
+        只带部分参数时，未提及的项保持原值。
+        """
+        payload: dict = {}
+        enable = intent.get("enable")
+        if isinstance(enable, bool):
+            payload["curfew_enable"] = enable
+
+        for key in ("start", "end"):
+            raw = intent.get(key)
+            if raw in (None, ""):
+                continue
+            norm = _norm_hhmm(raw)
+            if norm is None:
+                return f"❌ 宵禁{ '开始' if key == 'start' else '结束' }时间「{raw}」看不懂，请用 HH:MM 格式，如 23:30。"
+            payload[f"curfew_{key}"] = norm
+
+        if not payload:
+            return "🤔 没听懂要怎么调整宵禁。可以说「宵禁改到 23:30-07:00」或「关闭宵禁」。"
+
+        start = payload.get("curfew_start") or self.cfg.get("automate", "curfew_start", "23:00")
+        end = payload.get("curfew_end") or self.cfg.get("automate", "curfew_end", "07:00")
+        if start == end:
+            return "❌ 宵禁开始和结束时间不能相同。"
+
+        try:
+            self.cfg.apply_payload({"automate": payload})
+        except ValueError as e:
+            return f"❌ 参数无效：{e}"
+
+        # 立即同步：启动/停止后台任务，必要时马上开/关全体禁言
+        state = "off"
+        if self.automate is not None:
+            try:
+                state = await self.automate.apply_now()
+            except Exception as e:  # pragma: no cover - 防御性
+                logger.warning(f"[磐石] 宵禁即时同步失败: {e}")
+
+        changed = []
+        if "curfew_enable" in payload:
+            changed.append("已开启" if payload["curfew_enable"] else "已关闭")
+        if "curfew_start" in payload or "curfew_end" in payload:
+            changed.append(f"时段 {start} ~ {end}")
+
+        tail = {
+            "banned_now": "\n🔴 当前正处于宵禁时段，已自动开启全体禁言。",
+            "lifted_now": "\n🟢 已解除全体禁言。",
+            "waiting": "\n🟢 已开启，到点会自动全体禁言。",
+            "in_window": "\n🔴 当前正处于宵禁时段（全体禁言中）。",
+            "off": "",
+        }.get(state, "")
+        return f"🌙 宵禁{' · '.join(changed)}。{tail}"
 
     def _duration(self, event, intent: dict, default: int) -> int:
         dur = intent.get("duration")
@@ -196,3 +259,31 @@ class IntentExecutor:
         if isinstance(dur, (int, float)):
             return int(dur)
         return parse_duration(str(dur), default)
+
+
+def _norm_hhmm(value) -> str | None:
+    """把 LLM 给的时间归一化为 "HH:MM"，识别不了返回 None。
+
+    接受 "23:30" / "7:00" / "2330" / 730（数字）/ "23时30分" 等常见形态。
+    """
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+
+    # HH:MM / H:MM（支持全角冒号）
+    m = re.match(r"^(\d{1,2})[:：](\d{1,2})$", text)
+    if m:
+        h, mi = int(m.group(1)), int(m.group(2))
+        if 0 <= h <= 23 and 0 <= mi <= 59:
+            return f"{h:02d}:{mi:02d}"
+        return None
+
+    # HHMM 纯数字（LLM 偶尔输出 2330 / 700）
+    digits = re.sub(r"\D", "", text)
+    if len(digits) in (3, 4) and digits.isdigit():
+        h, mi = int(digits[:-2]), int(digits[-2:])
+        if 0 <= h <= 23 and 0 <= mi <= 59:
+            return f"{h:02d}:{mi:02d}"
+    return None

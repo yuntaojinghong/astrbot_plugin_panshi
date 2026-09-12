@@ -23,13 +23,14 @@ _ACTION_WORDS = [
     "禁言", "解禁", "踢", "拉黑", "撤回", "删了", "删除", "清理", "清屏", "净化",
     "全禁", "全体禁言", "闭嘴", "警告", "改名", "改头衔", "头衔", "上管", "下管",
     "公告", "设精", "精华", "群名", "举报", "处理", "管管", "管一下", "安排",
+    "宵禁", "夜间禁言",
 ]
 
 # LLM 输出的意图 -> 合法动作
 VALID_ACTIONS = {
     "ban", "unban", "kick", "block", "recall", "purge", "whole_ban",
     "warn", "set_card", "set_title", "set_admin", "unset_admin",
-    "notice", "set_name", "essence", "query_warn", "none",
+    "notice", "set_name", "essence", "query_warn", "set_curfew", "none",
 }
 
 SYSTEM_PROMPT = """你是一个 QQ 群管理助理的意图解析器。请把用户的话翻译成结构化 JSON 操作。
@@ -51,6 +52,7 @@ SYSTEM_PROMPT = """你是一个 QQ 群管理助理的意图解析器。请把用
 - set_name      改群名，参数: name
 - essence       设精华，参数: enable(true/false)
 - query_warn    查违规记录，参数: target
+- set_curfew    设置宵禁（夜间自动全体禁言），参数: enable(true/false，可选), start(开始时间), end(结束时间)
 - none          无法识别或不需要操作
 
 解析 target 时的规则（重要）：
@@ -60,8 +62,14 @@ SYSTEM_PROMPT = """你是一个 QQ 群管理助理的意图解析器。请把用
 - 如果用户用名字/昵称指代（如"张三""那个发广告的"），target 填该名字原文。
 - 如果指代模糊（"他""那个刷屏的"），target 填 "recent_offender" 或保留原描述。
 
+解析 set_curfew 时的规则：
+- 用户提到宵禁/夜间禁言的开关或时段设置时使用；普通"全体禁言"用 whole_ban 而不是 set_curfew。
+- 时间一律归一化为 24 小时制 "HH:MM"（补零），如"晚上十一点半"->"23:30"，"7点"->"07:00"，"23点半"->"23:30"。
+- 只改时间没提开关 -> 省略 enable；只说"开启/关闭宵禁" -> 只给 enable。
+- 用户说"到早上七点"这种只给了结束时间 -> 只填 end。
+
 只输出 JSON，不要任何解释。格式：
-{"action": "...", "target": "...", "duration": 秒数, "reason": "...", "content": "...", "name": "...", "title": "...", "count": 数字, "enable": true/false}
+{"action": "...", "target": "...", "duration": 秒数, "reason": "...", "content": "...", "name": "...", "title": "...", "count": 数字, "enable": true/false, "start": "HH:MM", "end": "HH:MM"}
 
 没有的参数省略。"""
 

@@ -37,8 +37,44 @@ class AutomateHandle(BaseHandle):
                 await self._curfew_task
             except asyncio.CancelledError:
                 pass
+            logger.info("[磐石] 宵禁任务已停止")
         self._curfew_task = None
-        logger.info("[磐石] 宵禁任务已停止")
+
+    def is_in_curfew(self) -> bool:
+        """当前是否处于宵禁时段（供指令与面板查询）。"""
+        return self._in_curfew_window()
+
+    def is_enforcing(self) -> bool:
+        """当前是否已对全体开启禁言。"""
+        return self._enforcing
+
+    async def apply_now(self) -> str:
+        """配置变化后立即同步宵禁状态（不等下一轮 60s 检查）。
+
+        Returns:
+            "off"        宵禁未开启
+            "banned_now" 刚刚对全体开启禁言（当前处于宵禁时段）
+            "in_window"  处于宵禁时段且已是禁言状态
+            "waiting"    已开启但不在时段内，等待到点
+            "lifted_now" 刚刚解除全体禁言
+        """
+        if not self.cfg.automate.get("curfew_enable", False):
+            await self.stop_curfew()
+            was = self._enforcing
+            self._enforcing = False
+            return "lifted_now" if was else "off"
+        await self.start_curfew()
+        if self._in_curfew_window():
+            if not self._enforcing:
+                await self._set_all_groups_whole_ban(True)
+                self._enforcing = True
+                return "banned_now"
+            return "in_window"
+        if self._enforcing:
+            await self._set_all_groups_whole_ban(False)
+            self._enforcing = False
+            return "lifted_now"
+        return "waiting"
 
     async def _curfew_loop(self) -> None:
         """每分钟检查一次是否进入/退出宵禁时段。"""

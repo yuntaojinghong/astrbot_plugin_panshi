@@ -241,6 +241,7 @@ def main():
     test_group_cache()
     test_errors()
     test_role_precheck()
+    test_curfew_intent()
     test_page_service(inst)
 
     print("ALL_SELFTEST_PASS")
@@ -627,6 +628,95 @@ def test_role_precheck():
         r = asyncio.run(h.set_ban(_EvDict(), 3, 300))
         assert "管理员" in r, r
         print(f"PRECHECK_DICT_FAILURE_OK ({r})")
+    finally:
+        import shutil
+
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_curfew_intent():
+    """宵禁自然语言设置：意图白名单、时间归一化、配置写入与即时启停。"""
+    import asyncio
+    import os
+    import tempfile
+
+    from astrbot_plugin_panshi.config import PluginConfig
+    from astrbot_plugin_panshi.core.intent import IntentParser
+    from astrbot_plugin_panshi.core.intent_executor import IntentExecutor
+    from astrbot_plugin_panshi.data import Storage
+
+    # 1) set_curfew 必须在意图白名单里
+    parsed = IntentParser._extract_json(
+        '{"action": "set_curfew", "start": "23:30", "end": "07:00"}'
+    )
+    assert parsed and parsed["action"] == "set_curfew", parsed
+
+    from astrbot_plugin_panshi.core.intent import _ACTION_WORDS as _WORDS
+
+    assert "宵禁" in _WORDS, "动作关键词应包含「宵禁」以触发智能识别"
+    print("CURFEW_INTENT_WHITELIST_OK")
+
+    # 2) 完整链路：解析参数 -> 写配置 -> 即时启停
+    raw = {
+        "automate": {
+            "curfew_enable": False,
+            "curfew_start": "23:00",
+            "curfew_end": "07:00",
+        }
+    }
+    cfg = PluginConfig(raw)
+    tmp = tempfile.mkdtemp(prefix="panshi_curfew_")
+    apply_calls = []
+
+    class _Auto:
+        async def apply_now(self):
+            apply_calls.append(dict(cfg.dump().get("automate", {}) or {}))
+            return "banned_now"
+
+    try:
+        db = Storage(os.path.join(tmp, "t.json"))
+        ex = IntentExecutor(cfg, db, None, None, None, _Auto())
+
+        # 只改时段 + 开启；"7:00" 应归一化为 "07:00"
+        r = asyncio.run(
+            ex.set_curfew({"action": "set_curfew", "start": "23:30", "end": "7:00", "enable": True})
+        )
+        assert cfg.get("automate", "curfew_start") == "23:30", cfg.get("automate", {})
+        assert cfg.get("automate", "curfew_end") == "07:00", cfg.get("automate", {})
+        assert cfg.get("automate", "curfew_enable") is True
+        assert "23:30" in r and "07:00" in r, r
+        assert "已自动开启全体禁言" in r, r
+        assert apply_calls and apply_calls[-1].get("curfew_enable") is True
+        print(f"CURFEW_SET_OK ({r.splitlines()[0]})")
+
+        # 只关闭，不改时间
+        r2 = asyncio.run(ex.set_curfew({"action": "set_curfew", "enable": False}))
+        assert cfg.get("automate", "curfew_enable") is False
+        assert cfg.get("automate", "curfew_start") == "23:30"  # 时段保持
+        assert "已关闭" in r2, r2
+
+        # 非法时间应被拒绝且不写配置
+        before = dict(cfg.dump().get("automate", {}) or {})
+        r3 = asyncio.run(ex.set_curfew({"action": "set_curfew", "start": "abc"}))
+        assert "看不懂" in r3, r3
+        assert cfg.dump().get("automate", {}) == before, "非法时间不应写入配置"
+
+        # 没带任何参数 -> 给出用法提示
+        r4 = asyncio.run(ex.set_curfew({"action": "set_curfew"}))
+        assert "没听懂" in r4, r4
+        print("CURFEW_EDGE_OK")
+
+        # 时间归一化工具
+        from astrbot_plugin_panshi.core.intent_executor import _norm_hhmm
+
+        assert _norm_hhmm("23:30") == "23:30"
+        assert _norm_hhmm("7:00") == "07:00"
+        assert _norm_hhmm("2330") == "23:30"
+        assert _norm_hhmm("700") == "07:00"
+        assert _norm_hhmm("24:00") is None
+        assert _norm_hhmm("abc") is None
+        assert _norm_hhmm("") is None
+        print("CURFEW_NORM_OK")
     finally:
         import shutil
 

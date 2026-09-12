@@ -58,6 +58,8 @@ class PanshiWebController:
         self.context = context
         self.service = service
         self._registered = False
+        # 可选钩子：全局配置保存成功后调用（用于宵禁等设置即时生效）
+        self.on_config_saved = None
 
     # ==================================================================
     #  注册
@@ -159,7 +161,15 @@ class PanshiWebController:
     async def api_update_global(self):
         payload = await _json_body()
         config = payload.get("config", payload)
-        return _ok(self.service.update_global_config(config))
+        result = _ok(self.service.update_global_config(config))
+        # 配置已落盘：通知宿主插件做即时同步（如宵禁启停），失败不影响保存结果
+        hook = getattr(self, "on_config_saved", None)
+        if callable(hook):
+            try:
+                await hook()
+            except Exception as e:
+                logger.warning(f"[磐石] 配置保存后同步失败: {e}")
+        return result
 
     async def api_get_group(self):
         gid = _query_str("group_id")
