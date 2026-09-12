@@ -213,7 +213,7 @@ def main():
 
     # 校验 WebUI 面板路由注册
     assert inst.web is not None, "面板控制器未创建"
-    assert len(ctx.routes) == 9, f"路由数量不对: {len(ctx.routes)}"
+    assert len(ctx.routes) == 10, f"路由数量不对: {len(ctx.routes)}"
     for route, _h, _m, _d in ctx.routes:
         assert route.startswith("/astrbot_plugin_panshi/"), route
     print(f"WEB_ROUTES_OK ({len(ctx.routes)})")
@@ -381,6 +381,84 @@ def test_group_cache():
     assert groups == []
     assert "未找到平台适配器" in cache4.last_error, cache4.last_error
     print("GROUP_CACHE_EMPTY_MSG_OK")
+
+    # ------------------------------------------------------------------
+    # 回归（用户实测：反向服务器开着，面板却一直报连接失败）：
+    # 1) CQHttp 对象恒非 None，必须读 _wsr_api_clients 才能知道真实连接状态；
+    # 2) 多账号同时连接时必须显式带 self_id 调用，否则 aiocqhttp 直接抛
+    #    ApiNotAvailable —— 面板就会永远显示「连接失败」。
+    # ------------------------------------------------------------------
+    class _RealCQ:
+        """模拟真实 aiocqhttp CQHttp：get_client() 恒返回自身（非 None）。"""
+
+        def __init__(self, api_clients):
+            self._wsr_api_clients = api_clients  # {self_id: ws}
+            self._wsr_event_clients = set()
+
+        async def call_action(self, action, **params):
+            # 对齐 aiocqhttp 行为：不带 self_id 且在线账号 >1 时报 ApiNotAvailable
+            sid = params.get("self_id")
+            online = list(self._wsr_api_clients.keys())
+            if not sid and len(online) != 1:
+                raise RuntimeError("ApiNotAvailable")
+            if sid and str(sid) not in online:
+                raise RuntimeError("ApiNotAvailable")
+            return [
+                {"group_id": 10, "group_name": "甲群", "member_count": 30},
+                {"group_id": 11, "group_name": "乙群", "member_count": 60},
+            ]
+
+    class _Adapter:
+        def __init__(self, bot):
+            self._bot = bot
+
+        def get_client(self):
+            return self._bot
+
+    # 用例 1：适配器在、get_client() 非 None，但确实没有 WS 连接
+    # -> 不能报「调用失败」之类，必须准确提示「尚未与协议端建立连接」
+    cache5 = GroupInfoCache(_C(_PM([_Adapter(_RealCQ({}))])))
+    groups = asyncio.run(cache5.list_groups(force=True))
+    assert groups == []
+    assert "尚未与协议端建立连接" in cache5.last_error, cache5.last_error
+    st = cache5.connection_status()
+    assert st["state"] == "not_connected", st
+    assert st["adapters"] == 1 and st["clients"] == 1, st
+    print("GROUP_CACHE_DISCONNECTED_DETECTED_OK")
+
+    # 用例 2：两个机器人账号同时在线（此前必然一直失败）
+    # -> 应对每个 self_id 显式带参调用，成功取到群列表
+    cache6 = GroupInfoCache(
+        _C(_PM([_Adapter(_RealCQ({"111": object(), "222": object()}))]))
+    )
+    groups = asyncio.run(cache6.list_groups(force=True))
+    assert len(groups) == 2, groups
+    assert cache6.last_error == "", cache6.last_error
+    st = cache6.connection_status()
+    assert st["state"] == "connected" and st["self_ids"] == ["111", "222"], st
+    print("GROUP_CACHE_MULTI_ACCOUNT_OK")
+
+    # 用例 3：只有事件通道（event 角色）没有 API 通道 -> 给出专项提示
+    class _EventOnlyCQ(_RealCQ):
+        def __init__(self):
+            super().__init__({})
+            self._wsr_event_clients = {object()}
+
+    cache7 = GroupInfoCache(_C(_PM([_Adapter(_EventOnlyCQ())])))
+    groups = asyncio.run(cache7.list_groups(force=True))
+    assert groups == []
+    assert "事件通道" in cache7.last_error, cache7.last_error
+    st = cache7.connection_status()
+    assert st["state"] == "event_only", st
+    print("GROUP_CACHE_EVENT_ONLY_OK")
+
+    # 用例 4：connection_status / iter_clients 的兜底可用性
+    cache8 = GroupInfoCache(_C(_PM([_Platform()])))
+    st = cache8.connection_status()
+    assert isinstance(st, dict) and "state" in st and "message" in st, st
+    clients = cache8.iter_clients()
+    assert clients and clients[0][1] is not None, clients
+    print("GROUP_CACHE_STATUS_HELPER_OK")
 
 
 def test_errors():

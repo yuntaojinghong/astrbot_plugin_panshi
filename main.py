@@ -137,18 +137,39 @@ class PanshiPlugin(Star):
             logger.warning(f"[磐石] 获取群列表失败: {e}")
 
     async def _send_whole_ban(self, group_id: str, enable: bool):
-        """宵禁时对指定群开/关全体禁言。"""
+        """宵禁时对指定群开/关全体禁言。
+
+        注意：此前用 platform_manager.get_instances()，该方法并不存在，
+        异常被静默吞掉，导致宵禁全体禁言一直不生效。
+        现改走 group_cache 的统一客户端解析（含多账号 self_id 显式传参）。
+        """
         try:
-            for platform in self.context.platform_manager.get_instances().values():
-                cli = platform.get_client()
-                await cli.call_action(
-                    "set_group_whole_ban",
-                    group_id=int(group_id),
-                    enable=enable,
-                )
-                break
-        except Exception:
-            pass
+            clients = self.group_cache.iter_clients()
+        except Exception as e:
+            logger.warning(f"[磐石] 宵禁获取协议端客户端失败: {e}")
+            return
+        if not clients:
+            logger.warning("[磐石] 宵禁执行时协议端未连接，跳过全体禁言")
+            return
+        for sid, cli in clients:
+            try:
+                if sid:
+                    await cli.call_action(
+                        "set_group_whole_ban",
+                        group_id=int(group_id),
+                        enable=enable,
+                        self_id=sid,
+                    )
+                else:
+                    await cli.call_action(
+                        "set_group_whole_ban",
+                        group_id=int(group_id),
+                        enable=enable,
+                    )
+                return
+            except Exception as e:
+                logger.warning(f"[磐石] 宵禁全体禁言失败(账号 {sid or '默认'}): {e}")
+                continue
 
     # ========== 群消息总入口（事件监听，优先级低于指令） ==========
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE)

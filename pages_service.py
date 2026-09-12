@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 try:
@@ -17,6 +18,10 @@ except Exception:  # 便于脱离 AstrBot 单测
 
 DEFAULT_GROUP_ID = "__default__"
 FOLLOW_DEFAULT_KEY = "follow_default"
+PLUGIN_NAME = "astrbot_plugin_panshi"
+
+# 与 metadata.yaml 保持一致的插件版本（读取失败时的兜底值）
+FALLBACK_VERSION = "v1.2.0"
 
 # 按群可覆盖的配置分组（与 _conf_schema.json 的分组保持一致）
 OVERRIDABLE_GROUPS = [
@@ -54,13 +59,48 @@ class PageService:
             "groups": groups,
             "global": self.get_global_config(),
             "meta": {
-                "plugin_name": "astrbot_plugin_panshi",
+                "plugin_name": PLUGIN_NAME,
+                "version": self.plugin_version(),
                 "follow_default_key": FOLLOW_DEFAULT_KEY,
                 "default_group_id": DEFAULT_GROUP_ID,
                 "overridable_groups": OVERRIDABLE_GROUPS,
                 "group_cache_error": self.group_cache.last_error,
+                "connection": self.connection(),
             },
         }
+
+    # ==================================================================
+    #  连接诊断
+    # ==================================================================
+    def connection(self) -> dict:
+        """当前与协议端（NapCat / OneBot v11）的连接诊断信息。"""
+        status = self.group_cache.connection_status()
+        status["last_error"] = self.group_cache.last_error
+        status["groups_cached"] = len(self.group_cache.snapshot())
+        status["updated_at"] = self.group_cache.updated_at
+        return status
+
+    def plugin_version(self) -> str:
+        """从 metadata.yaml 读取插件版本号，失败时用兜底值。"""
+        version = getattr(self, "_version", None)
+        if version:
+            return version
+        version = FALLBACK_VERSION
+        try:
+            base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            path = os.path.join(base, "metadata.yaml")
+            if os.path.exists(path):
+                with open(path, encoding="utf-8") as f:
+                    for line in f:
+                        if line.strip().startswith("version:"):
+                            raw = line.split(":", 1)[1].strip().strip("'\"")
+                            if raw:
+                                version = raw
+                            break
+        except Exception:
+            pass
+        self._version = version
+        return version
 
     # ==================================================================
     #  群列表

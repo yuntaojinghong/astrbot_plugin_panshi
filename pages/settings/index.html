@@ -14,28 +14,51 @@
           <span class="logo">磐</span>
           <div class="titles">
             <h1>磐石 · 智能群管</h1>
-            <p class="sub">配置面板</p>
+            <p class="sub">
+              配置面板
+              <span id="versionBadge" class="version-badge" hidden></span>
+            </p>
           </div>
         </div>
         <div class="topbar-right">
-          <span class="status"><i id="statusDot" class="dot"></i><span id="statusText">连接中…</span></span>
-          <button id="btnReload" class="btn ghost">刷新</button>
+          <button
+            id="statusPill"
+            class="status-pill"
+            type="button"
+            title="点击查看连接诊断"
+          >
+            <i id="statusDot" class="dot"></i>
+            <span id="statusText">连接中…</span>
+          </button>
+          <button id="btnReload" class="btn ghost">
+            <span class="btn-icon">⟳</span>刷新
+          </button>
         </div>
       </header>
 
       <div id="alertBox"></div>
 
+      <!-- 连接诊断（折叠卡片，由 JS 填充） -->
+      <section id="connBox" class="conn-box" hidden></section>
+
       <!-- 状态概览 -->
       <section id="overview" class="cards"></section>
+      <section id="quickStatus" class="quick-status"></section>
 
       <div class="layout">
         <!-- 左侧：群列表 -->
         <aside class="sidebar">
           <div class="sidebar-head">
             <span class="sidebar-title">群聊列表</span>
-            <button id="btnSync" class="btn tiny">同步</button>
+            <span id="groupCount" class="sidebar-count"></span>
+            <button id="btnSync" class="btn tiny">
+              <span class="btn-icon">⇵</span>同步
+            </button>
           </div>
-          <input id="search" class="search" type="text" placeholder="搜索群名或群号…" />
+          <div class="search-wrap">
+            <span class="search-icon">⌕</span>
+            <input id="search" class="search" type="text" placeholder="搜索群名或群号…" />
+          </div>
           <ul id="groupList" class="group-list"></ul>
           <p class="sidebar-tip">
             群列表来自协议端（NapCat / OneBot v11）。若显示为空，请先确认 AstrBot
@@ -46,6 +69,7 @@
         <!-- 右侧：配置表单 -->
         <main id="content" class="content">
           <div class="placeholder">
+            <div class="placeholder-icon">🪨</div>
             <p>正在加载…</p>
           </div>
         </main>

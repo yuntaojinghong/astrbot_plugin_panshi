@@ -15,6 +15,8 @@ const state = {
   global: null,
   overview: null,
   meta: {},
+  connection: null, // 协议端连接诊断（后端 connection() 的返回）
+  connExpanded: false, // 诊断卡是否展开
   selected: null, // 当前选中：{ group_id, ... }
   draft: {}, // 当前编辑中的配置 { 分组: { 字段: 值 } }
   followDefault: true,
@@ -102,6 +104,18 @@ function groupErrorHints(msg) {
       "注意：NapCat 容器/面板内要用宿主机可达的 IP，不能用 127.0.0.1（除非同机同网络命名空间）。",
     ];
   }
+  if (text.includes("事件通道")) {
+    return [
+      "协议端的 WS 连接只上报事件、不能调 API。请把 NapCat 的「WebSocket 客户端」连接方式改为 universal。",
+      "如果用的是拆分模式（API 与 EVENT 分开两条连接），请确认两条都启用且地址、Token 一致。",
+    ];
+  }
+  if (text.includes("超时")) {
+    return [
+      "协议端连接存在但响应慢：可能是 NapCar 负载高或网络抖动，稍等片刻再点「同步」。",
+      "若反复出现，请重启 NapCat 并观察其日志中的接口报错。",
+    ];
+  }
   if (text.includes("无法识别") || text.includes("未能从协议端")) {
     return [
       "协议端返回了异常数据，可在 AstrBot 日志中查看 [磐石] 相关输出定位原因。",
@@ -111,10 +125,141 @@ function groupErrorHints(msg) {
   return [];
 }
 
-function setOnline(ok) {
+/* ==================================================================
+ *  连接状态（顶栏胶囊 + 诊断卡）
+ * ================================================================== */
+
+/** 由连接诊断结果推导顶栏胶囊的视觉状态 */
+function connVisual(conn) {
+  const s = conn && conn.state;
+  if (s === "connected") {
+    const n = (conn.self_ids || []).length;
+    return {
+      cls: "is-ok",
+      dot: "ok",
+      text: n > 1 ? `已连接 · ${n} 个账号` : "已连接",
+    };
+  }
+  if (s === "event_only") return { cls: "is-warn", dot: "warn", text: "通道异常" };
+  if (s === "no_adapter") return { cls: "is-bad", dot: "bad", text: "无适配器" };
+  if (s === "no_client") return { cls: "is-bad", dot: "bad", text: "客户端不可用" };
+  if (s === "not_connected") return { cls: "is-bad", dot: "bad", text: "未连接" };
+  return { cls: "", dot: "pulse", text: "检测中…" };
+}
+
+function setOnline(conn) {
+  const pill = $("#statusPill");
+  const v = connVisual(conn);
+  pill.className = `status-pill ${v.cls}`;
   const dot = $("#statusDot");
-  dot.className = `dot ${ok ? "ok" : "bad"}`;
-  $("#statusText").textContent = ok ? "已连接" : "连接失败";
+  dot.className = `dot ${v.dot}`;
+  $("#statusText").textContent = v.text;
+}
+
+const CONN_STATE_BADGE = {
+  connected: { text: "正常", cls: "ok" },
+  event_only: { text: "通道异常", cls: "warn" },
+  no_adapter: { text: "无适配器", cls: "bad" },
+  no_client: { text: "客户端不可用", cls: "bad" },
+  not_connected: { text: "未连接", cls: "bad" },
+};
+
+/** 渲染连接诊断卡（statusPill 点击展开 / 收起） */
+function renderConnection() {
+  const box = $("#connBox");
+  box.innerHTML = "";
+  if (!state.connExpanded) {
+    box.hidden = true;
+    return;
+  }
+  box.hidden = false;
+
+  const conn = state.connection;
+  const s = conn ? conn.state : "unknown";
+  const badge = CONN_STATE_BADGE[s] || { text: "检测中", cls: "off" };
+
+  const card = el("div", { class: "conn-card" });
+  const head = el("div", { class: "conn-head" }, [
+    el("span", { class: "conn-title", text: "协议端连接诊断" }),
+    el("span", { class: `conn-badge ${badge.cls}`, text: badge.text }),
+    el("button", {
+      class: "btn tiny ghost",
+      text: "收起",
+      onClick: () => {
+        state.connExpanded = false;
+        renderConnection();
+      },
+    }),
+  ]);
+  card.appendChild(head);
+
+  const body = el("div", { class: "conn-body" });
+
+  if (!conn) {
+    body.appendChild(
+      el("p", { class: "conn-msg", text: "尚未取得连接诊断数据，请先刷新面板。" })
+    );
+    card.appendChild(body);
+    box.appendChild(card);
+    return;
+  }
+
+  body.appendChild(el("p", { class: "conn-msg", text: conn.message || "—" }));
+
+  // 事实数据条
+  const facts = el("div", { class: "conn-facts" });
+  facts.appendChild(
+    el("span", { class: "fact-chip", text: `适配器 ${conn.adapters ?? 0} 个` })
+  );
+  facts.appendChild(
+    el("span", { class: "fact-chip", text: `客户端 ${conn.clients ?? 0} 个` })
+  );
+  const ids = conn.self_ids || [];
+  if (ids.length) {
+    facts.appendChild(
+      el("span", { class: "fact-chip ok", text: `在线账号 ${ids.join("、")}` })
+    );
+  }
+  if (conn.event_only) {
+    facts.appendChild(el("span", { class: "fact-chip", text: "仅有事件通道" }));
+  }
+  if (conn.groups_cached) {
+    facts.appendChild(
+      el("span", { class: "fact-chip", text: `缓存群 ${conn.groups_cached} 个` })
+    );
+  }
+  body.appendChild(facts);
+
+  // 有问题时给出排查步骤
+  if (s !== "connected") {
+    const hints = groupErrorHints(conn.message || "") || [];
+    if (hints.length) {
+      const ul = el("ul", { class: "conn-hints" });
+      for (const h of hints) ul.appendChild(el("li", { text: h }));
+      body.appendChild(ul);
+    }
+  } else if (conn.last_error) {
+    body.appendChild(
+      el("p", {
+        class: "conn-msg",
+        text: `（最近一次拉取群列表的提示：${conn.last_error}）`,
+      })
+    );
+  }
+
+  card.appendChild(body);
+  box.appendChild(card);
+}
+
+/** 主动重新检测连接状态 */
+async function checkConnection() {
+  try {
+    state.connection = await apiGet("connection");
+  } catch {
+    state.connection = null;
+  }
+  setOnline(state.connection);
+  renderConnection();
 }
 
 /* ==================================================================
@@ -141,8 +286,16 @@ async function loadAll(force = false) {
     state.groups = data.groups || [];
     state.global = data.global || null;
     state.meta = data.meta || {};
+    state.connection = state.meta.connection || null;
     state.collapsed = {};
     for (const g of state.schema) state.collapsed[g.key] = true;
+
+    // 版本徽标
+    const vb = $("#versionBadge");
+    if (state.meta.version) {
+      vb.textContent = state.meta.version;
+      vb.hidden = false;
+    }
 
     if (state.meta.group_cache_error) {
       showError(state.meta.group_cache_error);
@@ -150,7 +303,8 @@ async function loadAll(force = false) {
       showError("");
     }
 
-    setOnline(true);
+    setOnline(state.connection);
+    if (state.connExpanded) renderConnection();
     await loadOverview();
     renderGroups();
 
@@ -158,11 +312,11 @@ async function loadAll(force = false) {
     const keep = state.selected && state.selected.group_id;
     await selectGroup(keep || state.meta.default_group_id || "__default__");
   } catch (e) {
-    setOnline(false);
+    setOnline(null);
     showError(e && e.message ? e.message : String(e));
   } finally {
     btn.disabled = false;
-    btn.textContent = "刷新";
+    btn.innerHTML = '<span class="btn-icon">⟳</span>刷新';
   }
 }
 
@@ -189,12 +343,14 @@ async function refreshGroups() {
       showError("");
       toast(`已同步 ${state.groups.length} 个群`);
     }
+    await loadOverview();
+    await checkConnection();
     renderGroups();
   } catch (e) {
     toast("同步失败：" + (e.message || e), "err");
   } finally {
     btn.disabled = false;
-    btn.textContent = "同步";
+    btn.innerHTML = '<span class="btn-icon">⇵</span>同步';
   }
 }
 
@@ -372,15 +528,18 @@ function renderOverview() {
   box.innerHTML = "";
   if (!state.overview) return;
   const items = [
-    { label: "纳管群聊", value: state.overview.tracked_groups },
-    { label: "记录用户", value: state.overview.tracked_users },
-    { label: "累计警告", value: state.overview.total_warnings, cls: "warn" },
-    { label: "黑名单", value: state.overview.blocked_users, cls: "danger" },
+    { label: "纳管群聊", value: state.overview.tracked_groups, icon: "💬", tone: "" },
+    { label: "记录用户", value: state.overview.tracked_users, icon: "👥", tone: "tone-ok" },
+    { label: "累计警告", value: state.overview.total_warnings, icon: "⚠️", tone: "tone-warn", cls: "warn" },
+    { label: "黑名单", value: state.overview.blocked_users, icon: "🚫", tone: "tone-danger", cls: "danger" },
   ];
   for (const it of items) {
     box.appendChild(
-      el("div", { class: "stat-card" }, [
-        el("span", { class: "stat-label", text: it.label }),
+      el("div", { class: `stat-card ${it.tone || ""}`.trim() }, [
+        el("span", { class: "stat-top" }, [
+          el("span", { class: "stat-icon", text: it.icon }),
+          el("span", { class: "stat-label", text: it.label }),
+        ]),
         el("span", {
           class: "stat-value" + (it.cls ? " " + it.cls : ""),
           text: String(it.value ?? 0),
@@ -388,6 +547,20 @@ function renderOverview() {
       ])
     );
   }
+
+  // 快捷开关状态条
+  const qs = $("#quickStatus");
+  qs.innerHTML = "";
+  const flips = (state.overview && state.overview.quick_status) || [];
+  for (const f of flips) {
+    qs.appendChild(
+      el("span", { class: `qs-chip ${f.on ? "on" : "off"}` }, [
+        el("i", {}),
+        document.createTextNode(f.label),
+      ])
+    );
+  }
+  qs.style.display = flips.length ? "" : "none";
 }
 
 /* ==================================================================
@@ -407,6 +580,13 @@ function renderGroups() {
   const list = $("#groupList");
   list.innerHTML = "";
   const defaultId = state.meta.default_group_id || "__default__";
+
+  const countEl = $("#groupCount");
+  if (countEl) {
+    countEl.textContent = state.groups.length
+      ? `${state.groups.length} 个群`
+      : "";
+  }
 
   // 全局默认项
   list.appendChild(
@@ -466,6 +646,8 @@ function groupItem({ group_id, group_name, sub, tags = [], isDefault, active }) 
       class: "group-item" + (active ? " active" : ""),
       onClick: () => {
         state.keyword = "";
+        const input = $("#search");
+        if (input) input.value = "";
         selectGroup(group_id);
       },
     },
@@ -490,7 +672,12 @@ function renderContent() {
   box.innerHTML = "";
 
   if (!state.selected) {
-    box.appendChild(el("div", { class: "placeholder" }, [el("p", { text: "从左侧选择一个群或「全局默认配置」开始编辑。" })]));
+    box.appendChild(
+      el("div", { class: "placeholder" }, [
+        el("div", { class: "placeholder-icon", text: "🪨" }),
+        el("p", { text: "从左侧选择一个群或「全局默认配置」开始编辑。" }),
+      ])
+    );
     return;
   }
 
@@ -518,7 +705,7 @@ function renderContent() {
   } else {
     if (!sel.is_default) {
       actions.appendChild(
-        el("button", { class: "btn ghost", text: "恢复默认", onClick: resetCurrentGroup })
+        el("button", { class: "btn danger-ghost", text: "恢复默认", onClick: resetCurrentGroup })
       );
     }
     actions.appendChild(
@@ -739,7 +926,7 @@ function parseList(text) {
 async function main() {
   if (!bridge) {
     showError("未检测到 AstrBot 页面桥接（bridge）。请从 AstrBot 插件详情页打开本面板。");
-    setOnline(false);
+    setOnline(null);
     return;
   }
 
@@ -751,6 +938,11 @@ async function main() {
 
   $("#btnReload").addEventListener("click", () => loadAll(true));
   $("#btnSync").addEventListener("click", refreshGroups);
+  $("#statusPill").addEventListener("click", () => {
+    state.connExpanded = !state.connExpanded;
+    if (state.connExpanded) checkConnection();
+    else renderConnection();
+  });
   $("#search").addEventListener("input", (e) => {
     state.keyword = e.target.value;
     renderGroups();
