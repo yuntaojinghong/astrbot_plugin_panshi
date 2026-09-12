@@ -1,0 +1,31 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Run selftest
+        run: python _selftest.py
+
+      - name: Build packages
+        run: python scripts/build_release.py
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/astrbot_plugin_panshi.zip
+            dist/astrbot_plugin_panshi.tar.gz
+          generate_release_notes: true
