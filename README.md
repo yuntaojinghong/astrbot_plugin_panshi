@@ -127,9 +127,10 @@ git clone https://github.com/yuntaojinghong/astrbot_plugin_panshi.git
 
 ```
 astrbot_plugin_panshi/
-├── main.py                 # 主入口：指令注册 + 事件监听 + 路由
+├── main.py                 # 主入口：指令注册 + 事件监听 + LLM 工具
 ├── metadata.yaml           # 插件元数据
 ├── _conf_schema.json       # 配置 schema
+├── logo.png                # 插件图标
 ├── config/                 # 配置封装
 ├── core/                   # 功能模块
 │   ├── base_handle.py      # Handle 基类
@@ -144,8 +145,21 @@ astrbot_plugin_panshi/
 │   ├── intent.py           # 自然语言意图解析
 │   └── intent_executor.py  # 意图执行（含确认机制）
 ├── data/                   # JSON 持久化
-└── utils/                  # 工具（时长/目标/权限解析）
+├── utils/                  # 工具（时长/目标/权限解析）
+└── scripts/                # 开发脚本（不随插件分发）
+    └── build_release.py    # 生成安装压缩包
 ```
+
+## 🔧 开发与打包
+
+```bash
+# 生成 dist/astrbot_plugin_panshi.zip（用于发布 Release）
+python scripts/build_release.py
+
+# 脱离 AstrBot 的自测（校验模块可加载、工具函数正确）
+python _selftest.py
+```
+
 
 ## 💡 灵感来源
 
