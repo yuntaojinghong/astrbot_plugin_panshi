@@ -420,7 +420,12 @@ def test_errors():
 
 
 def test_role_precheck():
-    """禁言/踢人前的身份校验，避免无意义地调用 API。"""
+    """身份预检只用于「解释失败」，绝不提前拒绝。
+
+    回归背景：早期版本会在调用 API 前根据角色查询提前拦下，
+    但协议端（NapCat 等）对机器人自身角色的上报常不可靠（返回 member 或缺失），
+    导致「机器人明明是管理员，禁言普通成员却提示权限不足」。
+    """
     import asyncio
 
     from astrbot_plugin_panshi.core.normal import NormalHandle
@@ -431,8 +436,10 @@ def test_role_precheck():
 
     class _Bot:
         async def get_group_member_info(self, group_id, user_id, no_cache=False):
-            # 99 = 机器人自己（探测机器人身份时用），设为 admin 以便走通后续分支
-            role = {1: "owner", 2: "admin", 3: "member", 99: "admin"}.get(int(user_id), "member")
+            # 99 = 机器人自己，设为 admin
+            role = {1: "owner", 2: "admin", 3: "member", 99: "admin"}.get(
+                int(user_id), "member"
+            )
             return {"role": role, "card": f"用户{user_id}", "nickname": f"用户{user_id}"}
 
         async def set_group_ban(self, **kw):
@@ -471,37 +478,63 @@ def test_role_precheck():
         db = Storage(os.path.join(tmp, "t.json"))
         h = NormalHandle(cfg, db)
 
-        # 目标是群主 -> 应被拦截，且不调用 API
-        calls.clear()
-        r = asyncio.run(h.set_ban(_Ev(), 1, 300))
-        assert "群主" in r, r
-        assert calls == [], f"不该调用 API: {calls}"
-        print(f"PRECHECK_OWNER_OK ({r})")
-
-        # 目标是管理员 -> 应被拦截
-        calls.clear()
-        r = asyncio.run(h.set_ban(_Ev(), 2, 300))
-        assert "管理员" in r, r
-        assert calls == [], f"不该调用 API: {calls}"
-        print("PRECHECK_ADMIN_OK")
-
-        # 目标是普通成员 -> 正常放行
+        # 普通成员 -> 正常放行
         calls.clear()
         r = asyncio.run(h.set_ban(_Ev(), 3, 300))
         assert calls and calls[0][0] == "set_group_ban", calls
         assert "已禁言" in r, r
-        print(f"PRECHECK_MEMBER_OK ({r})")
+        print(f"BAN_MEMBER_OK ({r})")
 
-        # 机器人在群里不是管理员 -> 直接拦下
-        calls.clear()
-        class _EvNotAdmin(_Ev):
+        # 目标是群主/管理员 -> 仍要尝试调用 API，由协议端决定；
+        # 失败后的解释里要能看出是对方身份问题
+        for tid, kw in ((1, "群主"), (2, "管理员")):
+            calls.clear()
+
+            class _BotFail(_Bot):
+                async def set_group_ban(self, **kw2):
+                    calls.append(("set_group_ban", kw2))
+                    return {"status": "failed", "retcode": 1200, "message": "cannot ban admin"}
+
+            class _EvFail(_Ev):
+                def __init__(self):
+                    super().__init__()
+                    self.bot = _BotFail()
+
+            r = asyncio.run(h.set_ban(_EvFail(), tid, 300))
+            assert calls, f"应当尝试调用 API（目标 {kw}）"
+            assert r.startswith("❌"), r
+            assert kw in r, f"失败解释里应点明对方是{kw}: {r}"
+        print("BAN_ADMIN_STILL_TRIES_OK")
+
+        # 核心回归：协议端把机器人自己误报为 member 时，禁言普通成员必须成功
+        class _BotMisreport:
+            async def get_group_member_info(self, group_id, user_id, no_cache=False):
+                # 无论谁一律报 member —— 模拟 NapCat 的不可靠上报
+                return {"role": "member", "card": "x", "nickname": "x"}
+
+            async def get_group_member_list(self, group_id):
+                return [
+                    {"user_id": 999, "role": "admin", "nickname": "机器人"},
+                    {"user_id": 3, "role": "member", "nickname": "普通成员"},
+                ]
+
+            async def set_group_ban(self, **kw):
+                calls.append(("set_group_ban", kw))
+                return {"status": "ok", "retcode": 0}
+
+        class _EvMisreport(_Ev):
+            def __init__(self):
+                super().__init__()
+                self.bot = _BotMisreport()
+
             def get_self_id(self):
-                return 3  # 查出来是 member
+                return 999
 
-        r = asyncio.run(h.set_ban(_EvNotAdmin(), 3, 300))
-        assert "不是管理员" in r, r
-        assert calls == [], f"不该调用 API: {calls}"
-        print(f"PRECHECK_BOT_NOT_ADMIN_OK ({r})")
+        calls.clear()
+        r = asyncio.run(h.set_ban(_EvMisreport(), 3, 300))
+        assert calls, "误报 member 时也必须真的调用 API"
+        assert "已禁言" in r, r
+        print(f"BAN_MISREPORTED_ROLE_OK ({r})")
 
         # 协议端返回 status=failed 的 dict 也应被识别为失败
         class _BotDictFail(_Bot):
@@ -592,6 +625,37 @@ def test_page_service(inst):
     assert gc3["follow_default"] is True
     assert gc3["effective"]["guard"]["spam_count"] == 7
     print("GROUP_RESET_OK")
+
+    # 回归（用户实测：独立配置保存后像被写死、改全局对该群不生效）：
+    # override 必须只记录「与全局不同的字段」，不能把整组生效值固化下来。
+    svc.reset_group_config("123456")
+    svc.update_global_config({"guard": {"spam_count": 5}})
+    svc.update_group_config("123456", {"follow_default": False})
+    # 模拟最坏情况：前端把整组生效值都提交回来
+    full = svc.get_group_config("123456")
+    payload = {"follow_default": False, "guard": dict(full["effective"]["guard"])}
+    payload["guard"]["spam_count"] = 11
+    after = svc.update_group_config("123456", payload)
+    ov = (after["override"] or {}).get("guard", {})
+    assert list(ov.keys()) == ["spam_count"], f"只应固化改动项，实际 {ov}"
+    assert ov["spam_count"] == 11, ov
+
+    # 改全局后：显式改过的保持，没改过的跟随
+    svc.update_global_config({"guard": {"spam_count": 3, "spam_window": 9}})
+    reread = svc.get_group_config("123456")
+    assert reread["effective"]["guard"]["spam_count"] == 11, reread["effective"]["guard"]
+    assert reread["effective"]["guard"]["spam_window"] == 9, reread["effective"]["guard"]
+    print("GROUP_OVERRIDE_DIFF_ONLY_OK")
+
+    # 改回与全局一致时，该分组的覆盖应自动消失
+    same = svc.get_group_config("123456")
+    p2 = {"follow_default": False, "guard": dict(same["effective"]["guard"])}
+    p2["guard"]["spam_count"] = 3
+    after2 = svc.update_group_config("123456", p2)
+    assert (after2["override"] or {}).get("guard", {}) == {}, after2["override"]
+    assert after2["follow_default"] is False, "清掉覆盖后仍应是独立配置"
+    print("GROUP_OVERRIDE_SELF_CLEAN_OK")
+    svc.reset_group_config("123456")
 
     # 非法群号
     try:

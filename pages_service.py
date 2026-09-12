@@ -169,13 +169,30 @@ class PageService:
             self.db.reset_group(gid)
             return self.get_group_config(gid)
 
-        # 校验通过后再整体替换，避免写坏数据
+        # 校验通过后写入。注意：override 存的是「与全局默认的差异」，
+        # 因此这里会剔除掉与全局相同的字段——即使前端把整组生效值都发了回来，
+        # 也不会把当前全局值固化成该群专属值（表现为「配置被写死、改全局不生效」）。
         cleaned = self.cfg.validate_payload(payload)
         self.db.set_group_override(gid, FOLLOW_DEFAULT_KEY, False)
         for gkey, gval in cleaned.items():
-            if gkey in OVERRIDABLE_GROUPS:
-                self.db.set_group_override(gid, gkey, gval)
+            if gkey not in OVERRIDABLE_GROUPS:
+                continue
+            diff = self._diff_from_global(gkey, gval)
+            if diff:
+                self.db.set_group_override(gid, gkey, diff)
+            else:
+                # 该分组与全局完全一致 → 没必要保留覆盖
+                self.db.clear_group_override(gid, gkey)
         return self.get_group_config(gid)
+
+    def _diff_from_global(self, gkey: str, gval: dict) -> dict:
+        """挑出与全局默认不同的字段。"""
+        if not isinstance(gval, dict):
+            return {}
+        glob = (self.cfg.config_snapshot() or {}).get(gkey)
+        if not isinstance(glob, dict):
+            return dict(gval)
+        return {k: v for k, v in gval.items() if not _same_value(v, glob.get(k))}
 
     def reset_group_config(self, group_id: str) -> dict:
         """清除某群的独立配置，恢复跟随全局默认。"""
@@ -286,3 +303,19 @@ def _to_int(value: Any) -> int:
         return int(value)
     except (TypeError, ValueError):
         return 0
+
+
+def _same_value(a: Any, b: Any) -> bool:
+    """判断两个配置值是否等价（用于剔除与全局相同的字段）。
+
+    列表按「元素逐个字符串比较」处理，避免 [1,2] 与 ["1","2"] 被误判为不同。
+    """
+    if isinstance(a, list) and isinstance(b, list):
+        return len(a) == len(b) and all(
+            str(x) == str(y) for x, y in zip(a, b)
+        )
+    if isinstance(a, bool) or isinstance(b, bool):
+        return _as_bool(a) is _as_bool(b)
+    if isinstance(a, (int, float)) and isinstance(b, (int, float)):
+        return float(a) == float(b)
+    return a == b

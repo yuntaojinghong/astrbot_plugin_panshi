@@ -229,6 +229,19 @@ class Storage:
             self._data["groups"].setdefault(str(group_id), {})[key] = value
             self.save()
 
+    def clear_group_override(self, group_id, key: str) -> None:
+        """删除某群的某个覆盖项，但保留 ``follow_default`` 标记。
+
+        注意：即使该群已无任何实际覆盖，也不能顺手删掉 follow_default，
+        否则用户刚设为「独立配置」的群会被误判回「跟随全局」。
+        """
+        with self._lock:
+            gid = str(group_id)
+            grp = self._data["groups"].get(gid)
+            if isinstance(grp, dict):
+                grp.pop(key, None)
+            self.save()
+
     def reset_group(self, group_id) -> None:
         with self._lock:
             self._data["groups"].pop(str(group_id), None)

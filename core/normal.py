@@ -19,26 +19,42 @@ class NormalHandle(BaseHandle):
     """封装常规群管理操作。"""
 
     # ---------- 权限前置校验 ----------
-    async def _precheck_bot_is_admin(self, event) -> str | None:
-        """确认机器人自己是管理员；不是则返回提示语。"""
-        role = await get_bot_role(event)
-        if role == "member":
-            return "❌ 我在本群不是管理员，无法执行该操作。请先把我设为管理员。"
-        # unknown 时放行（查询失败不代表没权限，让 API 自己报错）
-        return None
+    # 设计原则：预检只用于「把失败解释得更清楚」，绝不用于「提前拒绝」。
+    # 原因：协议端对机器人自身角色的上报并不可靠（NapCat 常返回 member 或缺失
+    # role 字段），若据此提前拦下，会出现「机器人明明是管理员，却提示权限不足」。
+    # 唯一可信的判据是真正调用 API 后协议端返回的结果。
 
     async def _check_target_role(
         self, event, target_id: str | int, action_name: str
     ) -> str | None:
-        """确认目标不是群主/管理员；是则返回提示语。"""
+        """目标为群主/管理员时的*解释性*提示。
+
+        Returns:
+            仅当能确证目标身份为 owner/admin 时返回提示语，否则 None。
+            调用方不应据此阻断流程，而应把它作为失败后的补充说明。
+        """
         role = await get_member_role(event, target_id)
+        if role not in ("owner", "admin"):
+            return None
         name = await get_nickname(event, target_id)
-        if role in ("owner", "admin"):
-            return (
-                f"❌ 无法对 {name} 执行{action_name}："
-                f"对方是{role_label(role)}，机器人无权操作同级或上级。"
-            )
-        return None
+        return (
+            f"无法对 {name} 执行{action_name}："
+            f"对方是{role_label(role)}，机器人无权操作同级或上级。"
+        )
+
+    async def _explain_failure(self, event, target_id: str | int, action_name: str) -> str:
+        """操作真的失败后，尽量给出可执行的原因说明。
+
+        优先用目标身份解释；其次看机器人自身身份；都没有就返回空串。
+        """
+        blocked = await self._check_target_role(event, target_id, action_name)
+        if blocked:
+            return blocked
+        # 目标不是管理员 —— 那可能是机器人自己没有权限
+        role = await get_bot_role(event)
+        if role == "member":
+            return "我在本群不是管理员，请先把我设为管理员。"
+        return ""
 
     # ---------- 禁言 ----------
     async def set_ban(self, event, target_id: str | int | None, seconds: int) -> str:
@@ -49,22 +65,9 @@ class NormalHandle(BaseHandle):
         if not targets:
             return "❓ 请 @某人、引用其消息或直接给出 QQ 号。"
 
-        # 解禁不需要管理员身份（实际仍需要，但让协议端判断）
-        if seconds > 0:
-            denied = await self._precheck_bot_is_admin(event)
-            if denied:
-                return denied
-
         results = []
         for tid in targets:
             name = await get_nickname(event, tid)
-
-            # 禁言前先看目标身份，避免白跑一次 API
-            if seconds > 0:
-                blocked = await self._check_target_role(event, tid, "禁言")
-                if blocked:
-                    results.append(blocked)
-                    continue
 
             ok, err = await self.call_api(
                 event,
@@ -79,8 +82,12 @@ class NormalHandle(BaseHandle):
                 else:
                     results.append(f"✅ 已禁言 {name} {format_duration(seconds)}")
             else:
+                # 失败了才去解释原因（此时角色信息只用于说明，不影响是否尝试）
+                why = await self._explain_failure(event, tid, "禁言")
+                detail = why or humanize(err)
                 results.append(
-                    f"❌ 对 {name} 的禁言失败：{self.failure_text('set_group_ban', err)}"
+                    f"❌ 对 {name} 的禁言失败：{detail}"
+                    f"{self.failure_hint('set_group_ban')}"
                 )
         return "\n".join(results)
 
@@ -107,18 +114,9 @@ class NormalHandle(BaseHandle):
         if not targets:
             return "❓ 请 @某人、引用其消息或直接给出 QQ 号。"
 
-        denied = await self._precheck_bot_is_admin(event)
-        if denied:
-            return denied
-
         results = []
         for tid in targets:
             name = await get_nickname(event, tid)
-
-            blocked = await self._check_target_role(event, tid, "踢出")
-            if blocked:
-                results.append(blocked)
-                continue
 
             ok, err = await self.call_api(
                 event,
@@ -134,8 +132,11 @@ class NormalHandle(BaseHandle):
                 if reject:
                     self.db.add_blacklist(group_id, tid)
             else:
+                why = await self._explain_failure(event, tid, "踢出")
+                detail = why or humanize(err)
                 results.append(
-                    f"❌ 踢出 {name} 失败：{self.failure_text('set_group_kick', err)}"
+                    f"❌ 踢出 {name} 失败：{detail}"
+                    f"{self.failure_hint('set_group_kick')}"
                 )
         return "\n".join(results)
 

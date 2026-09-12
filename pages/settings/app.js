@@ -246,6 +246,37 @@ function deepClone(obj) {
   return JSON.parse(JSON.stringify(obj ?? {}));
 }
 
+/**
+ * 只保留「用户在本群独立配置里显式改过」的字段，其余不写进 override。
+ *
+ * 为什么必须这样：override 是「与全局默认的差异」，不是完整配置快照。
+ * 若把界面上看到的全部生效值都存进 override，就会把当前全局值固化成该群专属值——
+ * 之后管理员再改「全局默认」，这个群不会跟着变，用户会觉得「配置被写死了」。
+ */
+function buildOverridePayload(effective, globalCfg, followDefault) {
+  const payload = { follow_default: !!followDefault };
+  for (const gkey of Object.keys(effective || {})) {
+    const cur = effective[gkey];
+    const base = (globalCfg || {})[gkey];
+    if (!cur || typeof cur !== "object" || Array.isArray(cur)) continue;
+
+    const diff = {};
+    for (const [fkey, fval] of Object.entries(cur)) {
+      const bval = base && typeof base === "object" ? base[fkey] : undefined;
+      if (!isSameValue(fval, bval)) diff[fkey] = fval;
+    }
+    if (Object.keys(diff).length) payload[gkey] = diff;
+  }
+  return payload;
+}
+
+function isSameValue(a, b) {
+  if (Array.isArray(a) && Array.isArray(b)) {
+    return a.length === b.length && a.every((x, i) => String(x) === String(b[i]));
+  }
+  return a === b;
+}
+
 /* ==================================================================
  *  保存
  * ================================================================== */
@@ -261,11 +292,17 @@ async function save() {
       state.global = await apiPost("global", { config: state.draft });
       toast("全局默认配置已保存");
     } else {
-      // 关键：必须显式带上 follow_default，否则后端会按默认值 true 处理，
-      // 把该群刚保存的独立配置清空、退回跟随全局。
+      // 关键 1：必须显式带上 follow_default，否则后端会按默认值 true 处理，
+      //   把该群刚保存的独立配置清空、退回跟随全局。
+      // 关键 2：只提交「与全局默认不同的字段」，不要把界面上的生效值整组写回去，
+      //   否则会把当前全局值固化成该群专属值（表现为「配置被写死」）。
       const payload = {
         group_id: state.selected.group_id,
-        config: { follow_default: !!state.followDefault, ...state.draft },
+        config: buildOverridePayload(
+          state.draft,
+          state.global && state.global.config,
+          state.followDefault
+        ),
       };
       const data = await apiPost("group", payload);
       state.selected = data;
@@ -292,9 +329,11 @@ async function save() {
 async function enableOverride() {
   if (!state.selected) return;
   try {
+    // 刚切换为独立配置时还没有任何差异，只需带上标记；
+    // 否则等于把当前全局值原样固化成该群专属值。
     const data = await apiPost("group", {
       group_id: state.selected.group_id,
-      config: { follow_default: false, ...state.draft },
+      config: { follow_default: false },
     });
     state.selected = data;
     state.followDefault = false;

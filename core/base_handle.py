@@ -57,6 +57,13 @@ class BaseHandle:
             return False, humanize(e)
 
     @staticmethod
+    @staticmethod
+    def failure_hint(action: str) -> str:
+        """只取操作建议（💡 那行），用于已经有更准原因说明的场景。"""
+        tip = hint_for(action)
+        return f"\n💡 {tip}" if tip else ""
+
+    @staticmethod
     def failure_text(action: str, err: object) -> str:
         """组装「失败原因 + 操作建议」。"""
         reason = humanize(err)
