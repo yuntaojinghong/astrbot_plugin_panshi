@@ -259,6 +259,17 @@ python _selftest.py
 
 本插件的功能设计参考了社区优秀项目 [astrbot_plugin_qqadmin](https://github.com/Zhalslar/astrbot_plugin_qqadmin)（作者 Zhalslar，GPL-3.0），并在其基础上重新设计了交互方式（人话时长、自然语言意图识别、警告升级、增强欢迎、零依赖存储等）。在此致谢。
 
+## ⭐ 支持项目
+
+磐石完全免费开源（GPL-3.0），会持续更新。如果它帮你把群管得井井有条：
+
+- 给仓库点个 [Star](https://github.com/yuntaojinghong/astrbot_plugin_panshi) —— 最大的鼓励；
+- 微信扫一扫，请作者喝杯奶茶（感谢投喂喵~）：
+
+<p align="center">
+  <img src="docs/donate_qr.png" width="220" alt="赞赏码">
+</p>
+
 ## 📄 许可
 
 GPL-3.0

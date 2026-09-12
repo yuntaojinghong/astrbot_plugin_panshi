@@ -509,6 +509,20 @@ nav a.act { color: var(--fg); background: var(--panel-hi); }
 /* ===== 动效：面板开关微光 ===== */
 .mock-sw.on { box-shadow: 0 0 12px rgba(139,124,255,.55); }
 
+/* ===== 支持作者 ===== */
+.qr {
+  display: block; margin: 14px auto 0;
+  width: 208px; height: 208px; object-fit: cover;
+  border-radius: 16px; background: #fff; padding: 8px;
+  border: 1px solid var(--line);
+  box-shadow: 0 14px 40px -18px rgba(0,0,0,.8);
+  transition: transform .3s cubic-bezier(.34,1.4,.44,1), box-shadow .3s;
+}
+.qr:hover { transform: translateY(-4px) scale(1.02); box-shadow: 0 22px 52px -20px rgba(139,124,255,.55); }
+.support-card { display: flex; flex-direction: column; justify-content: center; }
+.support-card .btn { align-self: flex-start; }
+.qr-cap { text-align: center; color: var(--fg3); font-size: 12.5px; margin-top: 10px; }
+
 /* ===== 功能卡展开详情 ===== */
 .card.more { cursor: pointer; }
 .card.more:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
@@ -586,6 +600,7 @@ nav a.act { color: var(--fg); background: var(--panel-hi); }
       <a href="#smart">智能</a>
       <a href="#compare">对比</a>
       <a href="#install">安装</a>
+      <a href="#support">支持</a>
       <a href="https://github.com/yuntaojinghong/astrbot_plugin_panshi" target="_blank">GitHub</a>
     </div>
   </div>
@@ -1029,6 +1044,29 @@ nav a.act { color: var(--fg); background: var(--panel-hi); }
             <div><span class="k">/签到</span> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="c">每日签到得积分</span></div>
           </div>
         </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="support">
+  <div class="wrap">
+    <div class="eyebrow">// SUPPORT</div>
+    <h2>喜欢就支持一下</h2>
+    <p class="sub">
+      磐石完全免费开源（GPL-3.0），也会一直更新下去。
+      如果它帮你把群管得井井有条，点个 <b>Star</b> 就是最大的鼓励；请作者喝杯奶茶也完全可以喵～
+    </p>
+    <div class="grid g2">
+      <div class="card support-card">
+        <h3>⭐ 点个 Star</h3>
+        <p>在 GitHub 仓库右上角点一下 Star，让更多群主看到这个插件，也是我持续维护更新的动力。</p>
+        <a class="btn primary" href="https://github.com/yuntaojinghong/astrbot_plugin_panshi" target="_blank" style="margin-top:16px">前往 GitHub 点 Star →</a>
+      </div>
+      <div class="card support-card">
+        <h3 style="text-align:center">🍵 请作者喝一杯</h3>
+        <img class="qr" src="donate_qr.png" alt="云涛惊鸿的微信赞赏码" width="208" height="208">
+        <p class="qr-cap">微信扫一扫赞赏 · 「感谢投喂喵~」</p>
       </div>
     </div>
   </div>

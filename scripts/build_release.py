@@ -24,6 +24,7 @@ DIST = os.path.join(REPO_ROOT, "dist")
 
 EXCLUDE_DIRS = {
     "__pycache__", ".git", ".idea", ".vscode", "dist", "scripts",
+    "docs",  # GitHub Pages 说明站，插件运行不需要
     "panshi_data", ".ruff_cache", ".pytest_cache",
 }
 EXCLUDE_FILES = {

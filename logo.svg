@@ -1,47 +1,39 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
   <defs>
     <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#5B52C8"/>
-      <stop offset="100%" stop-color="#3D3589"/>
+      <stop offset="0%" stop-color="#7B6CFF"/>
+      <stop offset="100%" stop-color="#3A2EBA"/>
     </linearGradient>
-    <linearGradient id="rock" x1="0%" y1="0%" x2="0%" y2="100%">
-      <stop offset="0%" stop-color="#FFFFFF"/>
-      <stop offset="100%" stop-color="#D8D5F0"/>
-    </linearGradient>
+    <radialGradient id="glow" cx="50%" cy="48%" r="50%">
+      <stop offset="0%" stop-color="#ACA0FF" stop-opacity="0.5"/>
+      <stop offset="100%" stop-color="#ACA0FF" stop-opacity="0"/>
+    </radialGradient>
   </defs>
 
-  <rect width="256" height="256" rx="56" fill="url(#bg)"/>
+  <rect width="256" height="256" rx="58" fill="url(#bg)"/>
+  <polygon points="0,0 256,0 0,256" fill="#FFFFFF" opacity="0.055"/>
+  <polygon points="256,100 256,256 100,256" fill="#12084C" opacity="0.13"/>
+  <circle cx="128" cy="124" r="100" fill="url(#glow)"/>
 
-  <ellipse cx="128" cy="212" rx="62" ry="10" fill="#2A2466" opacity="0.45"/>
+  <!-- 棱面晶石 -->
+  <polygon points="128,38 52,84 128,104" fill="#EBE7FF"/>
+  <polygon points="128,38 204,84 128,104" fill="#FFFFFF"/>
+  <polygon points="52,84 128,104 128,208 90,190 52,156" fill="#CEC8F3"/>
+  <polygon points="128,104 204,84 204,156 166,190 128,208" fill="#A8A0E0"/>
+  <polyline points="128,104 128,208" stroke="#FFFFFF" stroke-opacity="0.24" stroke-width="2" fill="none"/>
 
-  <path d="M128 44
-           L197 86
-           L197 152
-           Q197 190 128 210
-           Q59 190 59 152
-           L59 86
-           Z"
-        fill="url(#rock)"/>
+  <!-- 中心盾牌 -->
+  <polygon points="128,82 163,103 163,141 128,172 93,141 93,103" fill="#5445CC"/>
+  <polygon points="128,82 163,103 128,122 93,103" fill="#786AE6"/>
 
-  <path d="M128 44 L197 86 L197 152 Q197 190 128 210 Z"
-        fill="#C4C0E8" opacity="0.55"/>
+  <!-- 对勾 -->
+  <polyline points="106,126 122,141 151,108" fill="none" stroke="#FFFFFF"
+            stroke-width="13" stroke-linecap="round" stroke-linejoin="round"/>
 
-  <path d="M128 44 L197 86 L128 122 L59 86 Z"
-        fill="#FFFFFF" opacity="0.9"/>
-
-  <path d="M128 78 L166 100 L166 146 Q166 170 128 182 Q90 170 90 146 L90 100 Z"
-        fill="#534AB7"/>
-
-  <path d="M128 78 L166 100 L128 120 L90 100 Z"
-        fill="#7F77DD"/>
-
-  <circle cx="128" cy="140" r="15" fill="#FFFFFF"/>
-  <rect x="124" y="146" width="8" height="20" rx="4" fill="#FFFFFF"/>
-
-  <g stroke="#FFFFFF" stroke-width="5" stroke-linecap="round" opacity="0.85">
-    <line x1="52" y1="112" x2="52" y2="132"/>
-    <line x1="42" y1="122" x2="62" y2="122"/>
-    <line x1="204" y1="112" x2="204" y2="132"/>
-    <line x1="194" y1="122" x2="214" y2="122"/>
+  <!-- 星光 -->
+  <g fill="#FFFFFF">
+    <polygon points="46,37 48.8,49 61,52 48.8,55 46,67 43.2,55 31,52 43.2,49" opacity="0.92"/>
+    <polygon points="211,175 213.6,184.4 223,187 213.6,189.6 211,199 208.4,189.6 199,187 208.4,184.4" opacity="0.8"/>
+    <polygon points="207,52 208.6,56.4 213,58 208.6,59.6 207,64 205.4,59.6 201,58 205.4,56.4" opacity="0.63"/>
   </g>
 </svg>
