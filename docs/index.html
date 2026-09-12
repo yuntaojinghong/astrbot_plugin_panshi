@@ -5,176 +5,349 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>磐石 · 智能群管 — AstrBot QQ群管插件</title>
 <meta name="description" content="磐石：听得懂人话的 AstrBot QQ 群管理插件。禁言、踢人、反垃圾、入群验证、警告系统，全部支持自然语言操作。">
+<link rel="icon" href="favicon.png">
 <style>
 :root {
-  --bg: #ffffff;
-  --bg2: #f7f7f5;
-  --bg3: #f1efe8;
-  --fg: #1f1f1e;
-  --fg2: #5f5e5a;
-  --fg3: #888780;
-  --line: rgba(0,0,0,0.12);
-  --accent: #534AB7;
-  --accent-bg: #EEEDFE;
-  --ok: #0F6E56;
-  --ok-bg: #E1F5EE;
-  --warn: #854F0B;
-  --warn-bg: #FAEEDA;
+  --bg: #08080f;
+  --bg-soft: #0d0d18;
+  --panel: rgba(255,255,255,0.035);
+  --panel-hi: rgba(255,255,255,0.06);
+  --line: rgba(255,255,255,0.09);
+  --line-hi: rgba(139,124,255,0.35);
+  --fg: #f2f1fb;
+  --fg2: #a9a7bd;
+  --fg3: #6f6d85;
+  --accent: #8b7cff;
+  --accent2: #4dc9ff;
+  --accent3: #ff5fa2;
+  --accent-soft: rgba(139,124,255,0.14);
+  --ok: #3ddc97;
+  --warn: #ffb648;
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+          "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
 }
 * { box-sizing: border-box; margin: 0; padding: 0; }
 html { scroll-behavior: smooth; }
 body {
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
-               "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  font-family: var(--sans);
   background: var(--bg); color: var(--fg);
   font-size: 15px; line-height: 1.7;
   -webkit-font-smoothing: antialiased;
+  overflow-x: hidden;
 }
-.wrap { max-width: 920px; margin: 0 auto; padding: 0 24px; }
+/* ===== 背景光效层 ===== */
+.bgfx { position: fixed; inset: 0; z-index: 0; pointer-events: none; overflow: hidden; }
+.bgfx .grid {
+  position: absolute; inset: -50%;
+  background-image:
+    linear-gradient(rgba(139,124,255,0.055) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(139,124,255,0.055) 1px, transparent 1px);
+  background-size: 54px 54px;
+  transform: perspective(600px) rotateX(52deg) translateY(-8%);
+  transform-origin: top center;
+  mask-image: radial-gradient(ellipse 70% 55% at 50% 0%, #000 0%, transparent 78%);
+  -webkit-mask-image: radial-gradient(ellipse 70% 55% at 50% 0%, #000 0%, transparent 78%);
+  animation: gridDrift 22s linear infinite;
+}
+@keyframes gridDrift { to { background-position: 0 54px, 54px 0; } }
+.orb { position: absolute; border-radius: 50%; filter: blur(90px); opacity: .5; }
+.orb.a { width: 620px; height: 620px; top: -260px; left: -140px;
+  background: radial-gradient(circle, #6a4cff 0%, transparent 68%); }
+.orb.b { width: 520px; height: 520px; top: -160px; right: -180px;
+  background: radial-gradient(circle, #1f8fff 0%, transparent 68%); }
+.orb.c { width: 480px; height: 480px; top: 42%; left: 55%;
+  background: radial-gradient(circle, #a03cff 0%, transparent 70%); opacity: .3; }
+.scan {
+  position: absolute; inset: 0;
+  background: repeating-linear-gradient(180deg,
+    rgba(255,255,255,0.022) 0px, rgba(255,255,255,0.022) 1px, transparent 1px, transparent 3px);
+  mix-blend-mode: overlay;
+}
+.noise { position: absolute; inset: 0; opacity: .035;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)'/%3E%3C/svg%3E"); }
 
-/* ---- nav ---- */
+.wrap { position: relative; z-index: 1; max-width: 940px; margin: 0 auto; padding: 0 24px; }
+
+/* ===== nav ===== */
 nav {
-  position: sticky; top: 0; z-index: 50;
-  background: rgba(255,255,255,0.86);
-  backdrop-filter: blur(12px);
+  position: sticky; top: 0; z-index: 60;
+  background: rgba(8,8,15,0.72);
+  backdrop-filter: blur(18px) saturate(160%);
   border-bottom: 1px solid var(--line);
 }
-nav .wrap { display: flex; align-items: center; height: 58px; gap: 20px; }
-.brand { font-weight: 500; font-size: 16px; letter-spacing: -0.01em; }
-.brand span { color: var(--accent); }
-nav .links { margin-left: auto; display: flex; gap: 4px; }
+nav .wrap { display: flex; align-items: center; height: 60px; gap: 20px; }
+.brand {
+  font-weight: 600; font-size: 16.5px; letter-spacing: -0.01em;
+  display: flex; align-items: center; gap: 9px;
+}
+.brand .dot {
+  width: 9px; height: 9px; border-radius: 3px; transform: rotate(45deg);
+  background: linear-gradient(135deg, var(--accent), var(--accent2));
+  box-shadow: 0 0 14px rgba(139,124,255,.9);
+}
+.brand span { background: linear-gradient(100deg, var(--accent), var(--accent2));
+  -webkit-background-clip: text; background-clip: text; color: transparent; }
+nav .links { margin-left: auto; display: flex; gap: 2px; }
 nav a {
-  color: var(--fg2); text-decoration: none; font-size: 14px;
-  padding: 6px 11px; border-radius: 8px; transition: background .15s;
+  color: var(--fg2); text-decoration: none; font-size: 13.5px;
+  padding: 7px 12px; border-radius: 8px; transition: .2s;
 }
-nav a:hover { background: var(--bg3); color: var(--fg); }
+nav a:hover { color: var(--fg); background: var(--panel-hi); }
 
-/* ---- hero ---- */
-header { padding: 78px 0 56px; }
-.stone {
-  font-size: 12px; letter-spacing: .14em; text-transform: uppercase;
-  color: var(--accent); font-weight: 500; margin-bottom: 18px;
+/* ===== hero ===== */
+header { padding: 88px 0 60px; position: relative; }
+.tag {
+  display: inline-flex; align-items: center; gap: 9px;
+  font-size: 11.5px; letter-spacing: .16em; text-transform: uppercase;
+  font-weight: 600; color: var(--accent2); margin-bottom: 24px;
+  padding: 6px 14px 6px 10px; border-radius: 999px;
+  border: 1px solid rgba(77,201,255,0.28);
+  background: rgba(77,201,255,0.07);
 }
+.tag::before {
+  content: ""; width: 6px; height: 6px; border-radius: 50%;
+  background: var(--accent2); box-shadow: 0 0 9px var(--accent2);
+  animation: pulse 2s ease-in-out infinite;
+}
+@keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .3; } }
 h1 {
-  font-size: 46px; line-height: 1.15; font-weight: 500;
-  letter-spacing: -0.028em; margin-bottom: 20px;
+  font-size: 54px; line-height: 1.12; font-weight: 700;
+  letter-spacing: -0.035em; margin-bottom: 22px;
 }
-h1 em { font-style: normal; color: var(--accent); }
-.lede { font-size: 17px; color: var(--fg2); max-width: 620px; margin-bottom: 30px; }
-.btns { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 46px; }
+h1 em {
+  font-style: normal;
+  background: linear-gradient(100deg, #b3a6ff 0%, #8b7cff 40%, #4dc9ff 75%, #61e6ff 100%);
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+  position: relative;
+}
+.lede { font-size: 17px; color: var(--fg2); max-width: 640px; margin-bottom: 34px; }
+.lede b { color: var(--fg); font-weight: 500; }
+.btns { display: flex; gap: 11px; flex-wrap: wrap; margin-bottom: 52px; }
 .btn {
-  display: inline-flex; align-items: center; gap: 7px;
-  padding: 9px 18px; border-radius: 9px; text-decoration: none;
-  font-size: 14px; font-weight: 500; border: 1px solid var(--line);
-  color: var(--fg); background: var(--bg); transition: .15s;
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 11px 22px; border-radius: 10px; text-decoration: none;
+  font-size: 14px; font-weight: 600; border: 1px solid var(--line);
+  color: var(--fg); background: var(--panel);
+  transition: .22s; position: relative; overflow: hidden;
 }
-.btn:hover { background: var(--bg3); }
-.btn.primary { background: var(--fg); color: var(--bg); border-color: var(--fg); }
-.btn.primary:hover { opacity: .85; }
+.btn:hover { background: var(--panel-hi); border-color: var(--line-hi); transform: translateY(-1px); }
+.btn.primary {
+  background: linear-gradient(100deg, #6f5cf0, #8b7cff 50%, #4db8ff);
+  border-color: transparent; color: #fff;
+  box-shadow: 0 6px 26px -6px rgba(139,124,255,.75), inset 0 1px 0 rgba(255,255,255,.22);
+}
+.btn.primary:hover { box-shadow: 0 10px 34px -6px rgba(139,124,255,.95); }
 
-/* ---- terminal ---- */
+/* ===== terminal ===== */
 .term {
-  background: var(--bg3); border: 1px solid var(--line);
-  border-radius: 12px; padding: 16px 18px; font-family: var(--mono);
-  font-size: 13px; line-height: 1.85; overflow-x: auto; color: var(--fg2);
+  background: linear-gradient(180deg, rgba(15,15,26,0.92), rgba(10,10,18,0.92));
+  border: 1px solid var(--line);
+  border-radius: 14px; overflow: hidden;
+  font-family: var(--mono); font-size: 13px; line-height: 1.9;
+  color: var(--fg2);
+  box-shadow: 0 24px 60px -30px rgba(0,0,0,.9), inset 0 1px 0 rgba(255,255,255,.05);
 }
+.term .bar {
+  display: flex; align-items: center; gap: 7px;
+  padding: 11px 15px; border-bottom: 1px solid var(--line);
+  background: rgba(255,255,255,0.028);
+}
+.term .bar i {
+  width: 11px; height: 11px; border-radius: 50%; display: block;
+  background: #ff5f57;
+}
+.term .bar i:nth-child(2) { background: #febc2e; }
+.term .bar i:nth-child(3) { background: #28c840; }
+.term .bar .t { margin-left: 8px; color: var(--fg3); font-size: 11.5px; letter-spacing: .04em; }
+.term .body { padding: 18px 20px; overflow-x: auto; }
 .term .c { color: var(--fg3); }
 .term .k { color: var(--accent); font-weight: 500; }
 .term .s { color: var(--ok); }
+.term .p { color: var(--accent2); }
 
-/* ---- sections ---- */
-section { padding: 52px 0; border-top: 1px solid var(--line); }
+/* ===== sections ===== */
+section { padding: 62px 0; border-top: 1px solid var(--line); position: relative; }
+.eyebrow {
+  font-family: var(--mono); font-size: 12px; letter-spacing: .1em;
+  color: var(--accent); margin-bottom: 12px;
+}
 h2 {
-  font-size: 25px; font-weight: 500; letter-spacing: -0.02em;
-  margin-bottom: 8px;
+  font-size: 30px; font-weight: 700; letter-spacing: -0.028em;
+  margin-bottom: 10px; line-height: 1.25;
 }
-.sub { color: var(--fg3); font-size: 14px; margin-bottom: 30px; }
-h3 { font-size: 16px; font-weight: 500; margin-bottom: 8px; }
+.sub { color: var(--fg3); font-size: 14.5px; margin-bottom: 34px; max-width: 660px; }
+h3 { font-size: 16px; font-weight: 600; margin-bottom: 8px; letter-spacing: -0.01em; }
 
-/* ---- cards ---- */
+/* ===== cards ===== */
 .grid { display: grid; gap: 14px; }
-.g2 { grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
-.g3 { grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); }
+.g2 { grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
+.g3 { grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); }
 .card {
-  background: var(--bg); border: 1px solid var(--line);
-  border-radius: 12px; padding: 20px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 14px; padding: 22px;
+  position: relative; overflow: hidden;
+  transition: .28s;
+  backdrop-filter: blur(6px);
 }
+.card::before {
+  content: ""; position: absolute; inset: 0 0 auto 0; height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(139,124,255,.6), transparent);
+  opacity: 0; transition: .3s;
+}
+.card:hover {
+  border-color: var(--line-hi); transform: translateY(-3px);
+  background: var(--panel-hi);
+  box-shadow: 0 18px 44px -24px rgba(139,124,255,.6);
+}
+.card:hover::before { opacity: 1; }
 .card .icon {
-  width: 34px; height: 34px; border-radius: 9px;
-  background: var(--accent-bg); color: var(--accent);
+  width: 38px; height: 38px; border-radius: 10px;
+  background: linear-gradient(140deg, rgba(139,124,255,.22), rgba(77,201,255,.12));
+  border: 1px solid rgba(139,124,255,.3);
+  color: var(--accent);
   display: flex; align-items: center; justify-content: center;
-  font-family: var(--mono); font-size: 15px; font-weight: 500;
-  margin-bottom: 13px;
+  font-family: var(--mono); font-size: 14px; font-weight: 600;
+  margin-bottom: 15px;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.08);
 }
 .card p { color: var(--fg2); font-size: 13.5px; }
-.card.hl { border-color: var(--accent); border-width: 2px; }
+.card p code {
+  font-family: var(--mono); font-size: 12px;
+  background: rgba(139,124,255,.14); color: #c3b9ff;
+  padding: 1px 6px; border-radius: 5px;
+}
+.card.hl {
+  border-color: rgba(139,124,255,.5);
+  background: linear-gradient(160deg, rgba(139,124,255,.11), rgba(77,201,255,.04));
+  box-shadow: 0 0 0 1px rgba(139,124,255,.14), 0 22px 50px -28px rgba(139,124,255,.75);
+}
 
-/* ---- comparison table ---- */
+/* ===== comparison table ===== */
 .cmp { width: 100%; border-collapse: collapse; font-size: 14px; }
 .cmp th, .cmp td {
-  text-align: left; padding: 12px 14px;
+  text-align: left; padding: 13px 15px;
   border-bottom: 1px solid var(--line); vertical-align: top;
 }
-.cmp th { font-weight: 500; color: var(--fg3); font-size: 12.5px;
-  text-transform: uppercase; letter-spacing: .06em; }
-.cmp td:first-child { color: var(--fg3); width: 26%; }
+.cmp th {
+  font-weight: 600; color: var(--fg3); font-size: 11.5px;
+  text-transform: uppercase; letter-spacing: .1em;
+  font-family: var(--mono);
+}
+.cmp tbody tr { transition: background .2s; }
+.cmp tbody tr:hover { background: rgba(255,255,255,0.025); }
+.cmp td:first-child { color: var(--fg3); width: 24%; font-size: 13px; }
+.cmp code {
+  font-family: var(--mono); font-size: 12.5px;
+  background: rgba(255,255,255,0.06); padding: 2px 7px; border-radius: 5px;
+}
 .cmp .new { color: var(--ok); font-weight: 500; }
 
-/* ---- chat demo ---- */
+/* ===== chat demo ===== */
 .chat {
-  background: var(--bg2); border: 1px solid var(--line);
-  border-radius: 12px; padding: 20px;
+  background: linear-gradient(180deg, rgba(15,15,26,0.9), rgba(11,11,20,0.9));
+  border: 1px solid var(--line);
+  border-radius: 16px; padding: 22px;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.05), 0 24px 60px -36px #000;
 }
 .bubble {
-  border-radius: 10px; padding: 10px 14px; margin-bottom: 10px;
-  font-size: 14px; max-width: 88%; position: relative;
+  border-radius: 12px; padding: 11px 15px; margin-bottom: 10px;
+  font-size: 14px; max-width: 86%; position: relative;
+  border: 1px solid transparent;
 }
-.bubble.user { background: var(--bg); border: 1px solid var(--line); }
-.bubble.bot { background: var(--accent-bg); color: var(--accent); margin-left: auto; }
-.bubble.bot.warn { background: var(--warn-bg); color: var(--warn); }
-.bubble.bot.ok { background: var(--ok-bg); color: var(--ok); }
+.bubble.user {
+  background: rgba(255,255,255,0.055); border-color: var(--line);
+  border-bottom-left-radius: 4px;
+}
+.bubble.bot {
+  background: linear-gradient(120deg, rgba(139,124,255,.2), rgba(77,201,255,.13));
+  border-color: rgba(139,124,255,.35); color: #cfc7ff;
+  margin-left: auto; border-bottom-right-radius: 4px;
+}
+.bubble.bot.warn {
+  background: rgba(255,182,72,.14); border-color: rgba(255,182,72,.4); color: #ffd493;
+}
+.bubble.bot.ok {
+  background: rgba(61,220,151,.13); border-color: rgba(61,220,151,.38); color: #8ce9c0;
+}
 
-/* ---- cmd table ---- */
+/* ===== cmd table ===== */
 .cmds { font-size: 14px; }
 .cmds code {
   font-family: var(--mono); font-size: 12.5px;
-  background: var(--bg3); padding: 2px 7px; border-radius: 5px;
-  color: var(--fg);
+  background: rgba(139,124,255,.13); padding: 3px 8px; border-radius: 6px;
+  color: #c3b9ff;
 }
 
-/* ---- steps ---- */
-.step { display: flex; gap: 16px; margin-bottom: 22px; }
+/* ===== steps ===== */
+.step { display: flex; gap: 18px; margin-bottom: 26px; }
 .step .n {
-  flex: 0 0 26px; height: 26px; border-radius: 50%;
-  background: var(--fg); color: var(--bg);
+  flex: 0 0 30px; height: 30px; border-radius: 10px;
+  background: linear-gradient(140deg, var(--accent), var(--accent2));
+  color: #fff; box-shadow: 0 0 20px -4px rgba(139,124,255,.85);
   display: flex; align-items: center; justify-content: center;
-  font-size: 13px; font-weight: 500;
+  font-size: 13px; font-weight: 700;
 }
-.step .body { flex: 1; padding-top: 2px; }
-.step .body p { color: var(--fg2); font-size: 14px; margin-bottom: 8px; }
+.step .bd { flex: 1; padding-top: 3px; min-width: 0; }
+.step .bd p { color: var(--fg2); font-size: 14px; margin-bottom: 10px; }
 
-/* ---- footer ---- */
-footer {
-  padding: 40px 0 56px; border-top: 1px solid var(--line);
-  color: var(--fg3); font-size: 13.5px;
+.dl {
+  display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  margin-bottom: 30px;
 }
-footer a { color: var(--accent); text-decoration: none; }
-footer a:hover { text-decoration: underline; }
+.dl a {
+  display: flex; align-items: center; gap: 13px;
+  padding: 16px 18px; border-radius: 13px; text-decoration: none;
+  background: var(--panel); border: 1px solid var(--line);
+  color: var(--fg); transition: .25s;
+}
+.dl a:hover { border-color: var(--line-hi); background: var(--panel-hi); transform: translateY(-2px); }
+.dl .ic {
+  flex: 0 0 36px; height: 36px; border-radius: 10px;
+  background: linear-gradient(140deg, rgba(139,124,255,.25), rgba(77,201,255,.12));
+  border: 1px solid rgba(139,124,255,.3);
+  display: flex; align-items: center; justify-content: center;
+  font-family: var(--mono); font-size: 11px; font-weight: 700; color: var(--accent);
+}
+.dl .tx { display: flex; flex-direction: column; line-height: 1.4; }
+.dl .tx b { font-size: 14px; font-weight: 600; }
+.dl .tx small { color: var(--fg3); font-size: 12px; font-family: var(--mono); }
+
+/* ===== footer ===== */
+footer {
+  padding: 46px 0 62px; border-top: 1px solid var(--line);
+  color: var(--fg3); font-size: 13.5px; position: relative; z-index: 1;
+}
+footer strong { color: var(--fg2); font-weight: 600; }
+footer a { color: var(--accent); text-decoration: none; transition: .2s; }
+footer a:hover { color: var(--accent2); }
 
 @media (max-width: 640px) {
-  h1 { font-size: 33px; }
-  header { padding: 50px 0 40px; }
+  h1 { font-size: 34px; }
+  h2 { font-size: 24px; }
+  header { padding: 54px 0 44px; }
   nav .links { display: none; }
-  section { padding: 40px 0; }
+  section { padding: 44px 0; }
+  .orb { filter: blur(64px); }
+  .bubble { max-width: 95%; }
 }
 </style>
 </head>
 <body>
 
+<div class="bgfx">
+  <div class="orb a"></div>
+  <div class="orb b"></div>
+  <div class="orb c"></div>
+  <div class="grid"></div>
+  <div class="scan"></div>
+  <div class="noise"></div>
+</div>
+
 <nav>
   <div class="wrap">
-    <div class="brand">磐石<span>.</span></div>
+    <div class="brand"><span class="dot"></span>磐石<span>.群管</span></div>
     <div class="links">
       <a href="#features">功能</a>
       <a href="#smart">智能</a>
@@ -187,10 +360,10 @@ footer a:hover { text-decoration: underline; }
 
 <header>
   <div class="wrap">
-    <div class="stone">AstrBot · NapCat · OneBot v11</div>
+    <div class="tag">AstrBot · NapCat · OneBot v11</div>
     <h1>稳如磐石的 QQ 群管家，<br><em>听得懂人话</em>。</h1>
     <p class="lede">
-      不用记指令。说一句「把刚才刷屏的禁言十分钟」，它就知道该做什么。
+      不用记指令。说一句「<b>把刚才刷屏的禁言十分钟</b>」，它就知道该做什么。
       禁言、踢人、反垃圾、入群验证、违规警告、签到排行 —— 一个插件全部搞定。
     </p>
     <div class="btns">
@@ -198,15 +371,20 @@ footer a:hover { text-decoration: underline; }
       <a class="btn" href="https://github.com/yuntaojinghong/astrbot_plugin_panshi" target="_blank">查看源码</a>
     </div>
     <div class="term">
-      <div><span class="c">$</span> cd AstrBot/data/plugins</div>
-      <div><span class="c">$</span> git clone https://github.com/yuntaojinghong/astrbot_plugin_panshi.git</div>
-      <div><span class="s">✓</span> 重启 AstrBot，即可在插件页看到「磐石 · 智能群管」</div>
+      <div class="bar"><i></i><i></i><i></i><span class="t">bash — astrbot/data/plugins</span></div>
+      <div class="body">
+        <div><span class="c">$</span> cd AstrBot/data/plugins</div>
+        <div><span class="c">$</span> git clone https://github.com/yuntaojinghong/astrbot_plugin_panshi.git</div>
+        <div><span class="s">✓</span> 重启 AstrBot，插件页出现「磐石 · 智能群管」</div>
+        <div><span class="p">→</span> <span class="k">23</span> 个指令 · <span class="k">7</span> 个 LLM 工具 已就绪</div>
+      </div>
     </div>
   </div>
 </header>
 
 <section id="features">
   <div class="wrap">
+    <div class="eyebrow">// FEATURES</div>
     <h2>七类功能，覆盖群管全场景</h2>
     <p class="sub">每个模块独立开关，按需启用，不干扰正常聊天。</p>
     <div class="grid g2">
@@ -256,6 +434,7 @@ footer a:hover { text-decoration: underline; }
 
 <section id="smart">
   <div class="wrap">
+    <div class="eyebrow">// NATURAL LANGUAGE</div>
     <h2>核心：混合模式的智能识别</h2>
     <p class="sub">指令秒回不耗 token，模糊表述交给 AI —— 既快又聪明。</p>
 
@@ -270,15 +449,18 @@ footer a:hover { text-decoration: underline; }
       <div class="bubble bot">✅ 已将 王五 踢出（原因：发链接）</div>
     </div>
 
-    <div style="margin-top:26px" class="term">
-      <div><span class="c">消息进来</span></div>
-      <div> ├─ 是 /指令 &nbsp;→ <span class="k">直接执行</span>（零 token，毫秒级）</div>
-      <div> └─ 像在指挥机器人 → 交给 <span class="k">LLM 解析意图</span></div>
-      <div> &nbsp;&nbsp;&nbsp;&nbsp;├─ 收集上下文（引用 / 最近发言 / @对象 / 群成员）</div>
-      <div> &nbsp;&nbsp;&nbsp;&nbsp;├─ 输出结构化 JSON</div>
-      <div> &nbsp;&nbsp;&nbsp;&nbsp;├─ 目标解析（名字模糊匹配 / 刷屏者推断）</div>
-      <div> &nbsp;&nbsp;&nbsp;&nbsp;├─ 权限校验</div>
-      <div> &nbsp;&nbsp;&nbsp;&nbsp;└─ 高风险操作 → <span class="k">确认后执行</span></div>
+    <div class="term" style="margin-top:26px">
+      <div class="bar"><i></i><i></i><i></i><span class="t">intent-pipeline</span></div>
+      <div class="body">
+        <div><span class="c">消息进来</span></div>
+        <div> ├─ 是 /指令 &nbsp;→ <span class="k">直接执行</span>（零 token，毫秒级）</div>
+        <div> └─ 像在指挥机器人 → 交给 <span class="k">LLM 解析意图</span></div>
+        <div> &nbsp;&nbsp;&nbsp;&nbsp;├─ 收集上下文（引用 / 最近发言 / @对象 / 群成员）</div>
+        <div> &nbsp;&nbsp;&nbsp;&nbsp;├─ 输出结构化 JSON</div>
+        <div> &nbsp;&nbsp;&nbsp;&nbsp;├─ 目标解析（名字模糊匹配 / 刷屏者推断）</div>
+        <div> &nbsp;&nbsp;&nbsp;&nbsp;├─ 权限校验</div>
+        <div> &nbsp;&nbsp;&nbsp;&nbsp;└─ 高风险操作 → <span class="k">确认后执行</span></div>
+      </div>
     </div>
 
     <div class="grid g3" style="margin-top:22px">
@@ -300,6 +482,7 @@ footer a:hover { text-decoration: underline; }
 
 <section id="compare">
   <div class="wrap">
+    <div class="eyebrow">// COMPARISON</div>
     <h2>相对传统群管插件的改进</h2>
     <p class="sub">站在成熟方案的肩膀上，重新设计交互体验。</p>
     <table class="cmp">
@@ -344,24 +527,42 @@ footer a:hover { text-decoration: underline; }
 
 <section id="install">
   <div class="wrap">
+    <div class="eyebrow">// GET STARTED</div>
     <h2>三步装好</h2>
     <p class="sub">需要 AstrBot 4.5+ 与 NapCat（OneBot v11）协议端。</p>
 
+    <div class="dl">
+      <a href="https://github.com/yuntaojinghong/astrbot_plugin_panshi/releases/download/v1.0.0/astrbot_plugin_panshi.zip">
+        <span class="ic">ZIP</span>
+        <span class="tx"><b>下载压缩包</b><small>v1.0.0 · 82.5 KB</small></span>
+      </a>
+      <a href="https://github.com/yuntaojinghong/astrbot_plugin_panshi/releases/download/v1.0.0/astrbot_plugin_panshi.tar.gz">
+        <span class="ic">TGZ</span>
+        <span class="tx"><b>下载 tar.gz</b><small>v1.0.0 · 73.9 KB</small></span>
+      </a>
+      <a href="https://github.com/yuntaojinghong/astrbot_plugin_panshi">
+        <span class="ic">GIT</span>
+        <span class="tx"><b>克隆仓库</b><small>main 分支</small></span>
+      </a>
+    </div>
+
     <div class="step">
       <div class="n">1</div>
-      <div class="body">
-        <h3>拉取插件</h3>
-        <p>进入 AstrBot 的插件目录，克隆本仓库。</p>
+      <div class="bd">
+        <h3>获取插件</h3>
+        <p>下载压缩包，解压到 AstrBot 的插件目录；或直接克隆仓库。</p>
         <div class="term">
-          <div>cd AstrBot/data/plugins</div>
-          <div>git clone https://github.com/yuntaojinghong/astrbot_plugin_panshi.git</div>
+          <div class="body">
+            <div>cd AstrBot/data/plugins</div>
+            <div>git clone https://github.com/yuntaojinghong/astrbot_plugin_panshi.git</div>
+          </div>
         </div>
       </div>
     </div>
 
     <div class="step">
       <div class="n">2</div>
-      <div class="body">
+      <div class="bd">
         <h3>重启并配置</h3>
         <p>重启 AstrBot，在 WebUI 插件页找到「磐石 · 智能群管」，按分组调整配置：基础设置、反垃圾防护、入群欢迎、警告系统、智能识别、群活跃、自动化。</p>
       </div>
@@ -369,15 +570,17 @@ footer a:hover { text-decoration: underline; }
 
     <div class="step">
       <div class="n">3</div>
-      <div class="body">
+      <div class="bd">
         <h3>开始使用</h3>
         <p>发送 <code>/群管帮助</code> 查看完整指令，或直接对机器人说人话。</p>
         <div class="term">
-          <div><span class="k">/禁言</span> @某人 10m &nbsp;&nbsp;&nbsp;<span class="c">禁言十分钟</span></div>
-          <div><span class="k">/踢</span> @某人 发广告 &nbsp;&nbsp;&nbsp;<span class="c">踢出并注明原因</span></div>
-          <div><span class="k">/警告</span> @某人 刷屏 &nbsp;&nbsp;&nbsp;<span class="c">记一次违规</span></div>
-          <div><span class="k">/净化</span> 30 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="c">批量撤回最近30条</span></div>
-          <div><span class="k">/签到</span> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="c">每日签到得积分</span></div>
+          <div class="body">
+            <div><span class="k">/禁言</span> @某人 10m &nbsp;&nbsp;&nbsp;<span class="c">禁言十分钟</span></div>
+            <div><span class="k">/踢</span> @某人 发广告 &nbsp;&nbsp;&nbsp;<span class="c">踢出并注明原因</span></div>
+            <div><span class="k">/警告</span> @某人 刷屏 &nbsp;&nbsp;&nbsp;<span class="c">记一次违规</span></div>
+            <div><span class="k">/净化</span> 30 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="c">批量撤回最近30条</span></div>
+            <div><span class="k">/签到</span> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="c">每日签到得积分</span></div>
+          </div>
         </div>
       </div>
     </div>
@@ -392,7 +595,8 @@ footer a:hover { text-decoration: underline; }
     </p>
     <p style="margin-top:8px">
       <a href="https://github.com/yuntaojinghong/astrbot_plugin_panshi" target="_blank">GitHub 仓库</a> ·
-      <a href="https://github.com/yuntaojinghong/astrbot_plugin_panshi/issues" target="_blank">问题反馈</a>
+      <a href="https://github.com/yuntaojinghong/astrbot_plugin_panshi/issues" target="_blank">问题反馈</a> ·
+      <a href="https://github.com/yuntaojinghong/astrbot_plugin_panshi/releases" target="_blank">版本下载</a>
     </p>
   </div>
 </footer>
