@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>磐石 · 配置面板</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <div class="app">
+      <!-- 顶部栏 -->
+      <header class="topbar">
+        <div class="brand">
+          <span class="logo">磐</span>
+          <div class="titles">
+            <h1>磐石 · 智能群管</h1>
+            <p class="sub">配置面板</p>
+          </div>
+        </div>
+        <div class="topbar-right">
+          <span class="status"><i id="statusDot" class="dot"></i><span id="statusText">连接中…</span></span>
+          <button id="btnReload" class="btn ghost">刷新</button>
+        </div>
+      </header>
+
+      <div id="alertBox"></div>
+
+      <!-- 状态概览 -->
+      <section id="overview" class="cards"></section>
+
+      <div class="layout">
+        <!-- 左侧：群列表 -->
+        <aside class="sidebar">
+          <div class="sidebar-head">
+            <span class="sidebar-title">群聊列表</span>
+            <button id="btnSync" class="btn tiny">同步</button>
+          </div>
+          <input id="search" class="search" type="text" placeholder="搜索群名或群号…" />
+          <ul id="groupList" class="group-list"></ul>
+        </aside>
+
+        <!-- 右侧：配置表单 -->
+        <main id="content" class="content">
+          <div class="placeholder">
+            <p>正在加载…</p>
+          </div>
+        </main>
+      </div>
+    </div>
+
+    <div id="toast" class="toast"></div>
+
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

@@ -314,6 +314,96 @@ h3 { font-size: 16px; font-weight: 600; margin-bottom: 8px; letter-spacing: -0.0
 .dl .tx b { font-size: 14px; font-weight: 600; }
 .dl .tx small { color: var(--fg3); font-size: 12px; font-family: var(--mono); }
 
+/* ===== 面板展示 ===== */
+.mock {
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  overflow: hidden;
+  background: linear-gradient(180deg, rgba(15,15,26,0.92), rgba(11,11,20,0.92));
+  box-shadow: 0 30px 70px -40px #000, inset 0 1px 0 rgba(255,255,255,.05);
+}
+.mock-bar {
+  display: flex; align-items: center; gap: 7px;
+  padding: 11px 15px; border-bottom: 1px solid var(--line);
+  background: rgba(255,255,255,0.028);
+}
+.mock-bar i { width: 11px; height: 11px; border-radius: 50%; background: #ff5f57; }
+.mock-bar i:nth-child(2) { background: #febc2e; }
+.mock-bar i:nth-child(3) { background: #28c840; }
+.mock-bar .t {
+  margin-left: 8px; color: var(--fg3); font-size: 11.5px;
+  font-family: var(--mono); letter-spacing: .04em;
+}
+.mock-body { display: grid; grid-template-columns: 232px 1fr; min-height: 340px; }
+.mock-side {
+  border-right: 1px solid var(--line); padding: 12px 10px;
+  background: rgba(255,255,255,0.014);
+}
+.mock-side-title {
+  font-size: 11.5px; color: var(--fg3); padding: 0 6px 9px;
+  letter-spacing: .08em; text-transform: uppercase; font-family: var(--mono);
+}
+.mock-row {
+  display: flex; gap: 9px; align-items: center;
+  padding: 8px 8px; border-radius: 9px; margin-bottom: 3px;
+  transition: .2s;
+}
+.mock-row.on {
+  background: var(--accent-soft);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+.mock-av {
+  width: 28px; height: 28px; border-radius: 8px; flex: 0 0 auto;
+  display: grid; place-items: center; font-size: 12px; font-weight: 600;
+  color: #fff; background: linear-gradient(135deg,#7a6cf0,#4db8ff);
+}
+.mock-av.p { background: linear-gradient(135deg,#5b4fd6,#a06cff); }
+.mock-nm { font-size: 12.5px; line-height: 1.35; }
+.mock-nm small { display: block; color: var(--fg3); font-size: 10.5px; }
+.mock-main { padding: 16px 18px; }
+.mock-h {
+  font-size: 15px; font-weight: 600; margin-bottom: 3px;
+}
+.mock-sub { font-size: 11.5px; color: var(--fg3); margin-bottom: 15px; }
+.mock-sec {
+  border: 1px solid var(--line); border-radius: 11px;
+  padding: 12px 13px; margin-bottom: 9px;
+  background: rgba(255,255,255,0.022);
+}
+.mock-sec-head {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 13px; font-weight: 600; margin-bottom: 11px;
+}
+.mock-sec-head .n {
+  margin-left: auto; font-size: 10.5px; color: var(--fg3); font-weight: 400;
+}
+.mock-field {
+  display: flex; align-items: center; gap: 12px;
+  font-size: 12.5px; padding: 5px 0;
+}
+.mock-field span:first-child { flex: 1; color: var(--fg2); }
+.mock-sw {
+  width: 32px; height: 18px; border-radius: 9px; flex: 0 0 auto;
+  background: rgba(255,255,255,0.16); position: relative;
+}
+.mock-sw::after {
+  content: ""; position: absolute; top: 2px; left: 2px;
+  width: 14px; height: 14px; border-radius: 50%; background: #fff;
+  transition: .2s;
+}
+.mock-sw.on { background: var(--accent); }
+.mock-sw.on::after { transform: translateX(14px); }
+.mock-num {
+  font-family: var(--mono); font-size: 12px; padding: 3px 9px;
+  border-radius: 6px; background: rgba(255,255,255,0.07);
+  border: 1px solid var(--line); color: var(--fg2); min-width: 54px;
+  text-align: center;
+}
+.mock-hint {
+  font-size: 11px; color: var(--fg3); margin-top: 6px;
+  padding-left: 2px; line-height: 1.5;
+}
+
 /* ===== footer ===== */
 footer {
   padding: 46px 0 62px; border-top: 1px solid var(--line);
@@ -331,6 +421,8 @@ footer a:hover { color: var(--accent2); }
   section { padding: 44px 0; }
   .orb { filter: blur(64px); }
   .bubble { max-width: 95%; }
+  .mock-body { grid-template-columns: 1fr; }
+  .mock-side { border-right: 0; border-bottom: 1px solid var(--line); }
 }
 </style>
 </head>
@@ -349,6 +441,7 @@ footer a:hover { color: var(--accent2); }
   <div class="wrap">
     <div class="brand"><span class="dot"></span>磐石<span>.群管</span></div>
     <div class="links">
+      <a href="#panel">面板</a>
       <a href="#features">功能</a>
       <a href="#smart">智能</a>
       <a href="#compare">对比</a>
@@ -368,6 +461,7 @@ footer a:hover { color: var(--accent2); }
     </p>
     <div class="btns">
       <a class="btn primary" href="#install">开始安装 →</a>
+      <a class="btn" href="#panel">看看配置面板</a>
       <a class="btn" href="https://github.com/yuntaojinghong/astrbot_plugin_panshi" target="_blank">查看源码</a>
     </div>
     <div class="term">
@@ -376,11 +470,101 @@ footer a:hover { color: var(--accent2); }
         <div><span class="c">$</span> cd AstrBot/data/plugins</div>
         <div><span class="c">$</span> git clone https://github.com/yuntaojinghong/astrbot_plugin_panshi.git</div>
         <div><span class="s">✓</span> 重启 AstrBot，插件页出现「磐石 · 智能群管」</div>
-        <div><span class="p">→</span> <span class="k">23</span> 个指令 · <span class="k">7</span> 个 LLM 工具 已就绪</div>
+        <div><span class="p">→</span> <span class="k">23</span> 个指令 · <span class="k">7</span> 个 LLM 工具 · <span class="k">图形配置面板</span> 已就绪</div>
       </div>
     </div>
   </div>
 </header>
+
+<section id="panel">
+  <div class="wrap">
+    <div class="eyebrow">// CONTROL PANEL</div>
+    <h2>自带图形配置面板</h2>
+    <p class="sub">
+      不用改 JSON、不用记字段名。打开插件详情页就能进面板，<b>自动识别机器人所在的所有群</b>，
+      左侧点选、右侧改配置，每项都带中文说明。
+    </p>
+
+    <div class="mock">
+      <div class="mock-bar">
+        <i></i><i></i><i></i><span class="t">AstrBot / 插件 / 磐石 · 智能群管 / settings</span>
+      </div>
+      <div class="mock-body">
+        <div class="mock-side">
+          <div class="mock-side-title">群聊列表</div>
+          <div class="mock-row on">
+            <span class="mock-av p">默</span>
+            <span class="mock-nm">全局默认配置<small>作为所有群的模板</small></span>
+          </div>
+          <div class="mock-row">
+            <span class="mock-av">磐</span>
+            <span class="mock-nm">磐石开发交流群<small>872341905 · 486 人</small></span>
+          </div>
+          <div class="mock-row">
+            <span class="mock-av">前</span>
+            <span class="mock-nm">前端摸鱼基地<small>746129053 · 203 人</small></span>
+          </div>
+          <div class="mock-row">
+            <span class="mock-av">A</span>
+            <span class="mock-nm">AI 折腾小组<small>615023847 · 88 人</small></span>
+          </div>
+        </div>
+        <div class="mock-main">
+          <div class="mock-h">全局默认配置</div>
+          <div class="mock-sub">这里的设置会作为所有群的默认模板</div>
+
+          <div class="mock-sec">
+            <div class="mock-sec-head">
+              <span>🛡️</span><span>反垃圾防护</span><span class="n">10 项</span>
+            </div>
+            <div class="mock-field">
+              <span>启用违禁词检测</span>
+              <span class="mock-sw on"></span>
+            </div>
+            <div class="mock-field">
+              <span>启用刷屏检测</span>
+              <span class="mock-sw on"></span>
+            </div>
+            <div class="mock-field">
+              <span>刷屏判定：时间窗内消息条数</span>
+              <span class="mock-num">8</span>
+            </div>
+            <div class="mock-hint">在下方时间窗内发送超过这么多条消息即判定为刷屏</div>
+          </div>
+
+          <div class="mock-sec">
+            <div class="mock-sec-head">
+              <span>⚠️</span><span>警告系统</span><span class="n">5 项</span>
+            </div>
+            <div class="mock-field">
+              <span>警告达此次数自动禁言</span>
+              <span class="mock-num">3</span>
+            </div>
+            <div class="mock-field">
+              <span>警告达此次数自动踢出</span>
+              <span class="mock-num">5</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="grid g3" style="margin-top:22px">
+      <div class="card">
+        <h3>自动识别群聊</h3>
+        <p>启动后自动拉取机器人所在的所有群，带群名、群号、人数与机器人角色，支持搜索与一键同步。</p>
+      </div>
+      <div class="card">
+        <h3>按群独立配置</h3>
+        <p>默认所有群继承全局模板。少数特殊群可「改为独立配置」单独设置，随时「恢复默认」回到继承状态。</p>
+      </div>
+      <div class="card">
+        <h3>每项都有说明</h3>
+        <p>47 个配置项全部配中文标签与提示，数值项带推荐范围，不用去翻文档猜字段含义。</p>
+      </div>
+    </div>
+  </div>
+</section>
 
 <section id="features">
   <div class="wrap">
@@ -529,7 +713,7 @@ footer a:hover { color: var(--accent2); }
   <div class="wrap">
     <div class="eyebrow">// GET STARTED</div>
     <h2>三步装好</h2>
-    <p class="sub">需要 AstrBot 4.5+ 与 NapCat（OneBot v11）协议端。</p>
+    <p class="sub">需要 AstrBot 4.24.2+ 与 NapCat（OneBot v11）协议端。4.24.2 以上才支持配置面板。</p>
 
     <div class="dl">
       <a href="https://github.com/yuntaojinghong/astrbot_plugin_panshi/releases/download/v1.0.0/astrbot_plugin_panshi.zip">
@@ -563,8 +747,9 @@ footer a:hover { color: var(--accent2); }
     <div class="step">
       <div class="n">2</div>
       <div class="bd">
-        <h3>重启并配置</h3>
-        <p>重启 AstrBot，在 WebUI 插件页找到「磐石 · 智能群管」，按分组调整配置：基础设置、反垃圾防护、入群欢迎、警告系统、智能识别、群活跃、自动化。</p>
+        <h3>重启并在面板里配置</h3>
+        <p>重启 AstrBot，进入插件详情页 → Pages → <b>settings</b>，打开图形配置面板。
+          面板会自动识别机器人所在的所有群，可按群独立设置规则；也可以直接在插件配置页调整七组配置项。</p>
       </div>
     </div>
 

@@ -3,7 +3,7 @@
 > 稳如磐石的 QQ 群管家 —— 听得懂人话，会智能处理。
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0.html)
-[![AstrBot](https://img.shields.io/badge/AstrBot-4.5%2B-orange.svg)](https://github.com/AstrBotDevs/AstrBot)
+[![AstrBot](https://img.shields.io/badge/AstrBot-4.24.2%2B-orange.svg)](https://github.com/AstrBotDevs/AstrBot)
 
 一个为 [AstrBot](https://github.com/AstrBotDevs/AstrBot) 打造的 QQ 群管理插件，基于 NapCat / OneBot v11（`aiocqhttp`）协议。
 
@@ -14,6 +14,7 @@
 
 | 特色 | 说明 |
 |---|---|
+| 🖥️ **自带配置面板** | 插件详情页点开即用。自动识别机器人所在的所有群，左侧列表切换、右侧可视化改配置，不用手动翻 JSON |
 | 🧠 **听得懂人话** | 直接说「把刚才刷屏的禁言十分钟」即可，无需记指令。混合模式：指令秒回，自然语言交给 AI |
 | ⏱️ **人话时长** | 支持 `30s` / `10m` / `2h` / `1d` / `1h30m`，不用心算秒数 |
 | 🎯 **智能定位目标** | 引用消息 > @某人 > QQ号 > 名字模糊匹配，四种方式自动选择 |
@@ -23,6 +24,36 @@
 | ⚠️ **三级警告** | 警告累计自动升级：达阈值自动禁言 → 再达阈值自动踢出 |
 | 💾 **零依赖存储** | JSON 文件持久化，无数据库，即装即用 |
 | 🧩 **模块化架构** | 每个功能独立模块，二次开发只需照着模板加 |
+
+## 🖥️ 配置面板
+
+插件带一个独立的图形配置面板，**不用改 JSON、不用记字段名**。
+
+### 怎么打开
+
+1. 进入 AstrBot WebUI 的**插件管理**页
+2. 点击「磐石 · 智能群管」插件的 logo，进入**插件详情页**
+3. 在「插件行为 / Pages」区域点击 **`settings`** 的「打开」
+
+### 面板能做什么
+
+| 区域 | 功能 |
+|---|---|
+| **左侧群列表** | 自动拉取机器人所在的所有群，显示群名 / 群号 / 人数 / 机器人角色，支持按群名或群号搜索、一键同步 |
+| **状态概览** | 顶部四张卡片显示纳管群聊数、记录用户数、累计警告数、黑名单人数 |
+| **全局默认配置** | 列表第一项，作为所有群的模板。按 7 组折叠分区编辑，每项都带中文说明提示 |
+| **按群独立配置** | 选中任意群，可「改为独立配置」单独设置该群规则；不想改了随时「恢复默认」回到继承状态 |
+| **跟随默认** | 群默认继承全局配置，此时表单只读预览。切换群/保存都会自动落盘 |
+
+### 配置项提示
+
+面板里每个字段都带 `?` 图标和下方说明文字，鼠标悬停可看完整提示。例如：
+
+- 「刷屏判定：时间窗内消息条数」→ 在下方时间窗内发送超过这么多条消息即判定为刷屏
+- 「默认禁言时长」→ 执行禁言且未指定时长时使用
+- 「警告记录有效期」→ 超过有效期自动清除，0 表示永久
+
+> **要求**：AstrBot **4.24.2 或更高版本**。低版本没有插件 Pages 机制，面板不会出现，但群管功能不受影响。
 
 ## 📦 安装
 
@@ -42,8 +73,8 @@ git clone https://github.com/yuntaojinghong/astrbot_plugin_panshi.git
 
 ### 安装后配置
 
-前往插件配置页按需调整配置（基础 / 防护 / 欢迎 / 警告 / 智能 / 活跃 / 自动化 七组），
-发送 `/群管帮助` 查看完整指令。
+前往**插件详情页 → Pages → settings** 打开配置面板（推荐），
+或在插件配置页直接编辑七组配置项，发送 `/群管帮助` 查看完整指令。
 
 
 ## ⌨️ 指令一览
@@ -127,11 +158,18 @@ git clone https://github.com/yuntaojinghong/astrbot_plugin_panshi.git
 
 ```
 astrbot_plugin_panshi/
-├── main.py                 # 主入口：指令注册 + 事件监听 + LLM 工具
+├── main.py                 # 主入口：指令注册 + 事件监听 + LLM 工具 + 面板注册
 ├── metadata.yaml           # 插件元数据
 ├── _conf_schema.json       # 配置 schema
+├── pages_api.py            # 配置面板：Web API 路由
+├── pages_service.py        # 配置面板：业务逻辑（配置读写/群列表/校验）
 ├── logo.png                # 插件图标
-├── config/                 # 配置封装
+├── pages/                  # 配置面板前端
+│   └── settings/
+│       ├── index.html      # 面板页面结构
+│       ├── style.css       # 样式（跟随 AstrBot 明暗主题）
+│       └── app.js          # 面板交互逻辑
+├── config/                 # 配置封装（含 schema 快照与校验）
 ├── core/                   # 功能模块
 │   ├── base_handle.py      # Handle 基类
 │   ├── normal.py           # 基础管理
@@ -144,11 +182,30 @@ astrbot_plugin_panshi/
 │   ├── context.py          # 智能上下文收集
 │   ├── intent.py           # 自然语言意图解析
 │   └── intent_executor.py  # 意图执行（含确认机制）
-├── data/                   # JSON 持久化
+├── data/                   # JSON 持久化 + 群信息缓存
+│   ├── storage.py          # 线程安全 JSON 存储
+│   └── group_cache.py      # 群列表自动识别与缓存
 ├── utils/                  # 工具（时长/目标/权限解析）
 └── scripts/                # 开发脚本（不随插件分发）
     └── build_release.py    # 生成安装压缩包
 ```
+
+## 🔌 面板接口一览
+
+面板前端通过 `window.AstrBotPluginPage` bridge 调用以下接口，
+路由带插件名前缀 `/astrbot_plugin_panshi/...`：
+
+| 方法 | 路由 | 说明 |
+|---|---|---|
+| GET | `/bootstrap` | 面板初始化（schema + 群列表 + 全局配置） |
+| GET | `/overview` | 运行状态概览（群数/用户数/警告数/黑名单） |
+| GET | `/groups` | 群列表（`?force=1` 强制刷新） |
+| POST | `/groups/refresh` | 清缓存并重新同步群列表 |
+| GET | `/global` | 读取全局默认配置 |
+| POST | `/global` | 保存全局默认配置 |
+| GET | `/group?group_id=xxx` | 读取某群配置（含生效值与覆盖项） |
+| POST | `/group` | 保存某群配置 / 切换跟随状态 |
+| POST | `/group/reset` | 清除某群覆盖，恢复跟随全局 |
 
 ## 🔧 开发与打包
 

@@ -132,21 +132,90 @@ mc.Reply = Reply
 mc.Image = Image
 api.message_components = mc
 
+# ---- astrbot.api.web（供面板后端使用）----
+web_mod = mk("astrbot.api.web")
+
+
+class _Query:
+    def get(self, key, default=None, type=None):  # noqa: A002
+        return default
+
+    def getlist(self, key):
+        return []
+
+
+class _Req:
+    query = _Query()
+
+    @staticmethod
+    async def json(default=None):
+        return default or {}
+
+    @staticmethod
+    async def body():
+        return b""
+
+
+web_mod.request = _Req()
+web_mod.json_response = lambda payload: payload
+web_mod.error_response = lambda msg, status_code=400: (
+    {"status": "error", "message": msg},
+    status_code,
+)
+api.web = web_mod
+
+
+class _Ctx:
+    """带 register_web_api 的 Context 桩，用于验证面板路由注册。"""
+
+    def __init__(self):
+        self.routes = []
+
+    def register_web_api(self, route, handler, methods, desc):
+        self.routes.append((route, handler, tuple(methods), desc))
+
+    @property
+    def platform_manager(self):
+        class _PM:
+            @staticmethod
+            def get_instances():
+                return {}
+
+        return _PM()
+
+
+star_mod.Context = _Ctx
+
 
 def main():
     main_mod = importlib.import_module("astrbot_plugin_panshi.main")
     print("MAIN_IMPORTED_OK")
-    inst = main_mod.PanshiPlugin(None, {})
+    ctx = _Ctx()
+    inst = main_mod.PanshiPlugin(ctx, {})
     print("PLUGIN_INSTANTIATED_OK")
 
     cmds = sorted(n for n in dir(inst) if n.startswith("cmd_"))
     print(f"COMMANDS: {len(cmds)}")
-    for c in cmds:
-        print("  ", c)
+
+    tools = sorted(
+        getattr(getattr(inst, n), "__name__", n)
+        for n in dir(type(inst))
+        if n.startswith("llm_")
+    )
+    print(f"LLM_TOOLS: {len(tools)}")
 
     # 校验核心模块可用
     assert inst.normal and inst.guard and inst.intent and inst.executor
     print("HANDLES_OK")
+
+    # 校验 WebUI 面板路由注册
+    assert inst.web is not None, "面板控制器未创建"
+    assert len(ctx.routes) == 9, f"路由数量不对: {len(ctx.routes)}"
+    for route, _h, _m, _d in ctx.routes:
+        assert route.startswith("/astrbot_plugin_panshi/"), route
+    print(f"WEB_ROUTES_OK ({len(ctx.routes)})")
+    for route, _h, methods, _d in ctx.routes:
+        print("   ", ",".join(methods).ljust(4), route)
 
     # 校验时长解析
     from astrbot_plugin_panshi.utils import parse_duration, format_duration
@@ -165,7 +234,170 @@ def main():
     assert bad is None
     print("INTENT_PARSE_OK")
 
+    test_config_layer()
+    test_group_cache()
+    test_page_service(inst)
+
     print("ALL_SELFTEST_PASS")
+
+
+# ======================================================================
+#  面板相关模块自测
+# ======================================================================
+def test_config_layer():
+    """配置读写：schema 快照、类型校验、apply_payload。"""
+    from astrbot_plugin_panshi.config import PluginConfig
+
+    raw = {
+        "basic": {"default_ban_time": 60, "super_admins": ["10001"]},
+        "guard": {"forbidden_enable": True},
+    }
+    cfg = PluginConfig(raw)
+
+    # schema 快照应读到真实的 _conf_schema.json
+    groups = cfg.schema_snapshot()
+    assert len(groups) == 7, [g["key"] for g in groups]
+    keys = [g["key"] for g in groups]
+    assert keys[:2] == ["basic", "guard"], keys
+    total_fields = sum(len(g["fields"]) for g in groups)
+    assert total_fields >= 40, total_fields
+    print(f"SCHEMA_OK (7 组 / {total_fields} 项)")
+
+    # 配置快照应包含全部字段
+    snap = cfg.config_snapshot()
+    assert set(snap.keys()) == set(keys), snap.keys()
+    assert snap["basic"]["default_ban_time"] == 60
+    print("CONFIG_SNAPSHOT_OK")
+
+    # validate_payload 应拒绝非法类型
+    try:
+        cfg.validate_payload({"guard": {"forbidden_enable": "maybe"}})
+        raise AssertionError("非法布尔值竟然通过了校验")
+    except ValueError:
+        pass
+
+    # 非法整数
+    try:
+        cfg.validate_payload({"basic": {"default_ban_time": "abc"}})
+        raise AssertionError("非法整数竟然通过了校验")
+    except ValueError:
+        pass
+
+    # slider 裁剪
+    cleaned = cfg.validate_payload({"guard": {"spam_count": 99999}})
+    assert cleaned["guard"]["spam_count"] == 20, cleaned["guard"]["spam_count"]
+
+    # 列表：字符串 -> 列表，去空去重
+    cleaned = cfg.validate_payload({"guard": {"forbidden_words": "a, b\nc,,a"}})
+    assert cleaned["guard"]["forbidden_words"] == ["a", "b", "c"], cleaned
+
+    # 未知字段应被忽略
+    cleaned = cfg.validate_payload({"guard": {"__nope__": 1}})
+    assert "guard" not in cleaned or "__nope__" not in cleaned.get("guard", {})
+
+    # apply_payload 写回
+    cfg.apply_payload({"guard": {"spam_count": 8}})
+    assert cfg.get("guard", "spam_count") == 8
+    print("VALIDATE_OK")
+
+
+def test_group_cache():
+    """群缓存：归一化、排序、列表提取。"""
+    import asyncio
+    from astrbot_plugin_panshi.data import GroupInfoCache
+    from astrbot_plugin_panshi.data.group_cache import _extract_list
+
+    # 各种返回结构
+    assert _extract_list([{"group_id": 1}]) == [{"group_id": 1}]
+    assert _extract_list({"data": [{"group_id": 2}]}) == [{"group_id": 2}]
+    assert _extract_list({"retcode": 100, "status": "failed"}) is None
+    assert _extract_list("garbage") is None
+
+    class _Client:
+        async def call_action(self, action):
+            assert action == "get_group_list"
+            return [
+                {"group_id": 1, "group_name": "小群", "member_count": 3},
+                {"group_id": 2, "group_name": "大群", "member_count": 500},
+            ]
+
+    class _Platform:
+        @staticmethod
+        def get_client():
+            return _Client()
+
+    class _PM:
+        @staticmethod
+        def get_instances():
+            return {"aiocqhttp": _Platform()}
+
+    class _C:
+        platform_manager = _PM()
+
+    cache = GroupInfoCache(_C())
+    groups = asyncio.run(cache.list_groups(force=True))
+    assert len(groups) == 2
+    # 应按人数降序
+    assert groups[0]["group_id"] == "2", groups
+    assert groups[0]["group_name"] == "大群"
+    assert groups[1]["member_count"] == 3
+    print("GROUP_CACHE_OK")
+
+
+def test_page_service(inst):
+    """面板业务层：群列表、全局配置、按群覆盖。"""
+    import asyncio
+    from astrbot_plugin_panshi.pages_service import PageService
+
+    svc = PageService(inst.cfg, inst.db, inst.group_cache)
+
+    # 概览
+    ov = svc.overview()
+    assert "tracked_groups" in ov and "quick_status" in ov
+    assert isinstance(ov["quick_status"], list) and len(ov["quick_status"]) == 9
+    print(f"OVERVIEW_OK (开关 {len(ov['quick_status'])} 项)")
+
+    # 全局配置
+    g = svc.get_global_config()
+    assert g["is_default"] is True
+    assert "guard" in g["config"]
+    print("GLOBAL_CONFIG_OK")
+
+    # 保存全局
+    g2 = svc.update_global_config({"guard": {"spam_count": 7}})
+    assert g2["config"]["guard"]["spam_count"] == 7
+    print("GLOBAL_SAVE_OK")
+
+    # 群列表（无适配器时应优雅返回空 + 错误信息）
+    groups = asyncio.run(svc.list_groups(force=True))
+    assert isinstance(groups, list)
+    print(f"GROUP_LIST_OK (返回 {len(groups)} 个群，缓存错误: {inst.group_cache.last_error!r})")
+
+    # 按群配置：默认跟随
+    gc = svc.get_group_config("123456")
+    assert gc["follow_default"] is True, gc
+    assert gc["effective"]["guard"]["spam_count"] == 7
+
+    # 改为独立配置
+    gc2 = svc.update_group_config("123456", {"follow_default": False, "guard": {"spam_count": 99}})
+    assert gc2["follow_default"] is False
+    assert gc2["effective"]["guard"]["spam_count"] == 20  # 被 slider 裁到上限
+    assert gc2["effective"]["warning"]["warning_enable"] is True  # 未覆盖的仍取全局
+    print("GROUP_OVERRIDE_OK")
+
+    # 恢复默认
+    gc3 = svc.reset_group_config("123456")
+    assert gc3["follow_default"] is True
+    assert gc3["effective"]["guard"]["spam_count"] == 7
+    print("GROUP_RESET_OK")
+
+    # 非法群号
+    try:
+        svc.get_group_config("abc")
+        raise AssertionError("非法群号竟然通过了")
+    except ValueError:
+        pass
+    print("GROUP_ID_VALIDATION_OK")
 
 
 if __name__ == "__main__":

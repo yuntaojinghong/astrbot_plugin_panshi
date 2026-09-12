@@ -1,0 +1,678 @@
+/**
+ * 磐石 · 配置面板前端逻辑
+ *
+ * 通过 window.AstrBotPluginPage bridge 与插件后端通信。
+ * 主题由 bridge 同步到 <html data-theme="light|dark">，样式表直接消费。
+ */
+
+const bridge = window.AstrBotPluginPage;
+const PLUGIN = "astrbot_plugin_panshi";
+
+/** 全局状态 */
+const state = {
+  schema: [],
+  groups: [],
+  global: null,
+  overview: null,
+  meta: {},
+  selected: null, // 当前选中：{ group_id, ... }
+  draft: {}, // 当前编辑中的配置 { 分组: { 字段: 值 } }
+  followDefault: true,
+  collapsed: {},
+  keyword: "",
+};
+
+/* ==================================================================
+ *  工具
+ * ================================================================== */
+const $ = (sel) => document.querySelector(sel);
+
+function el(tag, attrs = {}, children = []) {
+  const node = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === "class") node.className = v;
+    else if (k === "text") node.textContent = v;
+    else if (k === "html") node.innerHTML = v;
+    else if (k.startsWith("on") && typeof v === "function") {
+      node.addEventListener(k.slice(2).toLowerCase(), v);
+    } else if (v !== undefined && v !== null && v !== false) {
+      node.setAttribute(k, v === true ? "" : v);
+    }
+  }
+  for (const c of [].concat(children)) {
+    if (c == null || c === false) continue;
+    node.appendChild(typeof c === "string" ? document.createTextNode(c) : c);
+  }
+  return node;
+}
+
+function toast(text, type = "ok") {
+  const box = $("#toast");
+  box.textContent = text;
+  box.className = `toast show ${type}`;
+  clearTimeout(box._timer);
+  box._timer = setTimeout(() => {
+    box.className = "toast";
+  }, 2400);
+}
+
+function showError(msg) {
+  const box = $("#alertBox");
+  box.innerHTML = "";
+  if (!msg) return;
+  const node = el("div", { class: "alert error" });
+  node.appendChild(el("strong", { text: "出错了：" }));
+  node.appendChild(document.createTextNode(msg));
+  const close = el("button", {
+    class: "btn tiny",
+    text: "关闭",
+    style: "margin-left:auto",
+    onClick: () => (box.innerHTML = ""),
+  });
+  node.appendChild(close);
+  box.appendChild(node);
+}
+
+function setOnline(ok) {
+  const dot = $("#statusDot");
+  dot.className = `dot ${ok ? "ok" : "bad"}`;
+  $("#statusText").textContent = ok ? "已连接" : "连接失败";
+}
+
+/* ==================================================================
+ *  API 封装
+ * ================================================================== */
+async function apiGet(endpoint, params) {
+  return bridge.apiGet(endpoint, params || {});
+}
+
+async function apiPost(endpoint, body) {
+  return bridge.apiPost(endpoint, body || {});
+}
+
+/* ==================================================================
+ *  数据加载
+ * ================================================================== */
+async function loadAll(force = false) {
+  const btn = $("#btnReload");
+  btn.disabled = true;
+  btn.textContent = "加载中…";
+  try {
+    const data = await apiGet("bootstrap");
+    state.schema = data.schema || [];
+    state.groups = data.groups || [];
+    state.global = data.global || null;
+    state.meta = data.meta || {};
+    state.collapsed = {};
+    for (const g of state.schema) state.collapsed[g.key] = true;
+
+    if (state.meta.group_cache_error) {
+      showError(state.meta.group_cache_error);
+    } else {
+      showError("");
+    }
+
+    setOnline(true);
+    await loadOverview();
+    renderGroups();
+
+    // 保持当前选择，否则默认选全局
+    const keep = state.selected && state.selected.group_id;
+    await selectGroup(keep || state.meta.default_group_id || "__default__");
+  } catch (e) {
+    setOnline(false);
+    showError(e && e.message ? e.message : String(e));
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "刷新";
+  }
+}
+
+async function loadOverview() {
+  try {
+    state.overview = await apiGet("overview");
+  } catch {
+    state.overview = null;
+  }
+  renderOverview();
+}
+
+async function refreshGroups() {
+  const btn = $("#btnSync");
+  btn.disabled = true;
+  btn.textContent = "同步中…";
+  try {
+    const res = await apiPost("groups/refresh");
+    state.groups = (res && res.groups) || [];
+    if (res && res.error) {
+      showError(res.error);
+      toast("同步失败，已显示缓存数据", "err");
+    } else {
+      showError("");
+      toast(`已同步 ${state.groups.length} 个群`);
+    }
+    renderGroups();
+  } catch (e) {
+    toast("同步失败：" + (e.message || e), "err");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "同步";
+  }
+}
+
+async function selectGroup(groupId) {
+  if (!groupId) return;
+  try {
+    if (groupId === (state.meta.default_group_id || "__default__")) {
+      const data = state.global || (await apiGet("global"));
+      state.global = data;
+      state.selected = {
+        group_id: groupId,
+        group_name: "全局默认配置",
+        is_default: true,
+        member_count: 0,
+      };
+      state.followDefault = false;
+      state.draft = deepClone(data.config || {});
+    } else {
+      const data = await apiGet("group", { group_id: groupId });
+      state.selected = data;
+      state.followDefault = !!data.follow_default;
+      state.draft = deepClone(
+        state.followDefault ? data.effective || {} : mergeOverride(data)
+      );
+    }
+    renderGroups();
+    renderContent();
+  } catch (e) {
+    toast("加载配置失败：" + (e.message || e), "err");
+  }
+}
+
+/** 把「全局 + 群覆盖」合并成可编辑的草稿 */
+function mergeOverride(data) {
+  const base = deepClone(data.effective || {});
+  const override = data.override || {};
+  for (const [gkey, gval] of Object.entries(override)) {
+    if (gkey === "follow_default") continue;
+    if (gval && typeof gval === "object" && !Array.isArray(gval)) {
+      base[gkey] = { ...(base[gkey] || {}), ...deepClone(gval) };
+    } else {
+      base[gkey] = deepClone(gval);
+    }
+  }
+  return base;
+}
+
+function deepClone(obj) {
+  return JSON.parse(JSON.stringify(obj ?? {}));
+}
+
+/* ==================================================================
+ *  保存
+ * ================================================================== */
+async function save() {
+  if (!state.selected) return;
+  const btn = document.querySelector(".panel-actions .btn.primary");
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = "保存中…";
+  }
+  try {
+    if (state.selected.is_default) {
+      state.global = await apiPost("global", { config: state.draft });
+      toast("全局默认配置已保存");
+    } else {
+      const payload = { group_id: state.selected.group_id, config: state.draft };
+      const data = await apiPost("group", payload);
+      state.selected = data;
+      state.followDefault = !!data.follow_default;
+      state.draft = deepClone(
+        state.followDefault ? data.effective || {} : mergeOverride(data)
+      );
+      toast("该群配置已保存");
+    }
+    await loadOverview();
+    renderGroups();
+    renderContent();
+  } catch (e) {
+    toast("保存失败：" + (e.message || e), "err");
+    showError(e && e.message ? e.message : String(e));
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = "保存配置";
+    }
+  }
+}
+
+async function enableOverride() {
+  if (!state.selected) return;
+  try {
+    const data = await apiPost("group", {
+      group_id: state.selected.group_id,
+      config: { follow_default: false, ...state.draft },
+    });
+    state.selected = data;
+    state.followDefault = false;
+    state.draft = deepClone(mergeOverride(data));
+    toast("已改为独立配置，可自由修改");
+    renderGroups();
+    renderContent();
+  } catch (e) {
+    toast("操作失败：" + (e.message || e), "err");
+  }
+}
+
+async function resetCurrentGroup() {
+  if (!state.selected || state.selected.is_default) return;
+  if (!confirm("确定要清除该群的独立配置，恢复跟随全局默认吗？")) return;
+  try {
+    const data = await apiPost("group/reset", {
+      group_id: state.selected.group_id,
+    });
+    state.selected = data;
+    state.followDefault = !!data.follow_default;
+    state.draft = deepClone(data.effective || {});
+    toast("已恢复跟随全局默认");
+    renderGroups();
+    renderContent();
+  } catch (e) {
+    toast("重置失败：" + (e.message || e), "err");
+  }
+}
+
+/* ==================================================================
+ *  渲染 — 概览
+ * ================================================================== */
+function renderOverview() {
+  const box = $("#overview");
+  box.innerHTML = "";
+  if (!state.overview) return;
+  const items = [
+    { label: "纳管群聊", value: state.overview.tracked_groups },
+    { label: "记录用户", value: state.overview.tracked_users },
+    { label: "累计警告", value: state.overview.total_warnings, cls: "warn" },
+    { label: "黑名单", value: state.overview.blocked_users, cls: "danger" },
+  ];
+  for (const it of items) {
+    box.appendChild(
+      el("div", { class: "stat-card" }, [
+        el("span", { class: "stat-label", text: it.label }),
+        el("span", {
+          class: "stat-value" + (it.cls ? " " + it.cls : ""),
+          text: String(it.value ?? 0),
+        }),
+      ])
+    );
+  }
+}
+
+/* ==================================================================
+ *  渲染 — 群列表
+ * ================================================================== */
+function filteredGroups() {
+  const kw = state.keyword.trim().toLowerCase();
+  if (!kw) return state.groups;
+  return state.groups.filter(
+    (g) =>
+      (g.group_name || "").toLowerCase().includes(kw) ||
+      String(g.group_id).includes(kw)
+  );
+}
+
+function renderGroups() {
+  const list = $("#groupList");
+  list.innerHTML = "";
+  const defaultId = state.meta.default_group_id || "__default__";
+
+  // 全局默认项
+  list.appendChild(
+    groupItem({
+      group_id: defaultId,
+      group_name: "全局默认配置",
+      sub: `作为所有群的模板${
+        state.overview ? ` · ${state.overview.tracked_groups} 个群在用` : ""
+      }`,
+      isDefault: true,
+      active: state.selected && state.selected.group_id === defaultId,
+    })
+  );
+
+  const items = filteredGroups();
+  if (!items.length) {
+    list.appendChild(
+      el("li", {
+        class: "group-empty",
+        text: state.keyword
+          ? "没有匹配的群"
+          : "未发现群聊。请确认协议端（NapCat）已连接，然后点上方「同步」。",
+      })
+    );
+    return;
+  }
+
+  for (const g of items) {
+    list.appendChild(
+      groupItem({
+        group_id: g.group_id,
+        group_name: g.group_name,
+        sub: `${g.group_id} · ${g.member_count} 人`,
+        tags: g.enabled
+          ? g.has_override
+            ? [{ text: "独立配置", cls: "tag-custom" }]
+            : []
+          : [{ text: "未启用", cls: "tag-off" }],
+        active: state.selected && state.selected.group_id === g.group_id,
+      })
+    );
+  }
+}
+
+function groupItem({ group_id, group_name, sub, tags = [], isDefault, active }) {
+  const subNode = el("span", { class: "group-sub" });
+  subNode.appendChild(document.createTextNode(sub || ""));
+  for (const t of tags) {
+    subNode.appendChild(el("span", { class: `tag ${t.cls}`, text: t.text }));
+  }
+
+  return el(
+    "li",
+    {
+      class: "group-item" + (active ? " active" : ""),
+      onClick: () => {
+        state.keyword = "";
+        selectGroup(group_id);
+      },
+    },
+    [
+      el("span", {
+        class: "avatar" + (isDefault ? " default" : ""),
+        text: isDefault ? "默" : (group_name || "?").slice(0, 1),
+      }),
+      el("div", { class: "group-meta" }, [
+        el("span", { class: "group-name", text: group_name }),
+        subNode,
+      ]),
+    ]
+  );
+}
+
+/* ==================================================================
+ *  渲染 — 配置表单
+ * ================================================================== */
+function renderContent() {
+  const box = $("#content");
+  box.innerHTML = "";
+
+  if (!state.selected) {
+    box.appendChild(el("div", { class: "placeholder" }, [el("p", { text: "从左侧选择一个群或「全局默认配置」开始编辑。" })]));
+    return;
+  }
+
+  const readonly = !state.selected.is_default && state.followDefault;
+  const sel = state.selected;
+
+  // 标题区
+  const head = el("div", { class: "panel-head" }, [
+    el("div", {}, [
+      el("h2", { text: sel.group_name }),
+      el("p", {
+        class: "panel-sub",
+        text: sel.is_default
+          ? "这里的设置会作为所有群的默认模板"
+          : `群号 ${sel.group_id}${sel.member_count ? ` · ${sel.member_count} 人` : ""}`,
+      }),
+    ]),
+  ]);
+
+  const actions = el("div", { class: "panel-actions" });
+  if (!sel.is_default && state.followDefault) {
+    actions.appendChild(
+      el("button", { class: "btn primary", text: "改为独立配置", onClick: enableOverride })
+    );
+  } else {
+    if (!sel.is_default) {
+      actions.appendChild(
+        el("button", { class: "btn ghost", text: "恢复默认", onClick: resetCurrentGroup })
+      );
+    }
+    actions.appendChild(
+      el("button", {
+        class: "btn primary",
+        text: "保存配置",
+        onClick: save,
+      })
+    );
+  }
+  head.appendChild(actions);
+  box.appendChild(head);
+
+  // 跟随默认提示
+  if (readonly) {
+    box.appendChild(
+      el("div", { class: "alert info" }, [
+        el("span", {
+          html: "该群正在<b>跟随全局默认配置</b>，下面的内容仅供预览、不可编辑。点击右上角「改为独立配置」即可为本群单独设置。",
+        }),
+      ])
+    );
+  }
+
+  // 配置分组
+  const wrap = el("div", { class: "groups" });
+  for (const group of state.schema) {
+    wrap.appendChild(renderGroupSection(group, readonly));
+  }
+  box.appendChild(wrap);
+}
+
+function renderGroupSection(group, readonly) {
+  const collapsed = !!state.collapsed[group.key];
+  const section = el("section", {
+    class: "config-group" + (collapsed ? " collapsed" : ""),
+  });
+
+  section.appendChild(
+    el("button", {
+      class: "group-head",
+      onClick: () => {
+        state.collapsed[group.key] = !state.collapsed[group.key];
+        renderContent();
+      },
+    }, [
+      el("span", { class: "group-icon", text: group.icon || "🔧" }),
+      el("span", { class: "group-title", text: group.title }),
+      el("span", { class: "group-count", text: `${group.fields.length} 项` }),
+      el("span", { class: "chevron", text: "›" }),
+    ])
+  );
+
+  if (collapsed) return section;
+
+  const body = el("div", { class: "group-body" });
+  if (group.hint) {
+    body.appendChild(el("p", { class: "group-hint", text: group.hint }));
+  }
+
+  const fields = el("div", { class: "fields" });
+  for (const field of group.fields) {
+    fields.appendChild(renderField(group.key, field, readonly));
+  }
+  body.appendChild(fields);
+  section.appendChild(body);
+  return section;
+}
+
+function renderField(groupKey, field, readonly) {
+  const row = el("div", { class: `field field-${field.type}` });
+
+  // 标签
+  const label = el("label", { class: "field-label" }, [
+    el("span", { class: "field-name", text: field.label }),
+  ]);
+  if (field.hint) {
+    label.appendChild(
+      el("span", { class: "hint-icon", text: "?", title: field.hint })
+    );
+  }
+  row.appendChild(label);
+
+  const value = getValue(groupKey, field.key);
+
+  // 控件
+  if (field.type === "bool") {
+    const input = el("input", {
+      type: "checkbox",
+      checked: value ? "checked" : false,
+      disabled: readonly,
+    });
+    input.addEventListener("change", () =>
+      setValue(groupKey, field.key, input.checked)
+    );
+    const text = el("span", { class: "switch-text", text: value ? "已开启" : "已关闭" });
+    input.addEventListener("change", () => {
+      text.textContent = input.checked ? "已开启" : "已关闭";
+    });
+    row.appendChild(
+      el("label", { class: "switch" }, [input, el("span", { class: "slider" }), text])
+    );
+  } else if (field.type === "int") {
+    const attrs = {
+      class: "input",
+      type: "number",
+      value: value ?? 0,
+      disabled: readonly,
+      step: field.slider ? field.slider.step : 1,
+    };
+    if (field.slider) {
+      attrs.min = field.slider.min;
+      attrs.max = field.slider.max;
+    }
+    const input = el("input", attrs);
+    input.addEventListener("input", () =>
+      setValue(groupKey, field.key, input.value)
+    );
+    row.appendChild(input);
+    if (field.slider) {
+      row.appendChild(
+        el("span", {
+          class: "field-tail",
+          text: `范围 ${field.slider.min} ~ ${field.slider.max}`,
+        })
+      );
+    }
+  } else if (field.type === "list") {
+    const list = Array.isArray(value) ? value : [];
+    const input = el("textarea", {
+      class: "input textarea",
+      rows: 3,
+      disabled: readonly,
+      placeholder: "每行一项，或用逗号分隔",
+    });
+    input.value = list.join("\n");
+    const tail = el("span", { class: "field-tail", text: `共 ${list.length} 项` });
+    input.addEventListener("input", () => {
+      setValue(groupKey, field.key, input.value);
+      const n = parseList(input.value).length;
+      tail.textContent = `共 ${n} 项`;
+    });
+    row.appendChild(input);
+    row.appendChild(tail);
+  } else if (field.options && field.options.length) {
+    const select = el("select", { class: "input", disabled: readonly });
+    for (const opt of field.options) {
+      const o = el("option", { value: opt, text: opt });
+      if (opt === value) o.selected = true;
+      select.appendChild(o);
+    }
+    select.addEventListener("change", () =>
+      setValue(groupKey, field.key, select.value)
+    );
+    row.appendChild(select);
+  } else {
+    const input = el("input", {
+      class: "input",
+      type: "text",
+      value: value ?? "",
+      disabled: readonly,
+    });
+    input.addEventListener("input", () =>
+      setValue(groupKey, field.key, input.value)
+    );
+    row.appendChild(input);
+  }
+
+  // 说明文字
+  if (field.hint) {
+    row.appendChild(el("p", { class: "field-hint", text: field.hint }));
+  }
+  return row;
+}
+
+/* ==================================================================
+ *  取值 / 赋值
+ * ================================================================== */
+function getValue(groupKey, fieldKey) {
+  const grp = state.draft[groupKey];
+  if (!grp || typeof grp !== "object") return undefined;
+  return grp[fieldKey];
+}
+
+function setValue(groupKey, fieldKey, raw) {
+  if (!state.draft[groupKey] || typeof state.draft[groupKey] !== "object") {
+    state.draft[groupKey] = {};
+  }
+  const field = findField(groupKey, fieldKey);
+  let value = raw;
+  if (field) {
+    if (field.type === "bool") value = !!raw;
+    else if (field.type === "int") {
+      const n = parseInt(raw, 10);
+      value = Number.isNaN(n) ? 0 : n;
+    } else if (field.type === "list") value = parseList(raw);
+    else value = String(raw ?? "");
+  }
+  state.draft[groupKey][fieldKey] = value;
+}
+
+function findField(groupKey, fieldKey) {
+  const group = state.schema.find((g) => g.key === groupKey);
+  return group ? group.fields.find((f) => f.key === fieldKey) : null;
+}
+
+function parseList(text) {
+  if (Array.isArray(text)) return text.map((x) => String(x).trim()).filter(Boolean);
+  return String(text || "")
+    .split(/[\n,，;；]+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+/* ==================================================================
+ *  启动
+ * ================================================================== */
+async function main() {
+  if (!bridge) {
+    showError("未检测到 AstrBot 页面桥接（bridge）。请从 AstrBot 插件详情页打开本面板。");
+    setOnline(false);
+    return;
+  }
+
+  try {
+    await bridge.ready();
+  } catch {
+    /* 桥接未就绪也继续尝试 */
+  }
+
+  $("#btnReload").addEventListener("click", () => loadAll(true));
+  $("#btnSync").addEventListener("click", refreshGroups);
+  $("#search").addEventListener("input", (e) => {
+    state.keyword = e.target.value;
+    renderGroups();
+  });
+
+  await loadAll();
+}
+
+main();

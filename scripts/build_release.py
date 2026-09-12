@@ -29,6 +29,7 @@ EXCLUDE_DIRS = {
 EXCLUDE_FILES = {
     ".DS_Store", "Thumbs.db",
     "_selftest.py",   # 开发自测脚本，不随插件分发
+    "_preview.html",  # 面板离线预览，仅开发期使用
     "logo.svg",       # 保留源矢量图不必要，分发 PNG 即可
 }
 EXCLUDE_SUFFIX = (".pyc", ".pyo", ".log", ".tmp")

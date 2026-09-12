@@ -28,7 +28,7 @@ from .core import (
     WarningHandle,
     WelcomeHandle,
 )
-from .data import Storage
+from .data import GroupInfoCache, Storage
 from .utils import PermLevel, check_permission, parse_duration, parse_target
 from .utils.helpers import get_group_id
 
@@ -46,12 +46,15 @@ class PanshiPlugin(Star):
 
     def __init__(self, context: Context, config: dict | None = None):
         super().__init__(context)
-        self.cfg = PluginConfig(config or {})
+        self.cfg = PluginConfig(config or {}, context)
         self._super_admins = self.cfg.super_admins
 
         # 数据目录：AstrBot 的 data 目录下
         data_dir = self._resolve_data_dir()
         self.db = Storage(data_dir)
+
+        # 群信息缓存（供配置面板自动识别群聊）
+        self.group_cache = GroupInfoCache(context)
 
         # 功能模块
         self.normal = NormalHandle(self.cfg, self.db)
@@ -74,6 +77,27 @@ class PanshiPlugin(Star):
 
         # 已解析的群列表（宵禁用）
         self._enabled_groups: list[str] = []
+
+        # 配置面板（WebUI Pages）
+        self.web = None
+        self._register_pages(context)
+
+    def _register_pages(self, context: Context) -> None:
+        """注册 WebUI 配置面板。
+
+        低版本 AstrBot 不支持插件 Pages，此时静默降级，
+        不影响插件其余功能。
+        """
+        try:
+            from .pages_api import PanshiWebController
+            from .pages_service import PageService
+
+            service = PageService(self.cfg, self.db, self.group_cache)
+            self.web = PanshiWebController(context, service)
+            self.web.register_routes()
+        except Exception as e:
+            logger.warning(f"[磐石] 配置面板注册失败（不影响群管功能）: {e}")
+            self.web = None
 
     # ========== 生命周期 ==========
     async def initialize(self):
@@ -107,15 +131,8 @@ class PanshiPlugin(Star):
     async def _refresh_groups(self):
         """从适配器获取 bot 所在群列表。"""
         try:
-            for platform in self.context.platform_manager.get_instances().values():
-                client = getattr(platform, "get_client", None)
-                if client is None:
-                    continue
-                cli = client()
-                resp = await cli.call_action("get_group_list")
-                if isinstance(resp, list):
-                    self._enabled_groups = [str(g.get("group_id")) for g in resp]
-                    break
+            groups = await self.group_cache.refresh()
+            self._enabled_groups = [str(g.get("group_id")) for g in groups if g.get("group_id")]
         except Exception as e:
             logger.warning(f"[磐石] 获取群列表失败: {e}")
 

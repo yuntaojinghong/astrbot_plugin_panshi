@@ -13,12 +13,22 @@
         "description": "默认禁言时长（秒）",
         "type": "int",
         "default": 60,
+        "slider": {
+          "min": 0,
+          "max": 2592000,
+          "step": 60
+        },
         "hint": "执行禁言且未指定时长时使用"
       },
       "max_ban_time": {
         "description": "单次最大禁言时长（秒）",
         "type": "int",
         "default": 2592000,
+        "slider": {
+          "min": 60,
+          "max": 2592000,
+          "step": 3600
+        },
         "hint": "30 天，防止误操作超长禁言"
       },
       "enable_groups": {
@@ -59,6 +69,11 @@
         "description": "违禁词触发禁言时长（秒）",
         "type": "int",
         "default": 600,
+        "slider": {
+          "min": 0,
+          "max": 2592000,
+          "step": 60
+        },
         "hint": "0 表示仅撤回不禁言"
       },
       "spam_enable": {
@@ -69,17 +84,33 @@
       "spam_count": {
         "description": "刷屏判定：时间窗内消息条数",
         "type": "int",
-        "default": 5
+        "default": 5,
+        "slider": {
+          "min": 2,
+          "max": 20,
+          "step": 1
+        },
+        "hint": "在下方时间窗内发送超过这么多条消息即判定为刷屏"
       },
       "spam_window": {
         "description": "刷屏判定：时间窗（秒）",
         "type": "int",
-        "default": 5
+        "default": 5,
+        "slider": {
+          "min": 1,
+          "max": 60,
+          "step": 1
+        }
       },
       "spam_ban_time": {
         "description": "刷屏触发禁言时长（秒）",
         "type": "int",
-        "default": 300
+        "default": 300,
+        "slider": {
+          "min": 0,
+          "max": 2592000,
+          "step": 60
+        }
       },
       "ad_enable": {
         "description": "启用广告链接拦截",
@@ -95,7 +126,12 @@
       "repeat_count": {
         "description": "复读判定人数阈值",
         "type": "int",
-        "default": 4
+        "default": 4,
+        "slider": {
+          "min": 2,
+          "max": 10,
+          "step": 1
+        }
       }
     }
   },
@@ -126,6 +162,11 @@
         "description": "欢迎语延迟发送（秒）",
         "type": "int",
         "default": 1,
+        "slider": {
+          "min": 0,
+          "max": 60,
+          "step": 1
+        },
         "hint": "避免与验证消息冲突，0 表示立即"
       },
       "verify_enable": {
@@ -137,12 +178,22 @@
       "verify_timeout": {
         "description": "验证超时时间（秒）",
         "type": "int",
-        "default": 120
+        "default": 120,
+        "slider": {
+          "min": 30,
+          "max": 600,
+          "step": 10
+        }
       },
       "join_ban_time": {
         "description": "新成员入群自动禁言时长（秒）",
         "type": "int",
         "default": 0,
+        "slider": {
+          "min": 0,
+          "max": 86400,
+          "step": 60
+        },
         "hint": "0 表示不禁言"
       },
       "leave_notify": {
@@ -189,23 +240,43 @@
       "warn_ban_threshold": {
         "description": "警告达此次数自动禁言",
         "type": "int",
-        "default": 3
+        "default": 3,
+        "slider": {
+          "min": 1,
+          "max": 20,
+          "step": 1
+        }
       },
       "warn_ban_time": {
         "description": "自动禁言时长（秒）",
         "type": "int",
-        "default": 3600
+        "default": 3600,
+        "slider": {
+          "min": 60,
+          "max": 2592000,
+          "step": 60
+        }
       },
       "warn_kick_threshold": {
         "description": "警告达此次数自动踢出",
         "type": "int",
         "default": 5,
+        "slider": {
+          "min": 0,
+          "max": 20,
+          "step": 1
+        },
         "hint": "0 表示不自动踢出"
       },
       "warn_expire_days": {
         "description": "警告记录有效期（天）",
         "type": "int",
         "default": 30,
+        "slider": {
+          "min": 0,
+          "max": 365,
+          "step": 1
+        },
         "hint": "超过有效期自动清除，0 表示永久"
       }
     }
@@ -261,12 +332,22 @@
       "checkin_points": {
         "description": "每次签到基础积分",
         "type": "int",
-        "default": 10
+        "default": 10,
+        "slider": {
+          "min": 1,
+          "max": 500,
+          "step": 1
+        }
       },
       "checkin_random_bonus": {
         "description": "签到随机额外积分上限",
         "type": "int",
-        "default": 10
+        "default": 10,
+        "slider": {
+          "min": 0,
+          "max": 500,
+          "step": 1
+        }
       }
     }
   },
@@ -292,7 +373,12 @@
       "curfew_ban_time": {
         "description": "宵禁期间违规禁言时长（秒）",
         "type": "int",
-        "default": 600
+        "default": 600,
+        "slider": {
+          "min": 60,
+          "max": 2592000,
+          "step": 60
+        }
       }
     }
   }
