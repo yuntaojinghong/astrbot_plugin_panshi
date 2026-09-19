@@ -2,8 +2,9 @@
 
 混合模式：
 1. 明确指令（/禁言 ...）由 main.py 的指令通道直接处理，不经过这里。
-2. 仅当消息"像在指挥机器人"时（@机器人 / 含动作词 / 以称呼开头），
-   才调用 LLM 解析意图，避免浪费 token。
+2. 明确喊话（@机器人 / 以称呼开头 / 含动作词）直接放行给 LLM。
+3. 其余消息先过 :mod:`.intent_gate` 的意图闸门（四个本地零成本判定），
+   通过后才调用 LLM，避免把闲聊灌给模型白烧 token。
 """
 
 from __future__ import annotations
@@ -26,8 +27,8 @@ _ACTION_WORDS = [
     "宵禁", "夜间禁言", "违禁词",
 ]
 
-# 「意图型」软信号：不带明确动作词，但明显是在要求机器人做事。
-# 命中这些就交给 LLM 判断，而不是因为没匹配到 _ACTION_WORDS 直接丢弃。
+# 「意图型」软信号（仅作为闸门缺失时的兜底判定使用）。
+# 正常路径下由 IntentGate 做更精确的四道闸门判定，不再依赖这张词表。
 _INTENT_HINTS = [
     # 要求 / 祈使
     "帮我", "帮忙", "麻烦", "能不能", "可不可以", "可以帮", "给我", "替我",
@@ -38,13 +39,6 @@ _INTENT_HINTS = [
     "怎么办", "该不该", "要不要", "处理一下", "看一下", "管一下",
     # 口语时长（"禁他十分钟"这类）
     "分钟", "小时", "永久",
-]
-
-# 明确的闲聊信号：命中则不触发，避免把日常聊天塞给 LLM 浪费 token。
-# 注意这里只放「几乎不可能是指挥」的词，宁可放过也不误伤。
-_CHITCHAT_WORDS = [
-    "哈哈", "呵呵", "嘻嘻", "笑死", "晚安", "早安", "早上好", "中午好",
-    "吃饭", "睡觉", "下班", "上班", "打游戏", "开黑",
 ]
 
 # LLM 输出的意图 -> 合法动作
@@ -105,10 +99,13 @@ SYSTEM_PROMPT = """你是一个 QQ 群管理助理的意图解析器。请把用
 class IntentParser:
     """调用 LLM 解析自然语言意图。"""
 
-    def __init__(self, config, storage, context):
+    def __init__(self, config, storage, context, gate=None):
         self.cfg = config
         self.db = storage
         self.ctx = context
+        # 意图闸门（IntentGate）：决定是否值得花 token，由 main.py 注入。
+        # 为 None 时 should_trigger 退回宽松的软信号判定。
+        self.gate = gate
         self._last_error: str = ""
 
     @property
@@ -119,14 +116,21 @@ class IntentParser:
     def should_trigger(self, event, message: str) -> bool:
         """判断是否值得走智能识别（省 token）。
 
-        触发策略（任意一条命中即触发）：
-        1. @ 了机器人
-        2. 以机器人称呼开头（"磐石，..."）
-        3. 含明确动作词（禁言/踢/撤回...）
-        4. 含意图型软信号（"帮我""刷屏""太吵"...）—— 这是听懂「人话」的关键，
-           没有它，像"群里太吵了收拾一下"这种表达根本走不到 LLM。
+        三级判定，越靠前越便宜：
 
-        另外命中闲聊词直接跳过，避免把日常聊天塞给模型浪费 token。
+        **A. 明确指挥（免费放行）**
+        ``@机器人`` / 以机器人称呼开头 / 含标准动作词 —— 这些几乎不可能是
+        闲聊，直接放行，不再做额外检查。
+
+        **B. 意图闸门（免费拦截）**
+        其余消息交给 :class:`IntentGate` 做四个本地闸门判定：
+        上下文佐证 → 效果动词 → 否定/闲聊否决 → 冷却与信用额度。
+        全部零成本，通过后才允许调用模型。这是「听懂人话」与
+        「不烧 token」之间的平衡点。
+
+        **C. 兜底**
+        闸门不可用时（未注入）退回旧的软信号宽松判定，保证不会因为
+        闸门缺失而完全听不懂人话。
         """
         smart = self.cfg.smart
         if not smart.get("smart_enable", True):
@@ -140,32 +144,45 @@ class IntentParser:
         if text.startswith("/") or text.startswith("／"):
             return False
 
-        # 纯闲聊直接放过（但要先排除"@机器人"这类明确指令）
         at_bot = self._at_bot(event)
-        if not at_bot and len(text) <= 12 and any(w in text for w in _CHITCHAT_WORDS):
-            return False
 
-        # @了机器人
+        # ---------- A. 明确指挥：直接放行 ----------
         if smart.get("trigger_on_at", True) and at_bot:
             return True
 
-        # 以机器人称呼开头
         for name in smart.get("bot_names", []) or []:
-            if name and text.startswith(str(name)):
+            name = str(name or "")
+            if name and text.startswith(name):
                 return True
-            if name and str(name) in text[: len(str(name)) + 2]:
+            if name and name in text[: len(name) + 2]:
                 return True
 
-        # 含管理动作词
         if smart.get("trigger_on_keyword", True):
             for w in _ACTION_WORDS:
                 if w in text:
                     return True
 
-        # 意图型软信号：宁可多交给模型判断，也不要漏掉人话指挥
+        # ---------- B. 意图闸门 ----------
+        if smart.get("trigger_on_intent", True) and self.gate is not None:
+            try:
+                group_id = str(event.get_group_id())
+            except Exception:
+                group_id = ""
+            allowed, reason = self.gate.allow(group_id, text)
+            if not allowed:
+                # AstrBot 的 logger 实现不一定有 debug（部分版本只有 info 以上），
+                # 用 getattr 兜底，避免因为日志级别缺失而打断主流程。
+                _dbg = getattr(logger, "debug", None)
+                if callable(_dbg):
+                    try:
+                        _dbg(f"[磐石] 意图闸门拦截（{reason}）：{text[:40]}")
+                    except Exception:
+                        pass
+            return allowed
+
+        # ---------- C. 兜底：闸门缺失时用宽松软信号 ----------
         if smart.get("trigger_on_intent", True):
             hits = sum(1 for w in _INTENT_HINTS if w in text)
-            # 命中 1 个软信号 + 文本够长，或命中 2 个以上
             if hits >= 2 or (hits == 1 and len(text) >= 4):
                 return True
 

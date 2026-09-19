@@ -23,6 +23,7 @@ from .core import (
     ContextCollector,
     GuardHandle,
     IntentExecutor,
+    IntentGate,
     IntentParser,
     InteractHandle,
     JoinHandle,
@@ -83,7 +84,9 @@ class PanshiPlugin(Star):
 
         # 智能模块
         self.ctx = ContextCollector()
-        self.intent = IntentParser(self.cfg, self.db, self.ctx)
+        # 意图闸门：本地四道判定 + 信用额度，先把废话挡在模型之外
+        self.gate = IntentGate(self.cfg, self.ctx)
+        self.intent = IntentParser(self.cfg, self.db, self.ctx, gate=self.gate)
         # 本地规则解析器：无需 LLM，常见自然语言指令的兜底
         self.local_intent = LocalIntentParser(self.cfg)
         self.executor = IntentExecutor(
@@ -298,11 +301,21 @@ class PanshiPlugin(Star):
                 llm_ok = self._llm_available()
                 intent = None
                 source = ""
+                group_key = get_group_id(event) or ""
 
-                # 6a. 本地规则快速通道：仅在「有 LLM」时作为前置快路径，
+                # 6a. 缓存优先：短时间内同一句话不重复问模型
+                if group_key:
+                    try:
+                        intent = self.gate.cached(group_key, text)
+                        if intent:
+                            source = "缓存"
+                    except Exception:
+                        intent = None
+
+                # 6b. 本地规则快速通道：仅在「有 LLM」时作为前置快路径，
                 #     命中则省一次模型调用；本地判定不了会返回 None，
                 #     自然落到 LLM，不会因为本地没覆盖就丢掉这句话。
-                if self.cfg.smart.get("local_fast_path", True):
+                if intent is None and self.cfg.smart.get("local_fast_path", True):
                     try:
                         intent = self.local_intent.parse(event, text)
                         if intent:
@@ -311,13 +324,19 @@ class PanshiPlugin(Star):
                         logger.warning(f"[磐石] 本地意图解析异常: {e}")
                         intent = None
 
-                # 6b. 主通道：交给 AstrBot 已配置的模型理解（听得懂人话的关键）
+                # 6c. 主通道：交给 AstrBot 已配置的模型理解（听得懂人话的关键）
                 if intent is None and llm_ok:
                     intent = await self.intent.parse(event)
                     if intent:
                         source = "AI 理解"
+                        # 记住结果，短时间内相同句子直接复用
+                        if group_key:
+                            try:
+                                self.gate.remember(group_key, text, intent)
+                            except Exception:
+                                pass
 
-                # 6c. 没有 LLM 时的兜底：再试一次本地规则
+                # 6d. 没有 LLM 时的兜底：再试一次本地规则
                 #     （上面 local_fast_path 关闭时也要保证无模型可用）
                 if intent is None and not llm_ok:
                     try:

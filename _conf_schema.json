@@ -326,10 +326,32 @@
         "default": true
       },
       "trigger_on_intent": {
-        "description": "意图型触发：消息含「帮我/刷屏/太吵」等软信号时也交给模型理解",
+        "description": "意图型触发：含「帮我/刷屏/太吵」等软信号时，经本地闸门判定后交给模型",
         "type": "bool",
         "default": true,
-        "hint": "这是听懂口语化表达的关键。关闭后只识别明确动作词，更省 token 但更「死板」。"
+        "hint": "这是听懂口语化表达的关键。消息会先过四道本地零成本闸门（上下文佐证/效果动词/否定闲聊/信用额度），通过才调用模型，不再是命中一个词就烧 token。"
+      },
+      "intent_budget": {
+        "description": "智能识别信用额度（每群每小时可调用模型的次数）",
+        "type": "int",
+        "default": 20,
+        "slider": {
+          "min": 0,
+          "max": 200,
+          "step": 5
+        },
+        "hint": "每群独立计费。额度耗尽后本地规则继续兜底，常用指令不受影响。设为 0 表示不调用模型，只用本地规则。"
+      },
+      "intent_cooldown": {
+        "description": "智能识别冷却时间（秒）",
+        "type": "int",
+        "default": 8,
+        "slider": {
+          "min": 0,
+          "max": 120,
+          "step": 1
+        },
+        "hint": "同一群两次模型调用之间的最小间隔，避免连续刷屏式触发。设 0 关闭冷却。"
       },
       "local_fast_path": {
         "description": "本地规则快速通道：标准句式先本地秒执行，省一次模型调用",

@@ -248,6 +248,7 @@ def main():
     test_interact_layer()
     test_panel_layer()
     test_natural_language()
+    test_intent_gate()
 
     print("ALL_SELFTEST_PASS")
 
@@ -533,6 +534,123 @@ def test_natural_language():
     print("NATURAL_LANGUAGE_OK")
 
 
+def test_intent_gate():
+    """v1.6.0 核心：意图闸门 —— 用零成本本地判定把废话挡在模型之外。
+
+    验证四道闸门与信用额度都能正确工作，且不误伤真正的人话指挥。
+    """
+    from astrbot_plugin_panshi.config import PluginConfig
+    from astrbot_plugin_panshi.core.context import ContextCollector
+    from astrbot_plugin_panshi.core.intent_gate import IntentGate
+
+    cfg = PluginConfig({})
+    ctx = ContextCollector()
+    gate = IntentGate(cfg, ctx)
+
+    # ---------- 闸门③：闲聊 / 否定直接否决 ----------
+    for line in ["哈哈哈笑死", "晚安", "吃饭去了"]:
+        ok, why = gate.allow("g1", line)
+        assert not ok, f"闲聊未拦截: {line} -> {why}"
+
+    for line in ["别管他", "不用处理了", "算了随他吧", "开玩笑的"]:
+        ok, why = gate.allow("g1", line)
+        assert not ok, f"否定语境未拦截: {line} -> {why}"
+
+    # ---------- 闸门①：无上下文佐证时，纯陈述不该放行 ----------
+    ok, why = gate.allow("g2", "张三是广告")
+    assert not ok, f"纯陈述未拦截: {why}"
+
+    # ---------- 闸门①②：有异常迹象 + 效果动词 + 目标指代 -> 放行 ----------
+    ctx.record(_make_ctx_event("g3", "111", "小明", "刷屏刷屏刷屏"))
+    ctx.record(_make_ctx_event("g3", "111", "小明", "AAAAAAAAAA"))
+    ok, why = gate.allow("g3", "这个人一直在刷屏，帮我处理一下")
+    assert ok, f"有效人话被误拦: {why}"
+
+    # ---------- 额度扣减 ----------
+    left_before = gate.budget_left("g3")
+    assert left_before <= 19, left_before  # 上面用掉 1 点
+
+    # ---------- 闸门④：冷却生效 ----------
+    ok2, why2 = gate.allow("g3", "楼上刷屏了，管一下")
+    assert not ok2 and why2 == "冷却中", (ok2, why2)
+
+    # 关掉冷却后，额度继续扣
+    cfg2 = PluginConfig({"smart": {"intent_cooldown": 0, "intent_budget": 3}})
+    gate2 = IntentGate(cfg2, ContextCollector())
+    gate2.ctx.record(_make_ctx_event("g4", "222", "小红", "发广告"))
+
+    allowed = 0
+    for i in range(6):
+        ok3, why3 = gate2.allow("g4", f"有人发广告，处理一下 {i}")
+        if ok3:
+            allowed += 1
+    assert allowed == 3, f"额度应放行 3 次，实际 {allowed}"
+
+    # 额度耗尽后仍被拦截，且原因可读
+    ok4, why4 = gate2.allow("g4", "又有人发广告了，管管")
+    assert not ok4 and why4 == "额度已用尽", (ok4, why4)
+
+    # ---------- 缓存 ----------
+    g3 = IntentGate(PluginConfig({}), ContextCollector())
+    assert g3.cached("g9", "禁言张三") is None
+    g3.remember("g9", "禁言张三", {"action": "ban"})
+    got = g3.cached("g9", "禁言张三")
+    assert got and got["action"] == "ban", got
+    # 不同群不共享缓存
+    assert g3.cached("g10", "禁言张三") is None
+
+    # ---------- 统计可读 ----------
+    desc = g3.describe()
+    assert "拦截" in desc and "模型调用" in desc, desc
+
+    # ---------- 额度为 0：完全不调用模型 ----------
+    g0 = IntentGate(PluginConfig({"smart": {"intent_budget": 0}}), ContextCollector())
+    g0.ctx.record(_make_ctx_event("g5", "333", "小刚", "刷屏了"))
+    ok5, _ = g0.allow("g5", "有人在刷屏，处理下")
+    assert not ok5, "额度为 0 时不应放行"
+
+    # ---------- 与 should_trigger 串联 ----------
+    from astrbot_plugin_panshi.core.intent import IntentParser
+
+    class _Ev:
+        message_str = ""
+
+        def get_group_id(self):
+            return "g7"
+
+        def get_messages(self):
+            return []
+
+        def get_self_id(self):
+            return "777"
+
+    p = IntentParser(PluginConfig({}), None, ctx, gate=gate)
+    # 明确动作词直接放行（不经过闸门）
+    assert p.should_trigger(_Ev(), "禁言张三")
+    # 闲聊被闸门拦住
+    assert not p.should_trigger(_Ev(), "哈哈哈")
+
+    print("INTENT_GATE_OK")
+
+
+def _make_ctx_event(group_id, user_id, name, text):
+    """构造一个可供 ContextCollector 记录的最小事件。"""
+
+    class _E:
+        message_str = text
+
+        def get_group_id(self):
+            return group_id
+
+        def get_sender_id(self):
+            return user_id
+
+        def get_sender_name(self):
+            return name
+
+    return _E()
+
+
 # ======================================================================
 #  面板相关模块自测
 # ======================================================================
@@ -556,6 +674,14 @@ def test_config_layer():
     total_fields = sum(len(g["fields"]) for g in groups)
     assert total_fields >= 40, total_fields
     print(f"SCHEMA_OK (8 组 / {total_fields} 项)")
+
+    # 意图闸门的两个新配置项必须存在（v1.6.0）
+    smart_fields = {
+        f["key"] if isinstance(f, dict) else f
+        for f in next(g for g in groups if g["key"] == "smart")["fields"]
+    }
+    for need in ("trigger_on_intent", "intent_budget", "intent_cooldown", "local_fast_path"):
+        assert need in smart_fields, f"缺少配置项 {need}（现有：{sorted(smart_fields)}）"
 
     # 配置快照应包含全部字段
     snap = cfg.config_snapshot()
