@@ -48,6 +48,8 @@ class PluginConfig:
         self.context = context
         self._schema: dict | None = None
         self._plugin_dir: str | None = None
+        # 存储层引用（由 main.py 注入），用于按群配置视图
+        self._storage = None
 
     # ---------- 通用取值 ----------
     def _group(self, name: str) -> dict:
@@ -91,6 +93,17 @@ class PluginConfig:
             return 0
         return min(seconds, self.max_ban_time)
 
+    # ---------- 匿名保护 ----------
+    @property
+    def anon_protect(self) -> bool:
+        """是否豁免匿名转述内容（避免误禁匿名身份）。默认开启。"""
+        return bool(self.get("basic", "anon_protect", True))
+
+    @property
+    def anon_nicknames(self) -> list[str]:
+        """匿名昵称池：命中这些昵称的消息视为匿名转述，予以豁免。"""
+        return [str(x) for x in self.get("basic", "anon_nicknames", []) or []]
+
     # ---------- 功能分组 ----------
     @property
     def guard(self) -> dict:
@@ -119,6 +132,53 @@ class PluginConfig:
     def dump(self) -> dict:
         """返回原始配置字典。"""
         return dict(self.raw)
+
+    # ---------- 按群配置视图 ----------
+    def for_group(self, group_id):
+        """返回某群视角的配置对象（全局 + 该群覆盖深合并）。
+
+        面板里的「按群独立配置」此前只写存储、运行时不读取，导致静默失效。
+        各 handle 应通过本方法取配置，例如::
+
+            cfg = self.cfg.for_group(group_id)
+            guard = cfg.guard           # 该群视角的 guard 配置
+
+        Args:
+            group_id: 群号；为空或该群跟随全局时返回自身。
+
+        Returns:
+            一个 :class:`PluginConfig` 视图（加载该群的 override 覆盖全局值）。
+        """
+        gid = str(group_id).strip() if group_id not in (None, "") else ""
+        if not gid:
+            return self
+
+        # 通过 storage 读取该群的覆盖；无 storage 引用时退化为全局。
+        storage = getattr(self, "_storage", None)
+        if storage is None:
+            return self
+        try:
+            override = storage.get_group_override(gid)
+        except Exception:
+            return self
+        if not override:
+            return self
+
+        # 该群标记为「跟随全局」时，忽略一切覆盖。
+        if override.get("follow_default", False):
+            return self
+
+        # override 结构为「与全局的差异」的扁平字典：
+        # {"follow_default": False, "guard": {...}, "automate": {...}}
+        merged_raw = _deep_merge(copy.deepcopy(self.raw), override)
+        view = PluginConfig(merged_raw, self.context)
+        view._schema = self._schema
+        view._plugin_dir = self._plugin_dir
+        return view
+
+    def bind_storage(self, storage) -> None:
+        """注入存储层，使 ``for_group`` 能读取按群覆盖。"""
+        self._storage = storage
 
     # ==================================================================
     #  WebUI 面板支持
@@ -353,6 +413,21 @@ def _to_int(value: Any, default: int = 0) -> int:
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+def _deep_merge(base: dict, override: dict) -> dict:
+    """把 override 深合并进 base（override 优先），返回 base。
+
+    只对 dict 做递归合并；list / 标量直接覆盖。
+    """
+    if not isinstance(override, dict):
+        return base
+    for key, val in override.items():
+        if isinstance(val, dict) and isinstance(base.get(key), dict):
+            base[key] = _deep_merge(base[key], val)
+        else:
+            base[key] = val
+    return base
 
 
 def _field_snapshot(key: str, node: dict) -> dict:
