@@ -18,12 +18,33 @@ except Exception:
 
     logger = logging.getLogger("panshi")
 
-# 触发智能识别的动作关键词
+# 触发智能识别的动作关键词（明确的群管动作）
 _ACTION_WORDS = [
     "禁言", "解禁", "踢", "拉黑", "撤回", "删了", "删除", "清理", "清屏", "净化",
     "全禁", "全体禁言", "闭嘴", "警告", "改名", "改头衔", "头衔", "上管", "下管",
     "公告", "设精", "精华", "群名", "举报", "处理", "管管", "管一下", "安排",
     "宵禁", "夜间禁言", "违禁词",
+]
+
+# 「意图型」软信号：不带明确动作词，但明显是在要求机器人做事。
+# 命中这些就交给 LLM 判断，而不是因为没匹配到 _ACTION_WORDS 直接丢弃。
+_INTENT_HINTS = [
+    # 要求 / 祈使
+    "帮我", "帮忙", "麻烦", "能不能", "可不可以", "可以帮", "给我", "替我",
+    # 指向违规现象（人话描述，不含动作词）
+    "刷屏", "广告", "复读", "捣乱", "骂人", "引战", "乱发", "太吵", "安静",
+    "收拾", "整治", "治一下", "有人", "这个人", "那个人", "刚才那个",
+    # 疑问式指挥
+    "怎么办", "该不该", "要不要", "处理一下", "看一下", "管一下",
+    # 口语时长（"禁他十分钟"这类）
+    "分钟", "小时", "永久",
+]
+
+# 明确的闲聊信号：命中则不触发，避免把日常聊天塞给 LLM 浪费 token。
+# 注意这里只放「几乎不可能是指挥」的词，宁可放过也不误伤。
+_CHITCHAT_WORDS = [
+    "哈哈", "呵呵", "嘻嘻", "笑死", "晚安", "早安", "早上好", "中午好",
+    "吃饭", "睡觉", "下班", "上班", "打游戏", "开黑",
 ]
 
 # LLM 输出的意图 -> 合法动作
@@ -96,7 +117,17 @@ class IntentParser:
         return self._last_error
 
     def should_trigger(self, event, message: str) -> bool:
-        """判断是否值得走智能识别（省 token）。"""
+        """判断是否值得走智能识别（省 token）。
+
+        触发策略（任意一条命中即触发）：
+        1. @ 了机器人
+        2. 以机器人称呼开头（"磐石，..."）
+        3. 含明确动作词（禁言/踢/撤回...）
+        4. 含意图型软信号（"帮我""刷屏""太吵"...）—— 这是听懂「人话」的关键，
+           没有它，像"群里太吵了收拾一下"这种表达根本走不到 LLM。
+
+        另外命中闲聊词直接跳过，避免把日常聊天塞给模型浪费 token。
+        """
         smart = self.cfg.smart
         if not smart.get("smart_enable", True):
             return False
@@ -109,8 +140,13 @@ class IntentParser:
         if text.startswith("/") or text.startswith("／"):
             return False
 
+        # 纯闲聊直接放过（但要先排除"@机器人"这类明确指令）
+        at_bot = self._at_bot(event)
+        if not at_bot and len(text) <= 12 and any(w in text for w in _CHITCHAT_WORDS):
+            return False
+
         # @了机器人
-        if smart.get("trigger_on_at", True) and self._at_bot(event):
+        if smart.get("trigger_on_at", True) and at_bot:
             return True
 
         # 以机器人称呼开头
@@ -125,6 +161,13 @@ class IntentParser:
             for w in _ACTION_WORDS:
                 if w in text:
                     return True
+
+        # 意图型软信号：宁可多交给模型判断，也不要漏掉人话指挥
+        if smart.get("trigger_on_intent", True):
+            hits = sum(1 for w in _INTENT_HINTS if w in text)
+            # 命中 1 个软信号 + 文本够长，或命中 2 个以上
+            if hits >= 2 or (hits == 1 and len(text) >= 4):
+                return True
 
         return False
 
@@ -174,61 +217,114 @@ class IntentParser:
     async def _get_provider(self, event):
         """按「指定 ID → 会话默认 → 全局第一个」的顺序解析供应商。
 
-        每一层都单独 try，并把真实原因写进日志，便于排查「未找到供应商」。
+        设计目标：**默认就用 AstrBot 里配好的模型**，用户不需要额外配置。
+        每一层都单独 try，并把真实原因写进日志 + ``last_error``，
+        便于排查「为什么听不懂人话」。
         """
         ctx = None
         try:
             ctx = event.get_context()
-        except Exception as e:
-            logger.warning(f"[磐石] 无法获取 AstrBot 上下文: {e}")
+        except Exception:
+            ctx = None
+        if ctx is None:
+            ctx = getattr(self.cfg, "context", None)
+        if ctx is None:
+            self._last_error = "拿不到 AstrBot 上下文"
+            logger.warning("[磐石] 无法获取 AstrBot 上下文，无法解析模型")
             return None
 
+        umo = getattr(event, "unified_msg_origin", None)
+        tried = []
+
+        # 1) 面板里显式指定的供应商 ID（优先级最高，用户意图明确）
         provider_id = (self.cfg.smart.get("smart_provider_id", "") or "").strip()
-
-        # 1) 配置里指定的供应商 ID
         if provider_id:
+            prov = self._provider_by_id(ctx, provider_id, tried)
+            if prov is not None:
+                logger.info(f"[磐石] 使用面板指定的模型：{provider_id}")
+                return prov
+
+        # 2) 当前会话正在使用的模型（群里 /model 切换过就走这里）
+        prov = await self._provider_for_session(ctx, umo, tried)
+        if prov is not None:
+            logger.info("[磐石] 使用当前会话设置的模型")
+            return prov
+
+        # 3) 兜底：全局第一个可用对话模型
+        prov = self._provider_first(ctx, tried)
+        if prov is not None:
+            logger.info("[磐石] 会话未指定模型，使用全局第一个可用模型")
+            return prov
+
+        # 全部失败：把真实原因交给上层展示，而不是笼统的「未找到供应商」
+        self._last_error = (
+            "没有找到可用的对话模型（" + "；".join(tried) + "）"
+            if tried
+            else "没有找到可用的对话模型"
+        )
+        logger.warning(
+            "[磐石] 未找到任何可用的对话模型。请到 AstrBot「服务提供商」页"
+            f"添加一个对话模型。尝试记录：{tried}"
+        )
+        return None
+
+    # ---------- 供应商解析的三级实现 ----------
+    @staticmethod
+    def _provider_by_id(ctx, provider_id: str, tried: list):
+        """按 ID 取供应商；兼容不接收关键字参数的旧版本。"""
+        for call in (
+            lambda: ctx.get_provider_by_id(provider_id=provider_id),
+            lambda: ctx.get_provider_by_id(provider_id),
+        ):
             try:
-                prov = ctx.get_provider_by_id(provider_id=provider_id)
+                prov = call()
+                if prov is not None:
+                    return prov
+                tried.append(f"指定ID「{provider_id}」未命中")
+                return None
             except TypeError:
-                # 老版本可能不接受关键字参数
-                prov = ctx.get_provider_by_id(provider_id)
+                continue
             except Exception as e:
-                logger.warning(f"[磐石] 按 ID 取供应商失败(id={provider_id}): {e}")
-                prov = None
-            if prov is not None:
-                return prov
-            logger.warning(
-                f"[磐石] 配置的供应商 ID「{provider_id}」不存在，"
-                f"将回退到当前默认供应商。请到面板「智能识别」里重新选择。"
-            )
+                tried.append(f"指定ID「{provider_id}」取用失败: {e}")
+                logger.warning(f"[磐石] 按 ID 取模型失败(id={provider_id}): {e}")
+                return None
+        tried.append(f"指定ID「{provider_id}」接口不兼容")
+        return None
 
-        # 2) 当前会话使用的供应商
-        try:
-            prov = await ctx.get_using_provider_async(
-                umo=getattr(event, "unified_msg_origin", None)
-            )
-            if prov is not None:
-                return prov
-        except Exception as e:
-            logger.warning(f"[磐石] 获取会话默认供应商失败: {e}")
+    @staticmethod
+    async def _provider_for_session(ctx, umo, tried: list):
+        """取当前会话使用的供应商。"""
+        for call in (
+            lambda: ctx.get_using_provider_async(umo=umo),
+            lambda: ctx.get_using_provider_async(),
+        ):
+            try:
+                prov = await call()
+                if prov is not None:
+                    return prov
+                tried.append("会话未设置默认模型")
+                return None
+            except TypeError:
+                continue
+            except Exception as e:
+                tried.append(f"取会话模型失败: {e}")
+                logger.warning(f"[磐石] 获取会话默认模型失败: {e}")
+                return None
+        tried.append("会话模型接口不兼容")
+        return None
 
-        # 3) 兜底：列表里第一个对话供应商
+    @staticmethod
+    def _provider_first(ctx, tried: list):
+        """兜底：取全局第一个可用对话模型。"""
         try:
             all_providers = ctx.get_all_providers() or []
-            if all_providers:
-                logger.info(
-                    f"[磐石] 会话未设置默认模型，回退到第一个可用供应商"
-                    f"（共 {len(all_providers)} 个）"
-                )
-                return all_providers[0]
         except Exception as e:
-            logger.warning(f"[磐石] 枚举供应商列表失败: {e}")
-
-        logger.warning(
-            "[磐石] 未找到任何可用的对话模型供应商。"
-            "请在 AstrBot「服务提供商」页添加一个对话模型，"
-            "或在插件面板「智能识别」里指定供应商。"
-        )
+            tried.append(f"枚举模型列表失败: {e}")
+            logger.warning(f"[磐石] 枚举模型列表失败: {e}")
+            return None
+        if all_providers:
+            return all_providers[0]
+        tried.append("AstrBot 未配置任何模型")
         return None
 
     # ---------- 解析输出 ----------

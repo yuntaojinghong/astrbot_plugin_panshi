@@ -325,6 +325,18 @@
         "type": "bool",
         "default": true
       },
+      "trigger_on_intent": {
+        "description": "意图型触发：消息含「帮我/刷屏/太吵」等软信号时也交给模型理解",
+        "type": "bool",
+        "default": true,
+        "hint": "这是听懂口语化表达的关键。关闭后只识别明确动作词，更省 token 但更「死板」。"
+      },
+      "local_fast_path": {
+        "description": "本地规则快速通道：标准句式先本地秒执行，省一次模型调用",
+        "type": "bool",
+        "default": true,
+        "hint": "仅在已配置对话模型时生效。本地认不出来会自动交给模型，不会丢指令。"
+      },
       "smart_confirm_dangerous": {
         "description": "高风险操作（踢人/拉黑）需回复确认",
         "type": "bool",

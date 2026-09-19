@@ -283,7 +283,11 @@ class PanshiPlugin(Star):
                 yield event.plain_result(confirm_result)
                 return
 
-        # 6. 智能意图识别（混合模式：本地优先，LLM 兜底）
+        # 6. 智能意图识别
+        #    策略：**LLM 为主（听得懂人话），本地规则为辅（零成本快速通道）**。
+        #    - 本地规则只处理「目标明确、句式标准」的指令，命中即秒执行，不消耗 token；
+        #    - 其余一切交给 AstrBot 里已配置的模型理解，覆盖口语化表达；
+        #    - 完全没有模型时，本地规则仍能扛住常用指令，不会变成不可用。
         try:
             if self.intent.should_trigger(event, text):
                 # 权限门槛：至少管理员才能驱动智能操作
@@ -291,27 +295,47 @@ class PanshiPlugin(Star):
                     yield event.plain_result("⛔ 抱歉，管理操作需要管理员权限。")
                     return
 
+                llm_ok = self._llm_available()
                 intent = None
-                # 6a. 优先用本地规则解析（无需 LLM，省资源、响应快）
-                #     修复：此前只能走 LLM，没配模型时直接报「未找到 LLM 供应商」
-                #     并把整条消息吞掉。常见句式现在先由本地规则兜底。
-                try:
-                    intent = self.local_intent.parse(event, text)
-                except Exception as e:
-                    logger.warning(f"[磐石] 本地意图解析异常: {e}")
-                    intent = None
+                source = ""
 
-                # 6b. 本地没识别出来，且配置了 LLM，才回退到 LLM 解析
-                if intent is None and self._llm_available():
+                # 6a. 本地规则快速通道：仅在「有 LLM」时作为前置快路径，
+                #     命中则省一次模型调用；本地判定不了会返回 None，
+                #     自然落到 LLM，不会因为本地没覆盖就丢掉这句话。
+                if self.cfg.smart.get("local_fast_path", True):
+                    try:
+                        intent = self.local_intent.parse(event, text)
+                        if intent:
+                            source = "本地规则"
+                    except Exception as e:
+                        logger.warning(f"[磐石] 本地意图解析异常: {e}")
+                        intent = None
+
+                # 6b. 主通道：交给 AstrBot 已配置的模型理解（听得懂人话的关键）
+                if intent is None and llm_ok:
                     intent = await self.intent.parse(event)
+                    if intent:
+                        source = "AI 理解"
+
+                # 6c. 没有 LLM 时的兜底：再试一次本地规则
+                #     （上面 local_fast_path 关闭时也要保证无模型可用）
+                if intent is None and not llm_ok:
+                    try:
+                        intent = self.local_intent.parse(event, text)
+                        if intent:
+                            source = "本地规则"
+                    except Exception:
+                        intent = None
 
                 if intent:
-                    result = await self.executor.execute(event, intent)
-                    if result:
-                        yield event.plain_result(result)
-                        return
-                elif not self._llm_available():
-                    # 本地规则没覆盖 + 又没有可用 LLM：给出可执行的引导，
+                    action = intent.get("action")
+                    if action and action != "none":
+                        result = await self.executor.execute(event, intent)
+                        if result:
+                            yield event.plain_result(result)
+                            return
+                elif not llm_ok:
+                    # 本地也没覆盖 + 没有可用模型：给可执行引导，
                     # 而不是「未找到 LLM 供应商」这种让人一头雾水的报错。
                     yield event.plain_result(
                         "🤔 我没太理解这句话的意图。\n"
@@ -321,9 +345,12 @@ class PanshiPlugin(Star):
                         "· 「全体禁言」「解除全体禁言」\n"
                         "· 「宵禁改到 23:30 到 07:00」\n"
                         "· 或直接发送 /群管帮助 查看全部指令\n"
-                        "💡 想让我听懂更复杂的话，可在 AstrBot「服务提供商」里配置一个对话模型。"
+                        "💡 想让我听懂更口语化的表达，可在 AstrBot「服务提供商」里配置一个对话模型。"
                     )
                     return
+                elif self.intent.last_error:
+                    # 配了模型但这次解析失败：把真实原因透出来，便于排查
+                    logger.warning(f"[磐石] 意图解析未成功：{self.intent.last_error}")
         except Exception as e:
             logger.error(f"[磐石] 智能识别异常: {e}")
 
