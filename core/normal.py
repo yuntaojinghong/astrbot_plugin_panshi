@@ -9,6 +9,7 @@ from ..utils import (
     get_member_role,
     get_nickname,
     role_label,
+    safe_int,
 )
 from ..utils.helpers import extract_image_url, get_reply_id
 from .base_handle import BaseHandle
@@ -67,13 +68,18 @@ class NormalHandle(BaseHandle):
 
         results = []
         for tid in targets:
-            name = await get_nickname(event, tid)
+            uid = safe_int(tid)
+            if uid is None:
+                # message_id / 匿名昵称等非数字目标：跳过，避免 int() 崩溃。
+                results.append(f"❓ 无法识别的操作对象「{tid}」，已跳过。")
+                continue
+            name = await get_nickname(event, uid)
 
             ok, err = await self.call_api(
                 event,
                 "set_group_ban",
                 group_id=group_id,
-                user_id=int(tid),
+                user_id=uid,
                 duration=seconds,
             )
             if ok:
@@ -116,13 +122,17 @@ class NormalHandle(BaseHandle):
 
         results = []
         for tid in targets:
-            name = await get_nickname(event, tid)
+            uid = safe_int(tid)
+            if uid is None:
+                results.append(f"❓ 无法识别的操作对象「{tid}」，已跳过。")
+                continue
+            name = await get_nickname(event, uid)
 
             ok, err = await self.call_api(
                 event,
                 "set_group_kick",
                 group_id=group_id,
-                user_id=int(tid),
+                user_id=uid,
                 reject_add_request=reject,
             )
             if ok:
@@ -152,7 +162,10 @@ class NormalHandle(BaseHandle):
         # 优先撤回引用消息
         reply_id = get_reply_id(event)
         if reply_id:
-            ok, err = await self.call_api(event, "delete_msg", message_id=int(reply_id))
+            mid = safe_int(reply_id)
+            if mid is None:
+                return f"❌ 该消息的 ID「{reply_id}」不是有效数字，无法撤回。"
+            ok, err = await self.call_api(event, "delete_msg", message_id=mid)
             return (
                 "✅ 已撤回该消息"
                 if ok
@@ -165,11 +178,20 @@ class NormalHandle(BaseHandle):
             return "❓ 没有可撤回的消息（可能未缓存到）。请引用要撤回的消息。"
 
         success = 0
-        for mid in msg_ids:
-            ok, _ = await self.call_api(event, "delete_msg", message_id=int(mid))
+        skipped = 0
+        for raw_mid in msg_ids:
+            mid = safe_int(raw_mid)
+            if mid is None:
+                # 非数字 message_id（如十六进制 ID）无法通过本适配器撤回，跳过。
+                skipped += 1
+                continue
+            ok, _ = await self.call_api(event, "delete_msg", message_id=mid)
             if ok:
                 success += 1
-        return f"✅ 已撤回 {success}/{len(msg_ids)} 条消息"
+        text = f"✅ 已撤回 {success}/{len(msg_ids)} 条消息"
+        if skipped:
+            text += f"（{skipped} 条因消息 ID 非数字被跳过）"
+        return text
 
     async def purge(self, event, count: int = 30) -> str:
         """批量撤回最近 count 条消息（清屏）。"""
@@ -211,12 +233,16 @@ class NormalHandle(BaseHandle):
         tids = [str(target_id)] if target_id else (get_ats(event) or [str(self.sender_id(event))])
         results = []
         for tid in tids:
-            name = await get_nickname(event, tid)
+            uid = safe_int(tid)
+            if uid is None:
+                results.append(f"❓ 无法识别的操作对象「{tid}」，已跳过。")
+                continue
+            name = await get_nickname(event, uid)
             ok, err = await self.call_api(
                 event,
                 "set_group_card",
                 group_id=group_id,
-                user_id=int(tid),
+                user_id=uid,
                 card=card or "",
             )
             if ok:
@@ -232,12 +258,16 @@ class NormalHandle(BaseHandle):
         tids = [str(target_id)] if target_id else (get_ats(event) or [str(self.sender_id(event))])
         results = []
         for tid in tids:
-            name = await get_nickname(event, tid)
+            uid = safe_int(tid)
+            if uid is None:
+                results.append(f"❓ 无法识别的操作对象「{tid}」，已跳过。")
+                continue
+            name = await get_nickname(event, uid)
             ok, err = await self.call_api(
                 event,
                 "set_group_special_title",
                 group_id=group_id,
-                user_id=int(tid),
+                user_id=uid,
                 special_title=title or "",
                 duration=-1,
             )
@@ -257,12 +287,16 @@ class NormalHandle(BaseHandle):
             return "❓ 请 @要操作的人。"
         results = []
         for tid in tids:
-            name = await get_nickname(event, tid)
+            uid = safe_int(tid)
+            if uid is None:
+                results.append(f"❓ 无法识别的操作对象「{tid}」，已跳过。")
+                continue
+            name = await get_nickname(event, uid)
             ok, err = await self.call_api(
                 event,
                 "set_group_admin",
                 group_id=group_id,
-                user_id=int(tid),
+                user_id=uid,
                 enable=enable,
             )
             if ok:
@@ -278,8 +312,11 @@ class NormalHandle(BaseHandle):
         reply_id = get_reply_id(event)
         if not reply_id:
             return "❓ 请引用要设为精华的消息。"
+        mid = safe_int(reply_id)
+        if mid is None:
+            return f"❌ 该消息的 ID「{reply_id}」不是有效数字，无法设为精华。"
         action = "set_essence_msg" if enable else "delete_essence_msg"
-        ok, err = await self.call_api(event, action, message_id=int(reply_id))
+        ok, err = await self.call_api(event, action, message_id=mid)
         if ok:
             return "⭐ 已设为精华消息" if enable else "已取消精华消息"
         return f"❌ 操作失败：{humanize(err)}"
