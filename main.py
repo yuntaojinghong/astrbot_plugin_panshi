@@ -54,6 +54,12 @@ class PanshiPlugin(Star):
         data_dir = self._resolve_data_dir()
         self.db = Storage(data_dir)
 
+        # 打通按群配置：让 PluginConfig 能读取每群 override（修复「独立配置不生效」）
+        try:
+            self.cfg.bind_storage(self.db)
+        except Exception as e:
+            logger.warning(f"[磐石] 绑定按群配置存储失败: {e}")
+
         # 群信息缓存（供配置面板自动识别群聊）
         self.group_cache = GroupInfoCache(context)
 

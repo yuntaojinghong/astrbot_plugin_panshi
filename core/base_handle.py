@@ -20,6 +20,19 @@ class BaseHandle:
         self.db = storage
 
     # ---------- 公共工具 ----------
+    def cfg_for(self, event) -> "BaseHandle":
+        """取「当前群视角」的配置对象（全局叠加该群 override）。
+
+        修复 Issue #1：面板的「按群独立配置」此前只写存储、运行时不读取。
+        handle 内所有取配置的地方都应改用本方法，例如::
+
+            cfg = self.cfg_for(event).guard
+        """
+        try:
+            return self.cfg.for_group(self.group_id(event))
+        except Exception:
+            return self.cfg
+
     @staticmethod
     def group_id(event) -> int:
         return int(event.get_group_id())

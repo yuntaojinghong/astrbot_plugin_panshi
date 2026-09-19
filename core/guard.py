@@ -14,6 +14,7 @@ except Exception:
     logger = logging.getLogger("panshi")
 
 from .base_handle import BaseHandle
+from ..utils import safe_int
 
 # 内置违禁词（广告类为主，避免误伤）
 _BUILTIN_WORDS = [
@@ -63,11 +64,25 @@ class GuardHandle(BaseHandle):
         # 记录消息缓存
         self._cache_message(group_id, user_id, message_id, text)
 
+        # 机器人自身消息豁免：匿名树洞（astrbot_plugin_anon_shudong）等插件
+        # 是用 context.send_message 以「bot 自身身份」把内容转述到群里的，
+        # 这类消息的 sender 就是机器人自己。若照常处罚，会去禁言机器人自己，
+        # 进而把一个无辜的真实用户（甚至是机器人）禁言，造成「匿名身份被一并禁言」。
+        if self._is_self_message(event):
+            return None
+
+        # 按群配置视图（修复 Issue #1：面板「独立配置」运行时不生效）
+        cfg = self.cfg_for(event)
+
+        # 匿名转述内容豁免（按昵称/格式识别）
+        if cfg.anon_protect and self._is_anon_relay(text):
+            return None
+
         # 管理员/超管豁免（可按需调整）
         if self._is_exempt(event):
             return None
 
-        guard = self.cfg.guard
+        guard = cfg.guard
 
         # 1. 违禁词
         if guard.get("forbidden_enable", True):
@@ -164,18 +179,19 @@ class GuardHandle(BaseHandle):
         group_id = self.group_id(event)
         user_id = self.sender_id(event)
         text = self._extract_text(event)
+        cfg = self.cfg_for(event)
 
         # 撤回最近一条
         await self._recall_last(event, user_id)
 
         # 记录警告
-        expire = int(self.cfg.warning.get("warn_expire_days", 30))
+        expire = int(cfg.warning.get("warn_expire_days", 30))
         warn_count = self.db.add_warning(group_id, user_id, reason, expire)
 
         # 禁言
         msg = f"⚠️ 检测到 {reason}，已处理。"
         if ban_time > 0:
-            ban_time = self.cfg.clamp_ban_time(ban_time)
+            ban_time = cfg.clamp_ban_time(ban_time)
             from ..utils import format_duration
 
             ok, err = await self.call_api(
@@ -192,7 +208,7 @@ class GuardHandle(BaseHandle):
         try:
             from .warning import check_escalation
 
-            esc = await check_escalation(self.cfg, self.db, event, warn_count, reason)
+            esc = await check_escalation(cfg, self.db, event, warn_count, reason)
             if esc:
                 msg += f"\n{esc}"
         except Exception as e:
@@ -208,7 +224,11 @@ class GuardHandle(BaseHandle):
             return
         for item in reversed(dq):
             if str(item["user_id"]) == str(user_id) and item.get("message_id"):
-                await self.call_api(event, "delete_msg", message_id=int(item["message_id"]))
+                mid = safe_int(item["message_id"])
+                if mid is None:
+                    # 非数字 message_id（如十六进制 ID），本适配器无法撤回，跳过。
+                    break
+                await self.call_api(event, "delete_msg", message_id=mid)
                 break
 
     # ========== 辅助 ==========
@@ -246,6 +266,43 @@ class GuardHandle(BaseHandle):
             return get_user_level(event, self.cfg.super_admins) >= PermLevel.ADMIN
         except Exception:
             return False
+
+    @staticmethod
+    def _is_self_message(event) -> bool:
+        """判断消息是否由机器人自己发出（bot 自身身份）。
+
+        匿名树洞等插件以 ``context.send_message`` 转发内容，群内这条消息的
+        发送者即机器人自身。命中时直接豁免，避免误禁机器人/真实用户。
+        """
+        try:
+            self_id = str(event.get_self_id() or "").strip()
+            sender_id = str(event.get_sender_id() or "").strip()
+            return bool(self_id) and self_id == sender_id
+        except Exception:
+            return False
+
+    def _is_anon_relay(self, text: str) -> bool:
+        """识别匿名树洞的转述内容。
+
+        识别方式（任一命中即视为匿名转述）：
+        1. 文本中包含配置的匿名昵称池中的昵称；
+        2. 文本匹配匿名树洞的默认转述格式 ``【昵称】：内容`` / ``【匿名倾诉】``。
+
+        Returns:
+            True 表示这是匿名转述，应豁免处罚。
+        """
+        if not text:
+            return False
+        # 1) 昵称黑名单（配置的匿名昵称）
+        for name in self.cfg.anon_nicknames:
+            if name and name in text:
+                return True
+        # 2) 格式识别：【xxx】开头（匿名树洞默认 relay_format）
+        if re.match(r"^\s*【[^】]{1,20}】", text):
+            return True
+        if "【匿名倾诉】" in text or "【匿名转述】" in text:
+            return True
+        return False
 
     def _cache_message(self, group_id, user_id, message_id, text) -> None:
         dq = self._recent.setdefault(group_id, deque(maxlen=100))
