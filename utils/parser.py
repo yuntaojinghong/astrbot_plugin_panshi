@@ -34,6 +34,44 @@ _DURATION_RE = re.compile(
 )
 
 
+def safe_int(value, default: int | None = None) -> int | None:
+    """把可能不是纯数字的值安全地转成 int，绝不抛异常。
+
+    OneBot 的 ``message_id`` / ``user_id`` 并不保证是十进制数字：
+    - 有些协议端（如 NapCat / Lagrange）的 ``message_id`` 是 32 位十六进制
+      字符串，例如 ``ba2aa5429ac14ea5968fcb797d35c952``；
+    - 引用消息、转发消息里也可能混入非数字内容。
+
+    直接 ``int()`` 会抛 ``ValueError: invalid literal for int() with base 10``
+    并导致整条指令崩溃。此函数把这种输入统一收敛为 ``default``。
+
+    Args:
+        value: 待转换的值（str / int / float / None / 其他）。
+        default: 无法转换时返回的值，默认 None。
+
+    Returns:
+        转换成功返回 int，否则返回 default。
+    """
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value) if value.is_integer() else default
+    text = str(value).strip()
+    if not text:
+        return default
+    # 允许 "123" / "-123" / " 123 "
+    if re.fullmatch(r"[+-]?\d+", text):
+        try:
+            return int(text)
+        except (TypeError, ValueError):
+            return default
+    return default
+
+
 def parse_duration(text: str | int | None, default: int = 60) -> int:
     """把时长文本解析成秒数。
 
