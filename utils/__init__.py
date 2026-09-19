@@ -1,6 +1,6 @@
 """磐石插件的通用工具函数。"""
 
-from .parser import parse_duration, format_duration, parse_target
+from .parser import parse_duration, format_duration, parse_target, safe_int
 from .helpers import (
     get_ats,
     get_nickname,
@@ -17,6 +17,7 @@ __all__ = [
     "parse_duration",
     "format_duration",
     "parse_target",
+    "safe_int",
     "get_ats",
     "get_nickname",
     "extract_image_url",
