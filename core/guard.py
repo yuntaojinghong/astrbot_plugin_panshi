@@ -78,6 +78,10 @@ class GuardHandle(BaseHandle):
         if cfg.anon_protect and self._is_anon_relay(text):
             return None
 
+        # 风控白名单豁免（不参与任何防护处罚）
+        if self._is_whitelisted(event):
+            return None
+
         # 管理员/超管豁免（可按需调整）
         if self._is_exempt(event):
             return None
@@ -264,6 +268,14 @@ class GuardHandle(BaseHandle):
             from ..utils import PermLevel, get_user_level
 
             return get_user_level(event, self.cfg.super_admins) >= PermLevel.ADMIN
+        except Exception:
+            return False
+
+    def _is_whitelisted(self, event) -> bool:
+        """风控白名单：命中则豁免防护处罚（如官方客服号）。"""
+        try:
+            uid = str(event.get_sender_id())
+            return bool(uid) and uid in self.cfg.whitelist
         except Exception:
             return False
 

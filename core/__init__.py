@@ -10,6 +10,9 @@ from .activity import ActivityHandle
 from .automate import AutomateHandle
 from .context import ContextCollector
 from .intent import IntentParser
+from .local_intent import LocalIntentParser
+from .interact import InteractHandle
+from .panel import PanelHandle
 from .intent_executor import IntentExecutor
 
 __all__ = [
@@ -23,5 +26,8 @@ __all__ = [
     "AutomateHandle",
     "ContextCollector",
     "IntentParser",
+    "LocalIntentParser",
     "IntentExecutor",
+    "InteractHandle",
+    "PanelHandle",
 ]

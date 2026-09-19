@@ -58,6 +58,34 @@ async def check_escalation(cfg, db, event, count: int, reason: str = "", target_
     group_id = event.get_group_id()
     user_id = target_id or event.get_sender_id()
 
+    # 渐进式处罚阶梯优先：命中最高一档已满足的规则
+    ladder = cfg.escalation_ladder
+    if ladder:
+        hit = None
+        for rule in ladder:
+            if count >= int(rule.get("count", 0)) > 0:
+                hit = rule
+        if hit is None:
+            return None
+        action = hit.get("action")
+        try:
+            if action == "kick":
+                await event.bot.set_group_kick(
+                    group_id=int(group_id), user_id=int(user_id), reject_add_request=False
+                )
+                db.clear_warnings(group_id, user_id, 0)
+                return f"🚫 触发处罚阶梯（{count} 次），已自动踢出。"
+            if action == "ban":
+                ban_time = cfg.clamp_ban_time(int(hit.get("duration") or 600))
+                await event.bot.set_group_ban(
+                    group_id=int(group_id), user_id=int(user_id), duration=ban_time
+                )
+                return f"🔇 触发处罚阶梯（{count} 次），已自动禁言 {format_duration(ban_time)}。"
+            # warn：仅提示，不额外动作
+            return f"⚠️ 已记录第 {count} 次违规。"
+        except Exception:
+            return None
+
     kick_th = int(cfg.warning.get("warn_kick_threshold", 5))
     ban_th = int(cfg.warning.get("warn_ban_threshold", 3))
 
