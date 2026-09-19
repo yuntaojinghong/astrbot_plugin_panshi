@@ -244,8 +244,173 @@ def main():
     test_curfew_intent()
     test_banword_and_backup(inst)
     test_page_service(inst)
+    test_local_intent()
+    test_interact_layer()
+    test_panel_layer()
 
     print("ALL_SELFTEST_PASS")
+
+
+# ======================================================================
+#  v1.5.0 新增能力自测
+# ======================================================================
+def test_local_intent():
+    """本地规则意图解析：无 LLM 也能识别常用管理指令。"""
+    from astrbot_plugin_panshi.config import PluginConfig
+    from astrbot_plugin_panshi.core.local_intent import LocalIntentParser
+
+    cfg = PluginConfig({"basic": {"default_ban_time": 60}})
+    parser = LocalIntentParser(cfg)
+
+    class _Ev:
+        message_str = ""
+        _msgs = []
+
+        def get_sender_id(self):
+            return "999"
+
+        def get_group_id(self):
+            return "1001"
+
+        def get_self_id(self):
+            return "777"
+
+        def get_messages(self):
+            return self._msgs
+
+    # 显式 QQ 号
+    r = parser.parse(_Ev(), "禁言 123456 10分钟")
+    assert r and r["action"] == "ban" and r["target"] == "123456", r
+    assert r["duration"] == 600, r
+
+    # 小时换算
+    r = parser.parse(_Ev(), "把123456禁言2小时")
+    assert r and r["duration"] == 7200, r
+
+    # 全体禁言 / 解禁（含插入字「都」）
+    assert parser.parse(_Ev(), "全体禁言")["action"] == "whole_ban"
+    assert parser.parse(_Ev(), "把全体都禁言了")["enable"] is True
+    r = parser.parse(_Ev(), "解除全体禁言")
+    assert r["action"] == "whole_ban" and r["enable"] is False, r
+
+    # 模糊指代 -> recent_offender，而不是瞎猜
+    r = parser.parse(_Ev(), "把刚才刷屏的禁言十分钟")
+    assert r and r["target"] == "recent_offender", r
+
+    # 无关闲聊不误判
+    assert parser.parse(_Ev(), "今天天气不错") is None
+    print("LOCAL_INTENT_OK")
+
+
+def test_interact_layer():
+    """互动工具：投票 / 接龙 / 自助查询 / 关键词自动回复。"""
+    from astrbot_plugin_panshi.config import PluginConfig
+    from astrbot_plugin_panshi.core.interact import InteractHandle
+
+    class _DB:
+        def get_points(self, g, u):
+            return 42
+
+        def get_message_count(self, g, u):
+            return 7
+
+        def get_warnings(self, g, u, e):
+            return []
+
+        def has_checked_in(self, g, u):
+            return True
+
+    class _Ev:
+        def get_group_id(self):
+            return "1001"
+
+        def get_sender_id(self):
+            return "999"
+
+    cfg = PluginConfig(
+        {"interact": {"auto_replies_text": "群规,规矩 => 群规见置顶\n签到 => 发 /签到"}}
+    )
+    ih = InteractHandle(cfg, _DB())
+
+    # 自动回复
+    assert ih.match_auto_reply("请问群规是啥") == "群规见置顶"
+    assert ih.match_auto_reply("我要签到") == "发 /签到"
+    assert ih.match_auto_reply("无关内容") is None
+    print("AUTO_REPLY_OK")
+
+    import asyncio
+
+    loop = asyncio.new_event_loop()
+    ev = _Ev()
+    # 投票：发起 -> 投票 -> 结算
+    text = loop.run_until_complete(ih.start_vote(ev, "周末去哪|爬山|桌游"))
+    assert "1. 爬山" in text and "2. 桌游" in text, text
+    loop.run_until_complete(ih.cast_vote(ev, "2"))
+    res = loop.run_until_complete(ih.vote_result(ev))
+    assert "桌游" in res, res
+    # 接龙
+    text = loop.run_until_complete(ih.start_chain(ev, "周末计划"))
+    assert "周末计划" in text, text
+    # 自助查询
+    text = loop.run_until_complete(ih.self_query(ev, "积分"))
+    assert "42" in text, text
+    print("INTERACT_OK")
+
+
+def test_panel_layer():
+    """面板 / 自检 / 配置向导：聚合展示不抛异常。"""
+    import asyncio
+    from astrbot_plugin_panshi.config import PluginConfig
+    from astrbot_plugin_panshi.core.panel import PanelHandle
+
+    class _DB:
+        def get_group_override(self, gid):
+            return {}
+
+    class _Bot:
+        def set_group_ban(self, **k):
+            pass
+
+        def set_group_kick(self, **k):
+            pass
+
+        def delete_msg(self, **k):
+            pass
+
+        def set_group_whole_ban(self, **k):
+            pass
+
+    class _Ev:
+        bot = _Bot()
+
+        def get_group_id(self):
+            return "1001"
+
+        def get_sender_id(self):
+            return "999"
+
+        def get_messages(self):
+            return []
+
+        def get_self_id(self):
+            return "777"
+
+    ph = PanelHandle(PluginConfig({}), _DB())
+    ev = _Ev()
+
+    dash = ph.dashboard(ev)
+    assert "磐石群管面板" in dash, dash
+    assert "群号 1001" in dash, dash
+
+    sc = asyncio.new_event_loop().run_until_complete(ph.self_check(ev))
+    assert "磐石自检报告" in sc, sc
+    assert "本地指令解析正常" in sc, sc
+
+    guide = ph.config_guide("")
+    for topic in ("风控", "活跃", "互动", "宵禁", "按群", "本地"):
+        assert topic in guide, topic
+    assert "escalation_ladder" in ph.config_guide("风控")
+    print("PANEL_OK")
 
 
 # ======================================================================
@@ -262,13 +427,15 @@ def test_config_layer():
     cfg = PluginConfig(raw)
 
     # schema 快照应读到真实的 _conf_schema.json
+    # 分组：basic / guard / welcome / warning / smart / activity / automate / interact
     groups = cfg.schema_snapshot()
-    assert len(groups) == 7, [g["key"] for g in groups]
+    assert len(groups) == 8, [g["key"] for g in groups]
     keys = [g["key"] for g in groups]
     assert keys[:2] == ["basic", "guard"], keys
+    assert "interact" in keys, keys
     total_fields = sum(len(g["fields"]) for g in groups)
     assert total_fields >= 40, total_fields
-    print(f"SCHEMA_OK (7 组 / {total_fields} 项)")
+    print(f"SCHEMA_OK (8 组 / {total_fields} 项)")
 
     # 配置快照应包含全部字段
     snap = cfg.config_snapshot()
