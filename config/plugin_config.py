@@ -22,7 +22,7 @@ except Exception:  # 便于脱离 AstrBot 单测
     logger = logging.getLogger("panshi")
 
 # 配置分组的展示顺序（与 _conf_schema.json 的 key 一致）
-GROUP_ORDER = ["basic", "guard", "welcome", "warning", "smart", "activity", "automate"]
+GROUP_ORDER = ["basic", "guard", "welcome", "warning", "smart", "activity", "automate", "interact"]
 
 GROUP_ICONS = {
     "basic": "⚙️",
@@ -32,6 +32,7 @@ GROUP_ICONS = {
     "smart": "🧠",
     "activity": "📊",
     "automate": "🌙",
+    "interact": "🎮",
 }
 
 
@@ -106,6 +107,25 @@ class PluginConfig:
 
     # ---------- 功能分组 ----------
     @property
+    def basic(self) -> dict:
+        """基础配置分组（供面板/自检做整体展示）。"""
+        return self._group("basic")
+
+    @property
+    def version(self) -> str:
+        """从 metadata.yaml 读取插件版本，失败时回退为 unknown。"""
+        try:
+            path = os.path.join(self.resolve_plugin_dir(), "metadata.yaml")
+            with open(path, encoding="utf-8") as f:
+                for line in f:
+                    m = re.match(r"\s*version\s*:\s*(.+?)\s*$", line)
+                    if m:
+                        return m.group(1).strip().strip("\"'")
+        except Exception:
+            pass
+        return "unknown"
+
+    @property
     def guard(self) -> dict:
         return self._group("guard")
 
@@ -128,6 +148,83 @@ class PluginConfig:
     @property
     def automate(self) -> dict:
         return self._group("automate")
+
+    @property
+    def interact(self) -> dict:
+        """互动工具配置（投票 / 接龙 / 自动回复）。"""
+        return self._group("interact")
+
+    @property
+    def auto_replies(self) -> list[dict]:
+        """关键词自动回复规则列表。"""
+        raw = self.get("interact", "auto_replies", []) or []
+        return [r for r in raw if isinstance(r, dict)]
+
+    @property
+    def auto_replies_text(self) -> str:
+        """关键词自动回复的文本配置（每行 k1,k2 => reply）。"""
+        return str(self.get("interact", "auto_replies_text", "") or "")
+
+    def parsed_auto_replies(self) -> list[dict]:
+        """把文本形式的自动回复规则解析成 [{keywords, reply}]。"""
+        rules = []
+        for line in self.auto_replies_text.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "=>" in line:
+                left, _, right = line.partition("=>")
+            elif "＝>" in line:
+                left, _, right = line.partition("＝>")
+            else:
+                continue
+            reply = right.strip()
+            if not reply:
+                continue
+            rules.append({"keywords": left.strip(), "reply": reply})
+        return rules
+
+    # ---------- 风控增强 ----------
+    @property
+    def whitelist(self) -> list[str]:
+        """风控白名单：这些用户豁免防护处罚（如官方客服号）。"""
+        return [str(x) for x in self.get("guard", "whitelist", []) or []]
+
+    @property
+    def escalation_ladder(self) -> list[dict]:
+        """渐进式处罚阶梯。解析 warning.escalation_ladder 文本。
+
+        每行格式：``次数|动作|时长秒``，例如 ``3|ban|600``。
+        动作可选 warn / ban / kick。
+        """
+        raw = self.get("warning", "escalation_ladder", "")
+        ladder = []
+        if isinstance(raw, str):
+            for line in raw.splitlines():
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                parts = [x.strip() for x in line.split("|")]
+                if len(parts) < 2:
+                    continue
+                try:
+                    cnt = int(parts[0])
+                except ValueError:
+                    continue
+                action = parts[1].lower()
+                if action not in ("warn", "ban", "kick"):
+                    continue
+                dur = 0
+                if len(parts) >= 3:
+                    try:
+                        dur = int(parts[2])
+                    except ValueError:
+                        dur = 0
+                ladder.append({"count": cnt, "action": action, "duration": dur})
+        elif isinstance(raw, list):
+            ladder = [r for r in raw if isinstance(r, dict)]
+        ladder.sort(key=lambda r: r.get("count", 0))
+        return ladder
 
     def dump(self) -> dict:
         """返回原始配置字典。"""

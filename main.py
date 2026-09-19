@@ -24,8 +24,11 @@ from .core import (
     GuardHandle,
     IntentExecutor,
     IntentParser,
+    InteractHandle,
     JoinHandle,
+    LocalIntentParser,
     NormalHandle,
+    PanelHandle,
     WarningHandle,
     WelcomeHandle,
 )
@@ -71,6 +74,9 @@ class PanshiPlugin(Star):
         self.warning = WarningHandle(self.cfg, self.db)
         self.activity = ActivityHandle(self.cfg, self.db)
         self.automate = AutomateHandle(self.cfg, self.db)
+        self.interact = InteractHandle(self.cfg, self.db)
+        # 面板 / 自检 / 配置向导
+        self.panel = PanelHandle(self.cfg, self.db)
 
         # 消息缓存打通：让「撤回/净化」能读到 GuardHandle 缓存的最近消息
         self.normal.bind_cache(self.guard)
@@ -78,6 +84,8 @@ class PanshiPlugin(Star):
         # 智能模块
         self.ctx = ContextCollector()
         self.intent = IntentParser(self.cfg, self.db, self.ctx)
+        # 本地规则解析器：无需 LLM，常见自然语言指令的兜底
+        self.local_intent = LocalIntentParser(self.cfg)
         self.executor = IntentExecutor(
             self.cfg, self.db, self.ctx, self.normal, self.warning, self.automate
         )
@@ -240,6 +248,16 @@ class PanshiPlugin(Star):
         except Exception:
             pass
 
+        # 2.5 关键词自动回复（命中即回复，不打断后续统计）
+        try:
+            if self.cfg.interact.get("auto_reply_enable", False):
+                reply = self.interact.match_auto_reply(text)
+                if reply:
+                    yield event.plain_result(reply)
+                    return
+        except Exception as e:
+            logger.warning(f"[磐石] 自动回复异常: {e}")
+
         # 3. 防护检查（违禁词/刷屏/广告/复读）
         try:
             result = await self.guard.inspect(event, message_id)
@@ -265,28 +283,46 @@ class PanshiPlugin(Star):
                 yield event.plain_result(confirm_result)
                 return
 
-        # 6. 智能意图识别（混合模式：仅当像在指挥机器人）
+        # 6. 智能意图识别（混合模式：本地优先，LLM 兜底）
         try:
             if self.intent.should_trigger(event, text):
                 # 权限门槛：至少管理员才能驱动智能操作
-                if check_permission(event, PermLevel.ADMIN, self._super_admins):
-                    intent = await self.intent.parse(event)
-                    if intent:
-                        result = await self.executor.execute(event, intent)
-                        if result:
-                            yield event.plain_result(result)
-                            return
-                    elif self.intent.last_error:
-                        # 解析环节本身出错（如未配置模型）：明确告知，不让用户以为机器人挂了。
-                        # LLM 正常回答"无法识别"时保持静默，避免误触发言骚扰。
-                        yield event.plain_result(
-                            "🤔 我暂时没能处理这句话"
-                            + (f"（{self.intent.last_error}）" if "未找到" in self.intent.last_error else "。")
-                            + "\n可发送 /群管帮助 查看支持的指令。"
-                        )
-                        return
-                else:
+                if not check_permission(event, PermLevel.ADMIN, self._super_admins):
                     yield event.plain_result("⛔ 抱歉，管理操作需要管理员权限。")
+                    return
+
+                intent = None
+                # 6a. 优先用本地规则解析（无需 LLM，省资源、响应快）
+                #     修复：此前只能走 LLM，没配模型时直接报「未找到 LLM 供应商」
+                #     并把整条消息吞掉。常见句式现在先由本地规则兜底。
+                try:
+                    intent = self.local_intent.parse(event, text)
+                except Exception as e:
+                    logger.warning(f"[磐石] 本地意图解析异常: {e}")
+                    intent = None
+
+                # 6b. 本地没识别出来，且配置了 LLM，才回退到 LLM 解析
+                if intent is None and self._llm_available():
+                    intent = await self.intent.parse(event)
+
+                if intent:
+                    result = await self.executor.execute(event, intent)
+                    if result:
+                        yield event.plain_result(result)
+                        return
+                elif not self._llm_available():
+                    # 本地规则没覆盖 + 又没有可用 LLM：给出可执行的引导，
+                    # 而不是「未找到 LLM 供应商」这种让人一头雾水的报错。
+                    yield event.plain_result(
+                        "🤔 我没太理解这句话的意图。\n"
+                        "可以试试这些说法：\n"
+                        "· 「禁言张三 10 分钟」（也可以 @他 或引用他的消息）\n"
+                        "· 「@某人 再发广告就踢了」\n"
+                        "· 「全体禁言」「解除全体禁言」\n"
+                        "· 「宵禁改到 23:30 到 07:00」\n"
+                        "· 或直接发送 /群管帮助 查看全部指令\n"
+                        "💡 想让我听懂更复杂的话，可在 AstrBot「服务提供商」里配置一个对话模型。"
+                    )
                     return
         except Exception as e:
             logger.error(f"[磐石] 智能识别异常: {e}")
@@ -537,6 +573,56 @@ class PanshiPlugin(Star):
         else:
             yield event.plain_result(await self.activity.rank_points(event))
 
+    # ========== 指令：互动工具 ==========
+    @filter.command("投票", alias={"vote"})
+    async def cmd_vote(self, event: AstrMessageEvent, arg: str = ""):
+        """投票：/投票 标题|选项1|选项2 或 /投票 编号"""
+        if not self.cfg.interact.get("vote_enable", True):
+            yield event.plain_result("🗳️ 本群未开启投票功能。")
+            return
+        text = arg.strip()
+        if not text:
+            yield event.plain_result(await self.interact.vote_result(event))
+            return
+        # 纯数字 -> 投票；含 | -> 发起
+        if re.fullmatch(r"\d+", text):
+            yield event.plain_result(await self.interact.cast_vote(event, text))
+        elif "|" in text or "｜" in text:
+            yield event.plain_result(await self.interact.start_vote(event, text))
+        else:
+            yield event.plain_result(await self.interact.vote_result(event))
+
+    @filter.command("投票结果", alias={"票数"})
+    async def cmd_vote_result(self, event: AstrMessageEvent):
+        """查看投票结果：/投票结果"""
+        yield event.plain_result(await self.interact.vote_result(event))
+
+    @filter.command("接龙", alias={"chain"})
+    async def cmd_chain(self, event: AstrMessageEvent, arg: str = ""):
+        """接龙：/接龙 主题 发起，/接龙 内容 参与"""
+        if not self.cfg.interact.get("chain_enable", True):
+            yield event.plain_result("🔗 本群未开启接龙功能。")
+            return
+        text = arg.strip()
+        if not text:
+            yield event.plain_result(await self.interact.render_chain(event))
+            return
+        yield event.plain_result(await self.interact.add_chain(event, text))
+
+    @filter.command("我的", alias={"群档案", "我的信息"})
+    async def cmd_self_query(self, event: AstrMessageEvent, arg: str = ""):
+        """自助查询：/我的 [积分|警告|发言|签到]"""
+        if not self.cfg.interact.get("self_query_enable", True):
+            return
+        yield event.plain_result(await self.interact.self_query(event, arg))
+
+    @filter.command("自助", alias={"查询"})
+    async def cmd_self_help(self, event: AstrMessageEvent, arg: str = ""):
+        """自助查询（别名）：/自助 积分"""
+        if not self.cfg.interact.get("self_query_enable", True):
+            return
+        yield event.plain_result(await self.interact.self_query(event, arg))
+
     # ========== 指令：宵禁 ==========
     @filter.command("宵禁", alias={"夜间禁言"})
     async def cmd_curfew(self, event: AstrMessageEvent, arg: str = ""):
@@ -606,6 +692,22 @@ class PanshiPlugin(Star):
         in_window = self.automate.is_in_curfew()
         state = "🔴 当前正处于宵禁时段（全体禁言中）" if in_window else "🟢 当前不在宵禁时段"
         return f"🌙 宵禁：已开启 · 时段 {start} ~ {end}\n{state}"
+
+    # ========== 指令：面板 / 自检 / 配置向导 ==========
+    @filter.command("面板", alias={"群管面板", "状态"})
+    async def cmd_dashboard(self, event: AstrMessageEvent):
+        """查看本群群管面板（一屏总览已开启能力与关键参数）。"""
+        yield event.plain_result(self.panel.dashboard(event))
+
+    @filter.command("自检", alias={"体检", "诊断"})
+    async def cmd_self_check(self, event: AstrMessageEvent):
+        """一键自检：权限 / 适配器 / 存储 / 配置一致性。"""
+        yield event.plain_result(await self.panel.self_check(event))
+
+    @filter.command("配置", alias={"配置向导", "设置向导"})
+    async def cmd_config_guide(self, event: AstrMessageEvent, arg: str = ""):
+        """配置向导：/配置 [风控|活跃|互动|宵禁|按群|本地]"""
+        yield event.plain_result(self.panel.config_guide(arg))
 
     # ========== 指令：帮助 ==========
     @filter.command("群管帮助", alias={"磐石帮助", "群管"})
@@ -734,6 +836,27 @@ class PanshiPlugin(Star):
         yield event.plain_result(await self._set_curfew_config(payload))
 
     # ========== 内部工具 ==========
+    def _llm_available(self) -> bool:
+        """智能识别是否配置了可用的 LLM 供应商。
+
+        未配置时不再报「未找到 LLM 供应商」，而是走本地规则解析，
+        本地也没覆盖时给出可执行的引导。
+        """
+        try:
+            provider_id = (self.cfg.smart.get("smart_provider_id", "") or "").strip()
+            if provider_id:
+                return True
+            ctx = getattr(self, "context", None)
+            if ctx is None:
+                return False
+            try:
+                providers = ctx.get_all_providers() or []
+            except Exception:
+                providers = []
+            return bool(providers)
+        except Exception:
+            return False
+
     def _check(self, event, required: PermLevel = PermLevel.ADMIN) -> bool:
         group_id = get_group_id(event)
         if group_id and not self.cfg.group_enabled(group_id):
@@ -817,7 +940,19 @@ HELP_TEXT = """🪨 磐石 · 智能群管
  「@张三 再发广告就踢了」
  「全群安静一下，禁言全体1小时」
  「宵禁改到23点半到7点」
-（踢人/拉黑等高危操作会先请你确认）
+（无需配置 AI 模型也能识别常用指令；踢人/拉黑等高危操作会先请你确认）
+
+【互动玩法】
+/投票 标题 | 选项1 | 选项2  — 发起投票
+/投票 2                    — 投票给 2 号
+/投票结果                  — 结算投票
+/接龙 主题                 — 发起接龙
+/我的 [积分|警告|发言|签到] — 成员自助查询
+
+【管理面板】
+/面板        — 一屏总览本群已开启能力与参数
+/自检        — 体检：权限/适配器/存储/配置
+/配置 [主题] — 配置向导（风控|活跃|互动|宵禁|按群|本地）
 """
 
 

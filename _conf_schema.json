@@ -144,6 +144,12 @@
           "max": 10,
           "step": 1
         }
+      },
+      "whitelist": {
+        "description": "风控白名单（豁免防护处罚的 QQ 号）",
+        "type": "list",
+        "default": [],
+        "hint": "名单内的用户不会被违禁词/刷屏/广告等规则处罚（如官方客服号）"
       }
     }
   },
@@ -290,6 +296,12 @@
           "step": 1
         },
         "hint": "超过有效期自动清除，0 表示永久"
+      },
+      "escalation_ladder": {
+        "description": "渐进式处罚阶梯（可选，留空则用阈值配置）",
+        "type": "text",
+        "default": "",
+        "hint": "每行一条：次数|动作|时长秒。动作可选 warn/ban/kick。示例：3|ban|600"
       }
     }
   },
@@ -414,6 +426,38 @@
         "description": "定时公告内容",
         "type": "string",
         "default": ""
+      }
+    }
+  },
+  "interact": {
+    "description": "互动工具",
+    "type": "object",
+    "items": {
+      "vote_enable": {
+        "description": "启用群投票",
+        "type": "bool",
+        "default": true
+      },
+      "chain_enable": {
+        "description": "启用群接龙",
+        "type": "bool",
+        "default": true
+      },
+      "self_query_enable": {
+        "description": "启用自助查询（普通成员可查自己的积分/违规/签到）",
+        "type": "bool",
+        "default": true
+      },
+      "auto_reply_enable": {
+        "description": "启用关键词自动回复",
+        "type": "bool",
+        "default": false
+      },
+      "auto_replies_text": {
+        "description": "关键词自动回复规则（每行一条：关键词1,关键词2 => 回复内容）",
+        "type": "text",
+        "default": "",
+        "hint": "示例：群规 => 群规见置顶公告；签到 => 发送 /签到 即可打卡"
       }
     }
   }
