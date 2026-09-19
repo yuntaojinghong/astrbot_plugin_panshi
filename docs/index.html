@@ -121,8 +121,28 @@ h1 em {
   -webkit-background-clip: text; background-clip: text; color: transparent;
   position: relative;
 }
-.lede { font-size: 17px; color: var(--fg2); max-width: 640px; margin-bottom: 34px; }
+.lede { font-size: 17px; color: var(--fg2); max-width: 660px; margin-bottom: 26px; }
 .lede b { color: var(--fg); font-weight: 500; }
+
+/* ===== 版本徽章行 ===== */
+.ver-row {
+  display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+  margin-bottom: 30px;
+}
+.ver-badge {
+  display: inline-flex; align-items: center; gap: 8px;
+  font-size: 12.5px; font-weight: 600; color: var(--ok);
+  padding: 5px 13px; border-radius: 999px;
+  border: 1px solid rgba(61,220,151,0.32);
+  background: rgba(61,220,151,0.08);
+}
+.ver-badge i {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--ok); box-shadow: 0 0 9px var(--ok);
+  animation: pulse 2s ease-in-out infinite;
+}
+.ver-meta { font-size: 13px; color: var(--fg3); }
+
 .btns { display: flex; gap: 11px; flex-wrap: wrap; margin-bottom: 52px; }
 .btn {
   display: inline-flex; align-items: center; gap: 8px;
@@ -418,11 +438,12 @@ footer a:hover { color: var(--accent2); }
   from { opacity: 0; transform: translateY(26px); }
   to   { opacity: 1; transform: none; }
 }
-header .tag  { animation: riseIn .7s .05s cubic-bezier(.22,.61,.36,1) both; }
-header h1    { animation: riseIn .8s .15s cubic-bezier(.22,.61,.36,1) both; }
-header .lede { animation: riseIn .8s .28s cubic-bezier(.22,.61,.36,1) both; }
-header .btns { animation: riseIn .8s .42s cubic-bezier(.22,.61,.36,1) both; }
-header .term { animation: riseIn .9s .58s cubic-bezier(.22,.61,.36,1) both; }
+header .tag     { animation: riseIn .7s .05s cubic-bezier(.22,.61,.36,1) both; }
+header h1       { animation: riseIn .8s .15s cubic-bezier(.22,.61,.36,1) both; }
+header .lede    { animation: riseIn .8s .26s cubic-bezier(.22,.61,.36,1) both; }
+header .ver-row { animation: riseIn .8s .34s cubic-bezier(.22,.61,.36,1) both; }
+header .btns    { animation: riseIn .8s .44s cubic-bezier(.22,.61,.36,1) both; }
+header .term    { animation: riseIn .9s .58s cubic-bezier(.22,.61,.36,1) both; }
 
 /* ===== 动效：标题流光 ===== */
 h1 em {
@@ -555,6 +576,159 @@ nav a.act { color: var(--fg); background: var(--panel-hi); }
 .card.open .card-hint { color: var(--accent); }
 .card.open .card-hint i { transform: rotate(180deg); }
 
+/* ===== 意图闸门可视化 ===== */
+.gate {
+  margin-top: 26px; border-radius: 14px;
+  border: 1px solid var(--line);
+  background: linear-gradient(180deg, rgba(139,124,255,0.045), rgba(255,255,255,0.015));
+  overflow: hidden;
+}
+.gate-head {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  padding: 15px 20px; border-bottom: 1px solid var(--line);
+}
+.gate-title { font-size: 14px; font-weight: 600; }
+.gate-rate {
+  margin-left: auto; font-size: 12px; font-weight: 600; color: var(--ok);
+  padding: 4px 11px; border-radius: 999px;
+  border: 1px solid rgba(61,220,151,0.3);
+  background: rgba(61,220,151,0.08);
+}
+.gate-flow {
+  display: flex; align-items: stretch; gap: 8px;
+  padding: 20px; overflow-x: auto;
+}
+.gate-node {
+  flex: 1 1 0; min-width: 118px;
+  display: flex; flex-direction: column; justify-content: center; gap: 3px;
+  padding: 12px 13px; border-radius: 10px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  transition: transform .25s cubic-bezier(.22,1,.36,1), border-color .25s;
+}
+.gate-node b { font-size: 12.5px; font-weight: 600; }
+.gate-node small { font-size: 10.5px; color: var(--fg3); line-height: 1.45; }
+.gate-node:hover { transform: translateY(-3px); }
+.gate-node.start { border-color: rgba(139,124,255,0.4); background: rgba(139,124,255,0.1); }
+.gate-node.start b { color: #b3a6ff; }
+.gate-node.g1, .gate-node.g2, .gate-node.g3 {
+  border-color: rgba(77,201,255,0.28); background: rgba(77,201,255,0.055);
+}
+.gate-node.g1 b, .gate-node.g2 b, .gate-node.g3 b { color: var(--accent2); }
+.gate-node.g4 { border-color: rgba(255,182,72,0.3); background: rgba(255,182,72,0.055); }
+.gate-node.g4 b { color: var(--warn); }
+.gate-node.pass {
+  border-color: rgba(61,220,151,0.42); background: rgba(61,220,151,0.09);
+  box-shadow: 0 0 22px -6px rgba(61,220,151,.4);
+}
+.gate-node.pass b { color: var(--ok); }
+.gate-arrow {
+  display: flex; align-items: center; color: var(--fg3); font-size: 14px;
+  flex: 0 0 auto;
+}
+.gate-note {
+  padding: 15px 20px; font-size: 13px; color: var(--fg2); line-height: 1.75;
+  border-top: 1px solid var(--line);
+  background: rgba(255,255,255,0.012);
+}
+.gate-note b { color: var(--fg); font-weight: 600; }
+.gate-cols {
+  display: grid; grid-template-columns: repeat(3, 1fr);
+  border-top: 1px solid var(--line);
+}
+.gate-col { padding: 15px 20px; }
+.gate-col + .gate-col { border-left: 1px solid var(--line); }
+.gate-col-h {
+  font-size: 12.5px; font-weight: 600; color: var(--accent);
+  margin-bottom: 8px; letter-spacing: .02em;
+}
+.gate-col ul { list-style: none; }
+.gate-col li {
+  position: relative; padding: 3px 0 3px 14px;
+  font-size: 12px; color: var(--fg3); line-height: 1.6;
+}
+.gate-col li::before {
+  content: ""; position: absolute; left: 1px; top: 10px;
+  width: 4px; height: 4px; border-radius: 50%; background: var(--fg3);
+}
+.gate-col code {
+  font-family: var(--mono); font-size: 11px;
+  background: rgba(139,124,255,.13); color: #c3b9ff;
+  padding: 1px 4px; border-radius: 4px;
+}
+
+/* 终端里的对比代码块 */
+.code-block {
+  font-family: var(--mono); font-size: 11.5px; line-height: 1.75;
+  color: var(--fg2); white-space: pre; overflow-x: auto; margin: 0;
+}
+
+/* ===== 版本更新时间线 ===== */
+.tl { position: relative; padding-left: 26px; margin-top: 8px; }
+.tl::before {
+  content: ""; position: absolute; left: 7px; top: 6px; bottom: 6px;
+  width: 2px; border-radius: 2px;
+  background: linear-gradient(180deg, var(--accent), rgba(77,201,255,0.35), transparent);
+}
+.tl-item { position: relative; padding: 0 0 22px 0; }
+.tl-item:last-child { padding-bottom: 0; }
+.tl-item::before {
+  content: ""; position: absolute; left: -24px; top: 6px;
+  width: 10px; height: 10px; border-radius: 50%;
+  background: var(--bg); border: 2px solid var(--accent);
+}
+.tl-item.latest::before {
+  background: var(--accent); box-shadow: 0 0 12px var(--accent);
+}
+.tl-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 7px; }
+.tl-ver {
+  font-family: var(--mono); font-size: 13px; font-weight: 600;
+  color: var(--fg); letter-spacing: .01em;
+}
+.tl-item.latest .tl-ver { color: #b3a6ff; }
+.tl-date { font-size: 11.5px; color: var(--fg3); }
+.tl-tag {
+  font-size: 10.5px; font-weight: 600; letter-spacing: .06em;
+  padding: 2px 8px; border-radius: 999px;
+  border: 1px solid rgba(61,220,151,0.3); color: var(--ok);
+  background: rgba(61,220,151,0.08);
+}
+.tl-tag.feat { border-color: rgba(255,95,162,0.3); color: var(--accent3); background: rgba(255,95,162,0.08); }
+.tl-body { font-size: 13px; color: var(--fg2); line-height: 1.7; }
+.tl-body ul { list-style: none; margin-top: 5px; }
+.tl-body li {
+  position: relative; padding: 2.5px 0 2.5px 15px; font-size: 12.5px;
+}
+.tl-body li::before {
+  content: ""; position: absolute; left: 2px; top: 11px;
+  width: 4px; height: 4px; border-radius: 50%; background: var(--accent);
+}
+.tl-body code {
+  font-family: var(--mono); font-size: 11px;
+  background: rgba(139,124,255,.13); color: #c3b9ff;
+  padding: 1px 4px; border-radius: 4px;
+}
+
+/* ===== 动效：时间线逐条滑出 ===== */
+.tl .tl-item { opacity: 0; }
+.tl.play .tl-item {
+  animation: riseIn .6s cubic-bezier(.22,.61,.36,1) both;
+  animation-delay: var(--td, 0s);
+}
+.tl .tl-item:nth-child(1) { --td: .05s; }
+.tl .tl-item:nth-child(2) { --td: .17s; }
+.tl .tl-item:nth-child(3) { --td: .29s; }
+.tl .tl-item:nth-child(4) { --td: .41s; }
+.tl .tl-item:nth-child(5) { --td: .53s; }
+.tl .tl-item:nth-child(6) { --td: .65s; }
+/* 最新版本节点脉冲，提示"这是当前版本" */
+.tl-item.latest::before { animation: nodePulse 2.6s ease-in-out infinite; }
+@keyframes nodePulse {
+  0%,100% { box-shadow: 0 0 12px var(--accent), 0 0 0 0 rgba(139,124,255,.5); }
+  70%     { box-shadow: 0 0 12px var(--accent), 0 0 0 9px rgba(139,124,255,0); }
+}
+
+
 /* ===== 动效：减弱动态偏好 ===== */
 @media (prefers-reduced-motion: reduce) {
   html { scroll-behavior: auto; }
@@ -565,6 +739,7 @@ nav a.act { color: var(--fg); background: var(--panel-hi); }
   }
   .reveal:not(.in) { opacity: 1; transform: none; }
   .chat.seq .bubble { opacity: 1; }
+  .tl .tl-item { opacity: 1; }
 }
 
 @media (max-width: 640px) {
@@ -598,6 +773,7 @@ nav a.act { color: var(--fg); background: var(--panel-hi); }
       <a href="#panel">面板</a>
       <a href="#features">功能</a>
       <a href="#smart">智能</a>
+      <a href="#changelog">更新</a>
       <a href="#compare">对比</a>
       <a href="#install">安装</a>
       <a href="#support">支持</a>
@@ -612,11 +788,19 @@ nav a.act { color: var(--fg); background: var(--panel-hi); }
     <h1>稳如磐石的 QQ 群管家，<br><em>听得懂人话</em>。</h1>
     <p class="lede">
       不用记指令。说一句「<b>把刚才刷屏的禁言十分钟</b>」，它就知道该做什么。
-      禁言、踢人、反垃圾、入群验证、违规警告、签到排行 —— 一个插件全部搞定。
+      更难得的是：它用<b>本地意图闸门</b>把闲聊挡在模型之外 —— 该花 token 的时候才花。
+      禁言、踢人、反垃圾、入群验证、违规警告、签到排行、投票接龙 —— 一个插件全部搞定。
     </p>
+    <div class="ver-row">
+      <span class="ver-badge">
+        <i></i>v1.6.0 已发布
+      </span>
+      <span class="ver-meta">32 个指令 · 8 个 LLM 工具 · 9 类功能 · 8 组配置</span>
+    </div>
     <div class="btns">
       <a class="btn primary" href="#install">开始安装 →</a>
       <a class="btn" href="#panel">看看配置面板</a>
+      <a class="btn" href="#changelog">更新日志</a>
       <a class="btn" href="https://github.com/yuntaojinghong/astrbot_plugin_panshi" target="_blank">查看源码</a>
     </div>
     <div class="term">
@@ -625,7 +809,7 @@ nav a.act { color: var(--fg); background: var(--panel-hi); }
         <div><span class="c">$</span> cd AstrBot/data/plugins</div>
         <div><span class="c">$</span> git clone https://github.com/yuntaojinghong/astrbot_plugin_panshi.git</div>
         <div><span class="s">✓</span> 重启 AstrBot，插件页出现「磐石 · 智能群管」</div>
-        <div><span class="p">→</span> <span class="k" data-count="23">23</span> 个指令 · <span class="k" data-count="7">7</span> 个 LLM 工具 · <span class="k">图形配置面板</span> 已就绪</div>
+        <div><span class="p">→</span> <span class="k" data-count="32">32</span> 个指令 · <span class="k" data-count="8">8</span> 个 LLM 工具 · <span class="k">图形配置面板</span> 已就绪</div>
       </div>
     </div>
   </div>
@@ -748,7 +932,7 @@ nav a.act { color: var(--fg); background: var(--panel-hi); }
 <section id="features">
   <div class="wrap">
     <div class="eyebrow">// FEATURES</div>
-    <h2>七类功能，覆盖群管全场景</h2>
+    <h2>九类功能，覆盖群管全场景</h2>
     <p class="sub">每个模块独立开关，按需启用，不干扰正常聊天。</p>
     <div class="grid g2">
       <div class="card more">
@@ -863,6 +1047,34 @@ nav a.act { color: var(--fg); background: var(--panel-hi); }
 </div></div>
 <div class="card-hint"><span>详细说明</span><i>▼</i></div>
       </div>
+      <div class="card more">
+        <div class="icon">09</div>
+        <h3>互动玩法</h3>
+        <p>群内投票、成语接龙、自助查询、关键词自动回复 —— 让群不只是被管，还好玩。</p>
+        <div class="card-more"><div class="card-more-in">
+<ul>
+<li><b>投票</b>：<code>/投票 选项A 选项B</code> 发起，成员回复序号即可，实时统计结果</li>
+<li><b>接龙</b>：<code>/接龙 主题</code> 开启，自动校验接龙内容并记录队列</li>
+<li><b>自助查询</b>：成员可自查积分、发言数、违规记录，减轻管理员负担</li>
+<li><b>关键词自动回复</b>：命中预设关键词自动应答，支持多条随机</li>
+</ul>
+</div></div>
+<div class="card-hint"><span>详细说明</span><i>▼</i></div>
+      </div>
+      <div class="card more">
+        <div class="icon">10</div>
+        <h3>面板与自检</h3>
+        <p>图形配置面板 + 群内面板 + 自检诊断，配置和排障都不用改 JSON。</p>
+        <div class="card-more"><div class="card-more-in">
+<ul>
+<li><b>图形配置面板</b>：WebUI 里点选即可改配置，每项都带中文说明，按群独立设置</li>
+<li><b>群内面板</b>：<code>/面板</code> 直接在群里查看当前群的开关状态与关键数值</li>
+<li><b>自检诊断</b>：<code>/自检</code> 逐项检查权限、适配器、模型、数据文件，并报告意图闸门省下了多少次调用</li>
+<li><b>配置向导</b>：<code>/配置</code> 按主题（风控 / 活跃 / 互动 / 宵禁）给出推荐配置说明</li>
+</ul>
+</div></div>
+<div class="card-hint"><span>详细说明</span><i>▼</i></div>
+      </div>
     </div>
   </div>
 </section>
@@ -870,14 +1082,14 @@ nav a.act { color: var(--fg); background: var(--panel-hi); }
 <section id="smart">
   <div class="wrap">
     <div class="eyebrow">// NATURAL LANGUAGE</div>
-    <h2>核心：混合模式的智能识别</h2>
-    <p class="sub">指令秒回不耗 token，模糊表述交给 AI —— 既快又聪明。</p>
+    <h2>核心：听得懂人话，又不乱烧 token</h2>
+    <p class="sub">指令秒回不耗 token；模糊表述先过<b>本地意图闸门</b>，通过才交给 AI —— 既聪明又省钱。</p>
 
     <div class="chat">
       <div class="bubble user">张三又在群里发广告，处理一下</div>
       <div class="bubble bot">⚠️ 检测到广告链接，已撤回并禁言 10分钟（累计警告 1 次）</div>
-      <div class="bubble user">把刚才那个刷屏的也禁言半小时</div>
-      <div class="bubble bot ok">✅ 已禁言 李四 30分钟</div>
+      <div class="bubble user">群里太吵了，收拾一下</div>
+      <div class="bubble bot ok">✅ 已识别到刷屏者 李四，禁言 10分钟</div>
       <div class="bubble user">宵禁改到23点半到7点</div>
       <div class="bubble bot">🌙 宵禁已开启 · 时段 23:30 ~ 07:00<br>🟢 已开启，到点会自动全体禁言。</div>
       <div class="bubble user">@王五 再发链接就把你踢了</div>
@@ -886,21 +1098,117 @@ nav a.act { color: var(--fg); background: var(--panel-hi); }
       <div class="bubble bot">✅ 已将 王五 踢出（原因：发链接）</div>
     </div>
 
+    <div class="gate">
+      <div class="gate-head">
+        <span class="gate-title">意图闸门 · 四道本地判定（全部零 token）</span>
+        <span class="gate-rate">拦截率 ≈ 95%</span>
+      </div>
+      <div class="gate-flow">
+        <div class="gate-node start">
+          <b>消息进来</b>
+          <small>每条群消息</small>
+        </div>
+        <div class="gate-arrow">→</div>
+        <div class="gate-node g1">
+          <b>① 上下文佐证</b>
+          <small>近 3 分钟群内真有无异常？</small>
+        </div>
+        <div class="gate-arrow">→</div>
+        <div class="gate-node g2">
+          <b>② 效果动词</b>
+          <small>「要求动作」还是「陈述事实」</small>
+        </div>
+        <div class="gate-arrow">→</div>
+        <div class="gate-node g3">
+          <b>③ 否定 / 闲聊</b>
+          <small>「别管他」「哈哈」直接否决</small>
+        </div>
+        <div class="gate-arrow">→</div>
+        <div class="gate-node g4">
+          <b>④ 信用额度</b>
+          <small>每群独立令牌桶 + 冷却</small>
+        </div>
+        <div class="gate-arrow">→</div>
+        <div class="gate-node pass">
+          <b>交给 AI</b>
+          <small>结构化解析</small>
+        </div>
+      </div>
+      <div class="gate-note">
+        <b>为什么需要闸门？</b>「帮我」「麻烦」「怎么办」这类词在日常闲聊里出现频率极高，
+        如果命中就调用模型，等于把大量废话灌给 AI。闸门把「这句话值不值得模型介入」这件事
+        先用本地统计判断完 —— 关键洞察是：一句「收拾一下」值不值得响应，
+        取决于群里<b>是否真的在出事</b>，而这不需要问模型。
+      </div>
+      <div class="gate-cols">
+        <div class="gate-col">
+          <div class="gate-col-h">本地规则兜底</div>
+          <ul>
+            <li>标准句式（<code>禁言张三 10分钟</code>）本地直接执行，毫秒级、零 token</li>
+            <li>完全没配模型时，常用指令照常可用，插件不会变成废物</li>
+            <li>额度耗尽自动退回本地规则，不会瘫痪</li>
+          </ul>
+        </div>
+        <div class="gate-col">
+          <div class="gate-col-h">意图缓存</div>
+          <ul>
+            <li>相同句子 120 秒内复用上次解析结果，不再重复问模型</li>
+            <li>缓存按群隔离，不同群互不干扰</li>
+            <li>开箱即用，无需任何配置</li>
+          </ul>
+        </div>
+        <div class="gate-col">
+          <div class="gate-col-h">可调预算</div>
+          <ul>
+            <li><code>intent_budget</code> 每群每小时额度（默认 20 次）</li>
+            <li><code>intent_cooldown</code> 两次调用最小间隔（默认 8 秒）</li>
+            <li>设为 0 表示只用本地规则，完全不调用模型</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
     <div class="term" style="margin-top:26px">
       <div class="bar"><i></i><i></i><i></i><span class="t">intent-pipeline</span></div>
       <div class="body">
         <div><span class="c">消息进来</span></div>
         <div> ├─ 是 /指令 &nbsp;→ <span class="k">直接执行</span>（零 token，毫秒级）</div>
-        <div> └─ 像在指挥机器人 → 交给 <span class="k">LLM 解析意图</span></div>
-        <div> &nbsp;&nbsp;&nbsp;&nbsp;├─ 收集上下文（引用 / 最近发言 / @对象 / 群成员）</div>
-        <div> &nbsp;&nbsp;&nbsp;&nbsp;├─ 输出结构化 JSON</div>
-        <div> &nbsp;&nbsp;&nbsp;&nbsp;├─ 目标解析（名字模糊匹配 / 刷屏者推断）</div>
-        <div> &nbsp;&nbsp;&nbsp;&nbsp;├─ 权限校验</div>
-        <div> &nbsp;&nbsp;&nbsp;&nbsp;└─ 高风险操作 → <span class="k">确认后执行</span></div>
+        <div> ├─ @机器人 / 含动作词 &nbsp;→ <span class="k">直接交给 LLM</span>（几乎不可能是闲聊）</div>
+        <div> └─ 其余消息 → <span class="k">意图闸门</span>（本地四道判定，零 token）</div>
+        <div> &nbsp;&nbsp;&nbsp;&nbsp;├─ ① 上下文佐证：近 3 分钟真有刷屏 / 广告 / 复读？</div>
+        <div> &nbsp;&nbsp;&nbsp;&nbsp;├─ ② 效果动词：是要求动作，还是单纯陈述？</div>
+        <div> &nbsp;&nbsp;&nbsp;&nbsp;├─ ③ 否定 / 闲聊：命中即否决</div>
+        <div> &nbsp;&nbsp;&nbsp;&nbsp;└─ ④ 信用额度 + 冷却：还有预算吗？</div>
+        <div> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;├─ 未通过 → <span class="c">静默放过</span>（省下一次模型调用）</div>
+        <div> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;└─ 通过 → 交给 <span class="k">LLM 解析意图</span></div>
+        <div> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;├─ 收集上下文（引用 / 最近发言 / @对象 / 群成员）</div>
+        <div> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;├─ 输出结构化 JSON</div>
+        <div> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;├─ 目标解析（名字模糊匹配 / 刷屏者推断）</div>
+        <div> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;├─ 权限校验</div>
+        <div> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;└─ 高风险操作 → <span class="k">确认后执行</span></div>
       </div>
     </div>
 
-    <div class="grid g3" style="margin-top:22px">
+    <div class="grid g2" style="margin-top:22px">
+      <div class="card more">
+        <h3>闸门效果实测</h3>
+        <p>在混合语料上拦截率约 95%，同时真实指挥仍能正常放行。</p>
+        <div class="card-more"><div class="card-more-in">
+<pre class="code-block">展开这一句                → 判定结果
+─────────────────────────────────────
+帮我看看这个              ✗ 无异常迹象
+麻烦问一下                ✗ 无异常迹象
+太吵了                    ✗ 无明确诉求
+哈哈哈哈                  ✗ 日常闲聊
+别管他                    ✗ 否定语境
+算了算了                  ✗ 否定语境
+─────────────────────────────────────
+群里太吵了，收拾一下      ✓ 放行 → AI 解析
+帮我看看谁在刷广告        ✓ 放行 → AI 解析
+有人在发广告，管管        ✓ 放行 → AI 解析</pre>
+</div></div>
+<div class="card-hint"><span>详细说明</span><i>▼</i></div>
+      </div>
       <div class="card more">
         <h3>四路目标定位</h3>
         <p>引用消息 &gt; @某人 &gt; QQ号 &gt; 名字模糊匹配，自动选择最准确的一种。</p>
@@ -908,6 +1216,7 @@ nav a.act { color: var(--fg); background: var(--panel-hi); }
 <ul>
 <li>解析优先级：引用消息 &gt; @某人 &gt; 消息中的 QQ 号 &gt; 名字模糊匹配</li>
 <li>遇到重名时结合最近发言与活跃度消歧</li>
+<li>「刚才刷屏的」「发广告的那个」结合最近消息缓存直接定位到人</li>
 <li>目标不存在或权限不足时明确提示原因，不静默失败</li>
 </ul>
 </div></div>
@@ -918,8 +1227,8 @@ nav a.act { color: var(--fg); background: var(--panel-hi); }
         <p>结合最近发言记录，理解「刚才刷屏的」「发广告的那个」到底指谁。</p>
         <div class="card-more"><div class="card-more-in">
 <ul>
-<li>「刚才刷屏的」「发广告的那个」结合最近消息缓存直接定位到人</li>
 <li>谁触发过刷屏检测、谁的消息被撤回过，都记录在案可推断</li>
+<li>最近发言条数、时间窗都参与判断（同一人 60 秒内 ≥5 条即视为高频）</li>
 <li>缓存定期自动清理，长期运行不膨胀</li>
 </ul>
 </div></div>
@@ -936,6 +1245,77 @@ nav a.act { color: var(--fg); background: var(--panel-hi); }
 </ul>
 </div></div>
 <div class="card-hint"><span>详细说明</span><i>▼</i></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="changelog">
+  <div class="wrap">
+    <div class="eyebrow">// CHANGELOG</div>
+    <h2>版本更新</h2>
+    <p class="sub">持续迭代中。完整历史见 <a href="https://github.com/yuntaojinghong/astrbot_plugin_panshi/releases" target="_blank" style="color:var(--accent2)">Releases 页</a>。</p>
+
+    <div class="tl">
+      <div class="tl-item latest">
+        <div class="tl-head">
+          <span class="tl-ver">v1.6.0</span>
+          <span class="tl-date">2026-09-19</span>
+          <span class="tl-tag feat">FEATURE</span>
+        </div>
+        <div class="tl-body">
+          意图闸门上线 —— 用零成本本地判定替代「命中软信号就烧 token」。
+          <ul>
+            <li>新增四道本地闸门：上下文佐证 / 效果动词 / 否定闲聊 / 信用额度</li>
+            <li>新增意图缓存：相同句子 120 秒内复用结果</li>
+            <li>新增配置项 <code>intent_budget</code>（每群每小时额度）、<code>intent_cooldown</code>（冷却秒数）</li>
+            <li>配置面板新增背景动效与入场动画，支持「减少动态效果」</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="tl-item">
+        <div class="tl-head">
+          <span class="tl-ver">v1.5.1</span>
+          <span class="tl-date">2026-09-19</span>
+          <span class="tl-tag">FIX</span>
+        </div>
+        <div class="tl-body">
+          意图理解优先级反转：默认使用 AstrBot 里已配置的模型理解口语化指挥。
+          <ul>
+            <li>LLM 升为主通道，本地规则降为零成本快通道</li>
+            <li>模型解析改为三级兜底：面板指定 → 会话默认 → 全局第一个</li>
+            <li>没有可用模型时给出可执行的用法引导，不再抛「没有 LLM 服务商」</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="tl-item">
+        <div class="tl-head">
+          <span class="tl-ver">v1.5.0</span>
+          <span class="tl-date">2026-09-19</span>
+          <span class="tl-tag feat">FEATURE</span>
+        </div>
+        <div class="tl-body">
+          大规模功能扩展，新增三个模块。
+          <ul>
+            <li>新增<b>互动玩法</b>：投票 / 接龙 / 自助查询 / 关键词自动回复</li>
+            <li>新增<b>群内面板与自检诊断</b>：<code>/面板</code>、<code>/自检</code>、<code>/配置</code></li>
+            <li>新增本地规则解析器，无模型时常用指令照常可用</li>
+            <li>配置分组从 7 组扩展到 8 组</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="tl-item">
+        <div class="tl-head">
+          <span class="tl-ver">v1.4.2</span>
+          <span class="tl-date">早期版本</span>
+          <span class="tl-tag">FIX</span>
+        </div>
+        <div class="tl-body">
+          修复已知问题，完善反垃圾防护与警告系统，补齐图形配置面板的按群独立配置。
+        </div>
       </div>
     </div>
   </div>
@@ -967,6 +1347,16 @@ nav a.act { color: var(--fg); background: var(--panel-hi); }
           <td class="new">自然语言，听得懂人话</td>
         </tr>
         <tr>
+          <td>AI 调用成本</td>
+          <td>要么不用 AI，要么每句都调</td>
+          <td class="new">意图闸门四道本地判定，拦截 ~95% 无效调用</td>
+        </tr>
+        <tr>
+          <td>无模型可用时</td>
+          <td>——</td>
+          <td class="new">本地规则兜底，常用指令照常可用</td>
+        </tr>
+        <tr>
           <td>违规处理</td>
           <td>直接禁言</td>
           <td class="new">三级警告，累计自动升级</td>
@@ -975,6 +1365,16 @@ nav a.act { color: var(--fg); background: var(--panel-hi); }
           <td>入群欢迎</td>
           <td>固定文案</td>
           <td class="new">多模板 + 变量 + 图片 + 算术验证</td>
+        </tr>
+        <tr>
+          <td>群氛围</td>
+          <td>只有管理，没有互动</td>
+          <td class="new">投票 / 接龙 / 自助查询 / 自动回复</td>
+        </tr>
+        <tr>
+          <td>配置方式</td>
+          <td>手改配置文件</td>
+          <td class="new">图形面板 + 群内面板 + 自检诊断</td>
         </tr>
         <tr>
           <td>数据存储</td>
@@ -1091,7 +1491,7 @@ nav a.act { color: var(--fg); background: var(--panel-hi); }
 
   /* ===== 1. 滚动浮现 ===== */
   var targets = document.querySelectorAll(
-    'section .eyebrow, section h2, section .sub, section .card, section .chat, section .term, section .cmp, section .mock, section .dl, section .step'
+    'section .eyebrow, section h2, section .sub, section .card, section .chat, section .term, section .cmp, section .mock, section .dl, section .step, section .gate, section .tl'
   );
   targets.forEach(function (el) {
     el.classList.add('reveal');
@@ -1212,6 +1612,24 @@ nav a.act { color: var(--fg); background: var(--panel-hi); }
       if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); toggle(); }
     });
   });
+
+  /* ===== 8. 版本时间线逐条滑出 ===== */
+  var tl = document.querySelector('.tl');
+  if (tl) {
+    if (!reduced && 'IntersectionObserver' in window) {
+      var tlo = new IntersectionObserver(function (entries) {
+        entries.forEach(function (e) {
+          if (e.isIntersecting) {
+            tl.classList.add('play');
+            tlo.disconnect();
+          }
+        });
+      }, { threshold: 0.15 });
+      tlo.observe(tl);
+    } else {
+      tl.classList.add('play');
+    }
+  }
 })();
 </script>
 
