@@ -41,6 +41,18 @@
         "description": "执行管理操作后在群内播报结果",
         "type": "bool",
         "default": true
+      },
+      "anon_protect": {
+        "description": "豁免匿名转述内容（避免误禁匿名身份）",
+        "type": "bool",
+        "default": true,
+        "hint": "开启后，本插件不会对「匿名树洞」等插件转述到群里的内容做禁言处罚，避免把匿名身份一并禁言"
+      },
+      "anon_nicknames": {
+        "description": "匿名昵称池（命中即视为匿名转述，予以豁免）",
+        "type": "list",
+        "default": [],
+        "hint": "填写匿名树洞设置的昵称池，如：番茄、苹果、橘子。留空时仅按「【xxx】」格式识别"
       }
     }
   },
