@@ -94,9 +94,14 @@ class AutomateHandle(BaseHandle):
         """
         if not self.cfg.automate.get("curfew_enable", False):
             await self.stop_curfew()
-            was = self._enforcing
+            # 修复：关闭宵禁时必须真正下发解禁，否则群会被永久全体禁言。
+            # 旧实现只改内存状态并回显「已解除」，提示与事实相反。
+            if self._enforcing:
+                await self._set_all_groups_whole_ban(False)
+                curfew_state = "lifted_now"
+            else:
+                curfew_state = "off"
             self._enforcing = False
-            curfew_state = "lifted_now" if was else "off"
         else:
             await self.start_curfew()
             if self._in_curfew_window():
@@ -130,6 +135,10 @@ class AutomateHandle(BaseHandle):
             try:
                 await asyncio.sleep(60)
                 if not self.cfg.automate.get("curfew_enable", False):
+                    # 宵禁已被关闭但仍在禁言中：补一次解禁，防止永久全体禁言。
+                    if self._enforcing:
+                        await self._set_all_groups_whole_ban(False)
+                        self._enforcing = False
                     continue
                 in_curfew = self._in_curfew_window()
                 if in_curfew and not self._enforcing:
