@@ -471,6 +471,8 @@ async function save() {
     await loadOverview();
     renderGroups();
     renderContent();
+    // 保存成功的动效反馈
+    bounceButton(btn);
   } catch (e) {
     toast("保存失败：" + (e.message || e), "err");
     showError(e && e.message ? e.message : String(e));
@@ -975,9 +977,61 @@ function parseList(text) {
 }
 
 /* ==================================================================
+ *  背景动效：漂浮粒子
+ *  用最少的 DOM（20 个 div）+ CSS 动画驱动，避免占用主线程。
+ *  尊重 prefers-reduced-motion：用户关了动效就不生成。
+ * ================================================================== */
+const PARTICLE_COUNT = 20;
+
+function spawnParticles() {
+  const host = document.getElementById("bgParticles");
+  if (!host) return;
+
+  const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  if (reduce) {
+    host.style.display = "none";
+    return;
+  }
+
+  const colors = [
+    "var(--accent-2)",
+    "var(--accent-3)",
+    "var(--accent)",
+  ];
+
+  const frag = document.createDocumentFragment();
+  for (let i = 0; i < PARTICLE_COUNT; i++) {
+    const p = document.createElement("span");
+    p.className = "bg-particle";
+    // 随机：大小、水平位置、漂浮时长、延迟、水平漂移、颜色
+    const size = (Math.random() * 3 + 1.6).toFixed(1);
+    p.style.left = (Math.random() * 100).toFixed(2) + "%";
+    p.style.setProperty("--sz", size + "px");
+    p.style.setProperty("--dur", (14 + Math.random() * 16).toFixed(1) + "s");
+    p.style.setProperty("--delay", (Math.random() * 18).toFixed(1) + "s");
+    p.style.setProperty("--drift", ((Math.random() - 0.5) * 90).toFixed(0) + "px");
+    p.style.setProperty("--pc", colors[i % colors.length]);
+    frag.appendChild(p);
+  }
+  host.appendChild(frag);
+}
+
+/* 保存成功时给按钮一个「跳一下」的反馈 */
+function bounceButton(btn) {
+  if (!btn) return;
+  btn.classList.remove("saved");
+  // 强制重排，保证连续点击也能重放动画
+  void btn.offsetWidth;
+  btn.classList.add("saved");
+  setTimeout(() => btn.classList.remove("saved"), 600);
+}
+
+/* ==================================================================
  *  启动
  * ================================================================== */
 async function main() {
+  spawnParticles();
+
   if (!bridge) {
     showError("未检测到 AstrBot 页面桥接（bridge）。请从 AstrBot 插件详情页打开本面板。");
     setOnline(null);

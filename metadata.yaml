@@ -1,8 +1,8 @@
 name: astrbot_plugin_panshi
 display_name: 磐石 · 智能群管
-desc: 稳如磐石的 QQ 群管家。默认调用 AstrBot 里已配置的对话模型来理解群友的口语化指挥（也自带本地规则快通道，无模型时常用指令照常可用），集基础管理、反垃圾风控、智能入群、阶梯警告、活跃签到、互动玩法（投票/接龙/自助查询）与自动化于一体，并带图形配置面板、群内面板与自检诊断。
-short_desc: 听得懂人话的 QQ 群管家，默认用 AstrBot 已配置的模型，自带配置面板与自检。
-version: v1.5.1
+desc: 稳如磐石的 QQ 群管家。默认调用 AstrBot 里已配置的对话模型来理解群友的口语化指挥，并用「意图闸门」把闲聊挡在模型之外（上下文佐证 + 效果动词 + 否定检测 + 每群信用额度），只在该花 token 的时候才花；本地规则快通道与兜底保证无模型时常用指令照常可用。集基础管理、反垃圾风控、智能入群、阶梯警告、活跃签到、互动玩法（投票/接龙/自助查询）与自动化于一体，自带动效配置面板、群内面板与自检诊断。
+short_desc: 听得懂人话、又不会乱烧 token 的 QQ 群管家，自带动效配置面板。
+version: v1.6.0
 author: yuntaojinghong
 repo: https://github.com/yuntaojinghong/astrbot_plugin_panshi
 astrbot_version: ">=4.24.2"

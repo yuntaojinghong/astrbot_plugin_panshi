@@ -92,6 +92,135 @@ body::before {
   pointer-events: none;
 }
 
+/* ============================================================
+ * 背景动效层
+ * 三层叠加：极光光斑（缓慢漂移）+ 网格（呼吸）+ 粒子（上浮）
+ * 全部纯 CSS/轻量 DOM，不引入任何动画库
+ * ============================================================ */
+.bg-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  pointer-events: none;
+  contain: strict;
+}
+
+/* --- 极光光斑：三个大色块反向漂移，制造流动感 --- */
+.bg-aurora {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(70px);
+  opacity: 0.5;
+  will-change: transform;
+}
+.bg-aurora-1 {
+  width: 46vw;
+  height: 46vw;
+  top: -14vw;
+  left: -8vw;
+  background: radial-gradient(circle, var(--accent-2), transparent 68%);
+  animation: aurora-a 26s ease-in-out infinite;
+}
+.bg-aurora-2 {
+  width: 40vw;
+  height: 40vw;
+  top: 26vh;
+  right: -12vw;
+  background: radial-gradient(circle, var(--accent-3), transparent 68%);
+  animation: aurora-b 32s ease-in-out infinite;
+}
+.bg-aurora-3 {
+  width: 34vw;
+  height: 34vw;
+  bottom: -12vw;
+  left: 24vw;
+  background: radial-gradient(circle, var(--accent), transparent 70%);
+  animation: aurora-c 38s ease-in-out infinite;
+  opacity: 0.34;
+}
+
+@keyframes aurora-a {
+  0%, 100% { transform: translate3d(0, 0, 0) scale(1); }
+  33%      { transform: translate3d(6vw, 5vh, 0) scale(1.12); }
+  66%      { transform: translate3d(3vw, -3vh, 0) scale(0.94); }
+}
+@keyframes aurora-b {
+  0%, 100% { transform: translate3d(0, 0, 0) scale(1); }
+  40%      { transform: translate3d(-7vw, 6vh, 0) scale(1.08); }
+  70%      { transform: translate3d(-2vw, -4vh, 0) scale(0.92); }
+}
+@keyframes aurora-c {
+  0%, 100% { transform: translate3d(0, 0, 0) scale(1); }
+  50%      { transform: translate3d(5vw, -6vh, 0) scale(1.15); }
+}
+
+/* --- 网格：极缓慢呼吸，给画面加一点"科技感"底纹 --- */
+.bg-grid {
+  position: absolute;
+  inset: -40px;
+  background-image:
+    linear-gradient(to right, var(--border) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--border) 1px, transparent 1px);
+  background-size: 46px 46px;
+  opacity: 0.5;
+  mask-image: radial-gradient(ellipse 80% 60% at 50% 0%, #000 20%, transparent 78%);
+  -webkit-mask-image: radial-gradient(ellipse 80% 60% at 50% 0%, #000 20%, transparent 78%);
+  animation: grid-breathe 12s ease-in-out infinite;
+}
+@keyframes grid-breathe {
+  0%, 100% { opacity: 0.34; }
+  50%      { opacity: 0.6; }
+}
+
+/* --- 粒子：JS 生成，CSS 驱动上浮 --- */
+.bg-particles {
+  position: absolute;
+  inset: 0;
+}
+.bg-particle {
+  position: absolute;
+  bottom: -12px;
+  width: var(--sz, 3px);
+  height: var(--sz, 3px);
+  border-radius: 50%;
+  background: var(--pc, var(--accent-2));
+  opacity: 0;
+  box-shadow: 0 0 8px var(--pc, var(--accent-2));
+  animation: float-up var(--dur, 18s) linear infinite;
+  animation-delay: var(--delay, 0s);
+  will-change: transform, opacity;
+}
+@keyframes float-up {
+  0%   { transform: translate3d(0, 0, 0); opacity: 0; }
+  12%  { opacity: 0.75; }
+  80%  { opacity: 0.5; }
+  100% { transform: translate3d(var(--drift, 20px), -104vh, 0); opacity: 0; }
+}
+
+/* --- 细腻噪点：消除渐变色带，提升质感 --- */
+.bg-noise {
+  position: absolute;
+  inset: 0;
+  opacity: 0.03;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3'/%3E%3C/filter%3E%3Crect width='120' height='120' filter='url(%23n)'/%3E%3C/svg%3E");
+  mix-blend-mode: overlay;
+}
+
+/* 内容层要浮在背景之上 */
+.app {
+  position: relative;
+  z-index: 1;
+}
+
+/* 暗色主题下调高光斑浓度，避免太灰 */
+[data-theme="dark"] .bg-aurora {
+  opacity: 0.42;
+}
+[data-theme="dark"] .bg-noise {
+  opacity: 0.045;
+}
+
 .app {
   min-height: 100%;
   display: flex;
@@ -850,6 +979,136 @@ body::before {
   to {
     opacity: 1;
     transform: translateY(0);
+  }
+}
+
+/* ============================================================
+ * 灵动动画：入场、悬停、按压反馈
+ * ============================================================ */
+
+/* 卡片入场：从下方轻移 + 淡入 */
+@keyframes card-in {
+  from { opacity: 0; transform: translateY(10px) scale(0.985); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+/* 侧栏群项：依次滑入 */
+@keyframes slide-in-left {
+  from { opacity: 0; transform: translateX(-8px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+
+/* 数字滚动感：轻微弹跳 */
+@keyframes pop-in {
+  0%   { opacity: 0; transform: scale(0.82); }
+  60%  { opacity: 1; transform: scale(1.06); }
+  100% { opacity: 1; transform: scale(1); }
+}
+
+/* 顶部品牌 logo：呼吸光晕 */
+@keyframes logo-glow {
+  0%, 100% { box-shadow: 0 0 0 0 var(--accent-soft); }
+  50%      { box-shadow: 0 0 0 8px transparent; }
+}
+
+/* 状态点脉冲扩散 */
+@keyframes ring-out {
+  0%   { box-shadow: 0 0 0 0 currentColor; opacity: 0.55; }
+  100% { box-shadow: 0 0 0 9px transparent; opacity: 0; }
+}
+
+/* 保存成功后按钮轻轻跳一下 */
+@keyframes saved-bounce {
+  0%, 100% { transform: translateY(0) scale(1); }
+  35%      { transform: translateY(-3px) scale(1.035); }
+  70%      { transform: translateY(0) scale(0.99); }
+}
+
+/* 骨架屏微光扫过 */
+@keyframes shimmer {
+  0%   { background-position: -220% 0; }
+  100% { background-position: 220% 0; }
+}
+
+/* --- 应用入场编排 --- */
+.topbar {
+  animation: card-in 0.42s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.cards > * {
+  animation: card-in 0.46s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.cards > *:nth-child(1) { animation-delay: 0.04s; }
+.cards > *:nth-child(2) { animation-delay: 0.08s; }
+.cards > *:nth-child(3) { animation-delay: 0.12s; }
+.cards > *:nth-child(4) { animation-delay: 0.16s; }
+.cards > *:nth-child(5) { animation-delay: 0.2s; }
+.cards > *:nth-child(6) { animation-delay: 0.24s; }
+
+.quick-status .qs-chip {
+  animation: card-in 0.4s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.quick-status .qs-chip:nth-child(1) { animation-delay: 0.1s; }
+.quick-status .qs-chip:nth-child(2) { animation-delay: 0.14s; }
+.quick-status .qs-chip:nth-child(3) { animation-delay: 0.18s; }
+.quick-status .qs-chip:nth-child(4) { animation-delay: 0.22s; }
+.quick-status .qs-chip:nth-child(5) { animation-delay: 0.26s; }
+.quick-status .qs-chip:nth-child(6) { animation-delay: 0.3s; }
+
+.sidebar {
+  animation: card-in 0.48s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.content > * {
+  animation: card-in 0.44s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* 群列表项错峰滑入 */
+.group-item {
+  animation: slide-in-left 0.34s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* --- 品牌 logo 光晕 --- */
+.logo {
+  animation: logo-glow 3.4s ease-in-out infinite;
+}
+
+/* --- 保存按钮成功反馈 --- */
+.btn.saved {
+  animation: saved-bounce 0.52s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+/* --- 骨架屏 --- */
+.skeleton {
+  border-radius: var(--radius-sm);
+  background: linear-gradient(
+    90deg,
+    var(--panel-hover) 25%,
+    color-mix(in srgb, var(--panel-hover) 55%, var(--panel)) 50%,
+    var(--panel-hover) 75%
+  );
+  background-size: 220% 100%;
+  animation: shimmer 1.5s ease-in-out infinite;
+}
+
+/* --- 尊重系统「减少动态效果」设置 --- */
+@media (prefers-reduced-motion: reduce) {
+  .bg-aurora,
+  .bg-grid,
+  .bg-particle,
+  .logo,
+  .topbar,
+  .cards > *,
+  .quick-status .qs-chip,
+  .sidebar,
+  .content > *,
+  .group-item,
+  .skeleton {
+    animation: none !important;
+  }
+  .bg-aurora {
+    opacity: 0.32;
+  }
+  * {
+    transition-duration: 0.01ms !important;
   }
 }
 
