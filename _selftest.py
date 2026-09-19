@@ -247,6 +247,7 @@ def main():
     test_local_intent()
     test_interact_layer()
     test_panel_layer()
+    test_natural_language()
 
     print("ALL_SELFTEST_PASS")
 
@@ -411,6 +412,125 @@ def test_panel_layer():
         assert topic in guide, topic
     assert "escalation_ladder" in ph.config_guide("风控")
     print("PANEL_OK")
+
+
+def test_natural_language():
+    """v1.5.1 核心：听得懂人话（LLM 为主 + 本地快通道）。
+
+    覆盖三件事：
+    1. 口语化表达能触发智能识别（不再局限于指令词）；
+    2. 闲聊不被误触发（省 token）；
+    3. 供应商解析默认走 AstrBot 已配置的模型（三级兜底）。
+    """
+    from astrbot_plugin_panshi.config import PluginConfig
+    from astrbot_plugin_panshi.core.intent import IntentParser
+
+    cfg = PluginConfig({})
+    parser = IntentParser(cfg, None, None)
+
+    class _Ev:
+        message_str = ""
+        unified_msg_origin = "aiocqhttp:GroupMessage:1001"
+
+        def __init__(self, msgs=None):
+            self._msgs = msgs or []
+
+        def get_group_id(self):
+            return "1001"
+
+        def get_sender_id(self):
+            return "999"
+
+        def get_self_id(self):
+            return "777"
+
+        def get_sender_name(self):
+            return "测试员"
+
+        def get_messages(self):
+            return self._msgs
+
+    # ---- 1. 人话触发：这些句子没有「禁言/踢」等标准指令词，但明显在指挥 ----
+    human_lines = [
+        "群里太吵了，收拾一下",
+        "帮我看看谁在刷广告",
+        "有人一直复读，能不能管管",
+        "这人怎么老发广告啊，处理一下",
+    ]
+    for line in human_lines:
+        ev = _Ev()
+        assert parser.should_trigger(ev, line), f"人话未触发: {line}"
+
+    # ---- 2. 标准指令词依旧触发 ----
+    for line in ["禁言张三", "@某人 踢了", "全体禁言"]:
+        assert parser.should_trigger(_Ev(), line), f"指令未触发: {line}"
+
+    # ---- 3. 闲聊不触发（省 token），且不以「@机器人」为借口漏掉 ----
+    for line in ["哈哈哈笑死我了", "晚安各位", "早上好"]:
+        assert not parser.should_trigger(_Ev(), line), f"闲聊误触发: {line}"
+
+    # ---- 4. 已是指令前缀的不走智能通道 ----
+    assert not parser.should_trigger(_Ev(), "/禁言 123 10m")
+
+    # ---- 5. 开关可关：trigger_on_intent=False 时软信号不再触发 ----
+    cfg_off = PluginConfig({"smart": {"trigger_on_intent": False}})
+    p_off = IntentParser(cfg_off, None, None)
+    assert not p_off.should_trigger(_Ev(), "群里太吵了，收拾一下")
+
+    # ---- 6. 供应商解析：默认落到 AstrBot 已配置的模型 ----
+    class _Prov:
+        def __init__(self, pid):
+            self.pid = pid
+
+    class _Ctx:
+        def __init__(self, allp, by_id=None, session=None):
+            self._all = allp
+            self._by_id = by_id or {}
+            self._session = session
+
+        def get_all_providers(self):
+            return self._all
+
+        def get_provider_by_id(self, provider_id=None):
+            return self._by_id.get(provider_id)
+
+        async def get_using_provider_async(self, umo=None):
+            return self._session
+
+    class _EvCtx(_Ev):
+        """带 AstrBot 上下文的假事件（_get_provider 从 event 取 ctx）。"""
+
+        def __init__(self, ctx):
+            super().__init__()
+            self._ctx = ctx
+
+        def get_context(self):
+            return self._ctx
+
+    import asyncio
+
+    loop = asyncio.new_event_loop()
+
+    # 6a. 面板未指定 -> 用会话默认模型
+    ctx = _Ctx([_Prov("global")], session=_Prov("session"))
+    p = IntentParser(PluginConfig({}), None, None)
+    got = loop.run_until_complete(p._get_provider(_EvCtx(ctx)))
+    assert got is not None and got.pid == "session", got
+
+    # 6b. 会话也没有 -> 用全局第一个模型（这就是「默认用 AstrBot 里配好的」）
+    ctx2 = _Ctx([_Prov("global")], session=None)
+    p2 = IntentParser(PluginConfig({}), None, None)
+    got2 = loop.run_until_complete(p2._get_provider(_EvCtx(ctx2)))
+    assert got2 is not None and got2.pid == "global", got2
+
+    # 6c. 一个模型都没有 -> 返回 None 并给出可读原因
+    ctx3 = _Ctx([], session=None)
+    p3 = IntentParser(PluginConfig({}), None, None)
+    got3 = loop.run_until_complete(p3._get_provider(_EvCtx(ctx3)))
+    assert got3 is None, got3
+    assert p3.last_error and "模型" in p3.last_error, p3.last_error
+
+    print("NATURAL_LANGUAGE_OK")
 
 
 # ======================================================================
