@@ -1228,7 +1228,7 @@ nav a.act { color: var(--fg); background: var(--panel-hi); }
           更难得的是：它用<b>本地意图闸门</b>把闲聊挡在模型之外 —— 该花 token 的时候才花。
         </p>
         <div class="ver-row">
-          <span class="ver-badge"><i></i>v1.6.0 已发布</span>
+          <span class="ver-badge"><i></i>v1.6.1 已发布</span>
           <span class="ver-meta">32 指令 · 8 LLM 工具 · 9 类功能 · 8 组配置</span>
         </div>
         <div class="btns">
@@ -1739,6 +1739,24 @@ nav a.act { color: var(--fg); background: var(--panel-hi); }
 
     <div class="tl">
       <div class="tl-item latest">
+        <div class="tl-head">
+          <span class="tl-ver">v1.6.1</span>
+          <span class="tl-date">2026-10-02</span>
+          <span class="tl-tag">FIX</span>
+        </div>
+        <div class="tl-body">
+          修复「按群独立配置」与宵禁解禁的遗留问题（v1.6.0 的两个修复都没修完）。
+          <ul>
+            <li><b>按群配置</b>：欢迎语 / 入群审核 / 签到积分 / 警告阈值 / 互动玩法此前仍读全局配置，面板显示已生效、运行时完全没用 —— 现已全部改走按群视图</li>
+            <li><b>宵禁解禁</b>：禁言群列表持久化，插件重启后不再把群永久留在全体禁言；解禁失败不再谎报「已解除」，并每分钟重试</li>
+            <li>修掉一批静默错误：<code>/禁言 @某人 10m</code> 时长被 QQ 号劫持（曾禁言 30 天）、「别禁言@张三」被真的执行、意图额度被动作词绕过、<code>bool("false")</code> 让「关闭全体禁言」变成开启、警告处置失败谎报成功</li>
+            <li>面板多行配置（阶梯处置 / 自动回复规则）改用 textarea，换行不再被吞</li>
+            <li><code>curfew_ban_time</code> 从假开关改为真正生效；协议端调用补短超时</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="tl-item">
         <div class="tl-head">
           <span class="tl-ver">v1.6.0</span>
           <span class="tl-date">2026-09-19</span>
