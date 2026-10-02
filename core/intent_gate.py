@@ -72,12 +72,25 @@ _TARGET_MARKERS = [
     "这人", "那人", "楼上", "楼下", "谁在", "是谁", "哪个", "有人",
 ]
 
-# 否定语境：出现即否决（语义与「指挥」相反）
+# 否定语境：出现即否决（语义与「指挥」相反）。
+#
+# 注意不要把「别人」「特别」「别的不说」这类词误伤成否定——裸的「别」字在
+# 「别人一直在刷屏，管一下」里与否定毫无关系，按子串匹配会直接把真实的
+# 举报丢掉且不给任何回复。因此这里只保留多字词，并对「别」单独用正则，
+# 要求它紧跟在动作词前才是否定。
 _NEGATION = [
-    "别管", "别动", "不用管", "不用处理", "不要处理", "别处理", "不用", "不要",
-    "别", "算了", "随他", "随他们", "别理", "不理", "放过", "开玩笑", "逗你",
-    "假的", "别在意", "没事", "没关系",
+    "不用管", "不用处理", "不要处理", "别处理", "不用禁言", "不要禁言",
+    "别禁言", "别踢", "不用踢", "不要踢", "算了", "随他", "随他们",
+    "别理", "不理", "放过", "开玩笑", "逗你", "别在意", "没关系",
+    "不需要", "不必", "无需", "取消",
 ]
+
+# 「别/不要/不用/不必/无需 + 可选修饰 + 动作词」才算否定指令。
+_NEGATION_RE = re.compile(
+    r"(?:别|不要|不用|不必|无需|甭|请勿)\s*(?:再|去|给我|给他|把他|把她|把|帮忙|帮我)?\s*"
+    r"(?:禁言|解禁|踢|拉黑|撤回|删|清理|清屏|净化|全禁|全体禁言|警告|改名|头衔|"
+    r"上管|下管|公告|设精|精华|群名|处理|管|安排|宵禁|封)"
+)
 
 # 闲聊词（短句命中直接否决）
 _CHITCHAT_WORDS = [
@@ -131,14 +144,25 @@ class IntentGate:
 
     # ---------- 对外主入口 ----------
 
-    def allow(self, group_id: str, text: str) -> tuple[bool, str]:
+    def allow(
+        self, group_id: str, text: str, has_action_word: bool = False
+    ) -> tuple[bool, str]:
         """返回 ``(是否放行, 原因标签)``。
 
         原因标签用于日志与面板统计，便于用户理解为什么某句话没被处理。
+
+        Args:
+            group_id: 群号（用于每群独立的额度与冷却）。
+            text: 待判定的消息文本。
+            has_action_word: 文本里是否含明确的群管动作词。命中说明这多半是
+                一条真实指挥而不是闲聊，可以跳过「无异常迹象」这道证据闸门
+                （群里不一定正在出事，但「把张三禁言」显然是在下命令）。
+                注意额度与冷却**依然生效**，所以不会因此烧掉更多 token。
         """
         self._cleanup()
         self.stats["checked"] += 1
         text = (text or "").strip()
+        group_id = str(group_id or "")
 
         # --- 闸门 ③：否定与闲聊（先说否决，成本最低且优先） ---
         if self._is_negated(text):
@@ -155,19 +179,21 @@ class IntentGate:
         has_effect = self._has_effect_request(text)
 
         # 有上下文佐证：只要带一点点要求语气就放行
-        # 无上下文佐证：必须同时有「效果动词 + 目标指代」，否则大概率是闲聊
+        # 无上下文佐证：必须同时有「效果动词 + 目标指代」，否则大概率是闲聊。
+        # 例外：文本里已有明确的群管动作词（如「禁言@张三」）时，本身就是在下命令，
+        # 不该因为「群里当前没出事」而被丢掉。
         if has_evidence:
-            if not (has_effect or self._has_request_marker(text)):
+            if not (has_effect or self._has_request_marker(text) or has_action_word):
                 self.stats["blocked_no_verb"] += 1
                 return False, "无明确诉求"
-        else:
+        elif not has_action_word:
             if not (has_effect and self._has_target_marker(text)):
                 self.stats["blocked_no_evidence"] += 1
                 return False, "无异常迹象"
 
-        # --- 闸门 ④：冷却 + 信用额度 ---
+        # --- 闸门 ④：冷却 + 信用额度（按群独立） ---
         now = time.time()
-        cooldown = self._cooldown()
+        cooldown = self._cooldown(group_id)
         last = self._last_call.get(group_id, 0.0)
         if cooldown > 0 and now - last < cooldown:
             self.stats["blocked_cooldown"] += 1
@@ -206,25 +232,38 @@ class IntentGate:
 
     # ---------- 信用额度 ----------
 
-    def _budget(self) -> int:
+    def _smart_for(self, group_id: str | None = None) -> dict:
+        """取该群视角的 smart 配置（额度与冷却按群独立计费）。"""
         try:
-            val = int(self.cfg.smart.get("intent_budget", self.DEFAULT_BUDGET))
+            if group_id:
+                return self.cfg.for_group(group_id).smart
+        except Exception:
+            pass
+        return self.cfg.smart
+
+    def _budget(self, group_id: str | None = None) -> int:
+        try:
+            val = int(
+                self._smart_for(group_id).get("intent_budget", self.DEFAULT_BUDGET)
+            )
         except Exception:
             val = self.DEFAULT_BUDGET
         return max(0, val)
 
-    def _cooldown(self) -> int:
+    def _cooldown(self, group_id: str | None = None) -> int:
         try:
-            val = int(self.cfg.smart.get("intent_cooldown", self.DEFAULT_COOLDOWN))
+            val = int(
+                self._smart_for(group_id).get("intent_cooldown", self.DEFAULT_COOLDOWN)
+            )
         except Exception:
             val = self.DEFAULT_COOLDOWN
         return max(0, val)
 
     def _spend(self, group_id: str, now: float) -> bool:
         """令牌桶：按时间匀速回填，消费 1 点。返回是否成功。"""
-        capacity = self._budget()
+        capacity = self._budget(group_id)
         if capacity <= 0:
-            return False  # 配置为 0 表示禁用额度限制？不——0 表示不花模型
+            return False  # 额度为 0 表示不花模型（退回本地规则）
         bucket = self._buckets.get(group_id)
         if bucket is None:
             bucket = {"tokens": float(capacity), "ts": now}
@@ -244,10 +283,10 @@ class IntentGate:
     def budget_left(self, group_id: str) -> int:
         """当前剩余额度（整数，供面板/命令展示）。"""
         bucket = self._buckets.get(str(group_id))
+        capacity = self._budget(group_id)
         if not bucket:
-            return self._budget()
+            return capacity
         now = time.time()
-        capacity = self._budget()
         elapsed = max(0.0, now - bucket["ts"])
         tokens = min(float(capacity), bucket["tokens"] + elapsed * (capacity / 3600.0))
         return int(tokens)
@@ -311,6 +350,8 @@ class IntentGate:
 
     @staticmethod
     def _is_negated(text: str) -> bool:
+        if _NEGATION_RE.search(text):
+            return True
         return any(n in text for n in _NEGATION)
 
     @staticmethod

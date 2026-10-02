@@ -27,9 +27,18 @@ _UNIT_MAP = {
     "日": 86400,
 }
 
-# 匹配 "1h30m" "30秒" "10分钟" 这类组合，也匹配纯数字
+# 匹配 "1h30m" "30秒" "10分钟" 这类组合，也匹配纯数字。
+# 注意必须接受小数：此前只匹配 (\d+)，"1.5h" 会被拆成 "1"+"5h" 累加成 18001 秒。
 _DURATION_RE = re.compile(
-    r"(\d+)\s*(s|sec|m|min|h|hr|d|秒|分钟|分|小时|时|天|日)?",
+    r"(\d+(?:\.\d+)?)\s*(s|sec|m|min|h|hr|d|秒|分钟|分|小时|时|天|日)?",
+    re.IGNORECASE,
+)
+
+# 单个 token 是否「看起来就是时长」：``10m`` / ``10分钟`` / ``600`` / ``1d``。
+# 裸数字限制在 4 位以内，避免把 5-12 位 QQ 号误判为时长。
+_DURATION_TOKEN_RE = re.compile(
+    r"(?:\d{1,4}(?:\.\d+)?(?:s|sec|m|min|h|hr|d|秒|分钟|分|小时|时|天|日)"
+    r"|\d{1,4}(?:\.\d+)?)",
     re.IGNORECASE,
 )
 
@@ -90,13 +99,20 @@ def parse_duration(text: str | int | None, default: int = 60) -> int:
 
     Returns:
         秒数（int）。
+
+    Note:
+        裸数字（不带单位）只在 **4 位以内** 才当作秒。QQ 号是 5-12 位数字，
+        此前 ``/禁言 123456789 10m`` 会把 QQ 号解析成 123456789 秒并触发
+        30 天上限。这里宁可回退默认值，也不把 QQ 号当时长。
     """
     if text is None:
         return default
     if isinstance(text, int):
         return text
 
-    text = str(text).strip()
+    # CQ 码（如 [CQ:at,qq=123456789]）必须整段剥掉，否则其中的 QQ 号会被
+    # _DURATION_RE 当成一个裸数字累加进总时长。
+    text = re.sub(r"\[CQ:[^\]]*\]", " ", str(text)).strip()
     if not text:
         return default
 
@@ -107,22 +123,35 @@ def parse_duration(text: str | int | None, default: int = 60) -> int:
     if not re.search(r"\d", text):
         return default
 
-    total = 0
+    total = 0.0
     matched = False
     for num, unit in _DURATION_RE.findall(text):
         if not num:
             continue
-        matched = True
         unit_lower = (unit or "").lower()
+        # 裸数字（无单位）只在 4 位以内按秒解释；更长的数字是 QQ 号而非时长。
+        if not unit_lower:
+            digits = num.split(".")[0]
+            if len(digits) > 4:
+                continue
+        matched = True
         # 中文 "分" 优先按分钟，避免与 "分钟" 冲突
         multiplier = _UNIT_MAP.get(unit_lower, 1 if not unit else 60)
-        total += int(num) * multiplier
+        try:
+            value = float(num)
+        except (TypeError, ValueError):
+            continue
+        # 纯裸小数（"1.5" 没带单位）含义不明，按秒向下取整。
+        total += value * multiplier
 
     if not matched:
         return default
 
-    # 仅有裸数字时按秒
-    return total if total > 0 else default
+    # 仅有裸数字时按秒；小数向下取整，至少 1 秒
+    seconds = int(total)
+    if total > 0 and seconds <= 0:
+        seconds = 1
+    return seconds if seconds > 0 else default
 
 
 def format_duration(seconds: int) -> str:

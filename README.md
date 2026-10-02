@@ -4,13 +4,13 @@
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0.html)
 [![AstrBot](https://img.shields.io/badge/AstrBot-4.24.2%2B-orange.svg)](https://github.com/AstrBotDevs/AstrBot)
-[![Version](https://img.shields.io/badge/version-v1.6.0-green.svg)](https://github.com/yuntaojinghong/astrbot_plugin_panshi/releases)
+[![Version](https://img.shields.io/badge/version-v1.6.1-green.svg)](https://github.com/yuntaojinghong/astrbot_plugin_panshi/releases)
 
 一个为 [AstrBot](https://github.com/AstrBotDevs/AstrBot) 打造的 QQ 群管理插件，基于 NapCat / OneBot v11（`aiocqhttp`）协议。
 
 **🌐 项目主页：** https://yuntaojinghong.github.io/astrbot_plugin_panshi/
 
-> **当前版本 v1.6.0** · 32 个指令 · 8 个 LLM 工具 · 9 类功能 · 8 组配置
+> **当前版本 v1.6.1** · 32 个指令 · 8 个 LLM 工具 · 9 类功能 · 8 组配置
 
 
 ## ✨ 特色
@@ -321,6 +321,23 @@ python _selftest.py
 ## 📝 更新日志
 
 完整历史见 [Releases 页面](https://github.com/yuntaojinghong/astrbot_plugin_panshi/releases)。
+
+### v1.6.1 — 修复「按群独立配置」与宵禁解禁的遗留问题
+- **修复 #1（按群独立配置仍不生效）**：v1.6.0 只给 `guard` / `panel` 接上了按群配置视图，欢迎语、入群审核、积分、警告阈值仍读全局值，导致面板上「独立配置」看着生效、实际没用。现已全部改走 `cfg_for()`
+- `guard.whitelist` / `anon_nicknames` 也改为按群读取，单群加的白名单才能真正豁免
+- 修复「改回全局值」改不回来：保存改为整组替换语义，把值改回全局后旧覆盖会被清掉
+- 修复 `follow_default` 在面板与运行时默认值相反的问题（老备份导入后会出现「面板显示跟随全局、实际按独立配置执行」）
+- `basic` 分组按字段白名单支持按群覆盖（`anon_protect` / `anon_nicknames` / `default_ban_time` / `operation_notice`）；`interact` 整组可按群覆盖；面板把不能按群配置的字段显示为只读，不再出现「能改但存不进去」的假开关
+- **修复 #2（关闭宵禁不解禁）的残留形态**：宵禁禁言群列表改为持久化，插件重启后也能补解禁；解禁失败会回报 `lift_failed` 而不是谎报「已解除」，并每分钟重试
+- **修复 `/禁言 @某人 10m` 时长被 QQ 号劫持**：此前会把 `[CQ:at,qq=123456789]` 当成时长，禁言 123456789 秒（被上限截成 30 天）
+- **修复否定指令被执行**：「别禁言@张三」「不用禁言他」以前会被解析成禁言并立即执行
+- 修复意图闸门被动作关键词绕过（额度/冷却失效）、本地可解析的指令被闸门吞掉且无回复、群友闲聊被回「权限不足」
+- 修复 `bool("false") is True` 导致「关闭全体禁言」执行成开启；`count` 为「3条」时不再抛异常
+- 修复面板多行配置（阶梯处置 / 自动回复规则）被渲染成单行输入、换行被吞
+- 修复入群邀请（`sub_type=invite`）被当 `add` 处理、且失败仍提示成功
+- 修复警告自动处置失败时谎报「已禁言/已踢出」
+- 修复 `curfew_ban_time` 是个假开关（schema 与向导都在宣传，但没人读）——现已在宵禁时段真正生效
+- 协议端调用补短超时，避免半连接时把宵禁/公告循环卡住数分钟
 
 ### v1.6.0 — 意图闸门 + 面板动效
 - **新增本地意图闸门（IntentGate）**：四道零成本本地判定取代旧软信号词表，实测拦截约 95% 的无效解析请求，token 消耗大幅下降

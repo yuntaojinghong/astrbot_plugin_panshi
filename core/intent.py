@@ -19,6 +19,16 @@ except Exception:
 
     logger = logging.getLogger("panshi")
 
+
+def _safe_group_id(event) -> str:
+    """从事件安全取群号；取不到返回空串（此时按群配置退化为全局）。"""
+    try:
+        gid = event.get_group_id()
+        return str(gid) if gid not in (None, "") else ""
+    except Exception:
+        return ""
+
+
 # 触发智能识别的动作关键词（明确的群管动作）
 _ACTION_WORDS = [
     "禁言", "解禁", "踢", "拉黑", "撤回", "删了", "删除", "清理", "清屏", "净化",
@@ -42,8 +52,7 @@ _INTENT_HINTS = [
 ]
 
 # LLM 输出的意图 -> 合法动作
-VALID_ACTIONS = {
-    "ban", "unban", "kick", "block", "recall", "purge", "whole_ban",
+VALID_ACTIONS = {    "ban", "unban", "kick", "block", "recall", "purge", "whole_ban",
     "warn", "set_card", "set_title", "set_admin", "unset_admin",
     "notice", "set_name", "essence", "query_warn", "set_curfew",
     "banword_add", "banword_del", "none",
@@ -132,7 +141,7 @@ class IntentParser:
         闸门不可用时（未注入）退回旧的软信号宽松判定，保证不会因为
         闸门缺失而完全听不懂人话。
         """
-        smart = self.cfg.smart
+        smart = self.cfg.for_group(_safe_group_id(event)).smart
         if not smart.get("smart_enable", True):
             return False
 
@@ -157,18 +166,16 @@ class IntentParser:
             if name and name in text[: len(name) + 2]:
                 return True
 
-        if smart.get("trigger_on_keyword", True):
-            for w in _ACTION_WORDS:
-                if w in text:
-                    return True
+        group_id = _safe_group_id(event)
 
         # ---------- B. 意图闸门 ----------
+        # 闸门必须**先于**动作关键词快通道运行：否则「别禁言@张三」会因为
+        # 命中「禁言」二字而直接放行，既绕过了否定否决，也不扣额度/不看冷却，
+        # 让 intent_budget / intent_cooldown 形同虚设。
         if smart.get("trigger_on_intent", True) and self.gate is not None:
-            try:
-                group_id = str(event.get_group_id())
-            except Exception:
-                group_id = ""
-            allowed, reason = self.gate.allow(group_id, text)
+            allowed, reason = self.gate.allow(
+                group_id, text, has_action_word=self._has_action_word(text)
+            )
             if not allowed:
                 # AstrBot 的 logger 实现不一定有 debug（部分版本只有 info 以上），
                 # 用 getattr 兜底，避免因为日志级别缺失而打断主流程。
@@ -178,15 +185,23 @@ class IntentParser:
                         _dbg(f"[磐石] 意图闸门拦截（{reason}）：{text[:40]}")
                     except Exception:
                         pass
+            self.last_gate_reason = reason
             return allowed
 
         # ---------- C. 兜底：闸门缺失时用宽松软信号 ----------
+        if smart.get("trigger_on_keyword", True) and self._has_action_word(text):
+            return True
         if smart.get("trigger_on_intent", True):
             hits = sum(1 for w in _INTENT_HINTS if w in text)
             if hits >= 2 or (hits == 1 and len(text) >= 4):
                 return True
 
         return False
+
+    @staticmethod
+    def _has_action_word(text: str) -> bool:
+        """文本里是否出现明确的群管动作词。"""
+        return any(w in text for w in _ACTION_WORDS)
 
     async def parse(self, event) -> dict | None:
         """调用 LLM 解析意图，返回结构化 dict（失败返回 None）。"""

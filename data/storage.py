@@ -224,6 +224,22 @@ class Storage:
     def get_group_override(self, group_id) -> dict:
         return dict(self._data["groups"].get(str(group_id), {}))
 
+    # ---------- 宵禁全体禁言状态（持久化，跨重启可恢复）----------
+    def get_curfew_banned(self) -> list[str]:
+        """返回「当前被磐石宵禁置为全体禁言」的群号列表。
+
+        必须落盘：插件重启后内存里的 ``_enforcing`` 会丢失，若只剩内存标记，
+        一个已被全体禁言的群将永远没人去解除（Issue #2 的残留形态）。
+        """
+        raw = self._data.get("curfew_banned", [])
+        return [str(g) for g in raw] if isinstance(raw, list) else []
+
+    def set_curfew_banned(self, group_ids) -> None:
+        """整表替换宵禁禁言群列表。"""
+        with self._lock:
+            self._data["curfew_banned"] = [str(g) for g in (group_ids or []) if str(g)]
+            self.save()
+
     def set_group_override(self, group_id, key: str, value) -> None:
         with self._lock:
             self._data["groups"].setdefault(str(group_id), {})[key] = value

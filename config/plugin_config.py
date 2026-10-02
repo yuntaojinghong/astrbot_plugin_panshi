@@ -155,12 +155,6 @@ class PluginConfig:
         return self._group("interact")
 
     @property
-    def auto_replies(self) -> list[dict]:
-        """关键词自动回复规则列表。"""
-        raw = self.get("interact", "auto_replies", []) or []
-        return [r for r in raw if isinstance(r, dict)]
-
-    @property
     def auto_replies_text(self) -> str:
         """关键词自动回复的文本配置（每行 k1,k2 => reply）。"""
         return str(self.get("interact", "auto_replies_text", "") or "")
@@ -271,6 +265,8 @@ class PluginConfig:
         view = PluginConfig(merged_raw, self.context)
         view._schema = self._schema
         view._plugin_dir = self._plugin_dir
+        # 视图必须继承存储引用，否则在视图上再取某群配置会静默退化为全局值。
+        view._storage = storage
         return view
 
     def bind_storage(self, storage) -> None:

@@ -20,17 +20,30 @@ class BaseHandle:
         self.db = storage
 
     # ---------- 公共工具 ----------
-    def cfg_for(self, event) -> "BaseHandle":
+    def cfg_for(self, event=None, group_id=None):
         """取「当前群视角」的配置对象（全局叠加该群 override）。
 
         修复 Issue #1：面板的「按群独立配置」此前只写存储、运行时不读取。
-        handle 内所有取配置的地方都应改用本方法，例如::
+        handle 内**所有**取配置的地方都应改用本方法，例如::
 
-            cfg = self.cfg_for(event).guard
+            cfg = self.cfg_for(event)          # 由事件推导群号
+            guard = cfg.guard
+
+            cfg = self.cfg_for(group_id=gid)   # 已有群号（事件上下文之外）
+
+        Args:
+            event: 消息事件，用于推导群号。
+            group_id: 显式群号；``event`` 为空时使用。
+
+        Returns:
+            该群视角的 ``PluginConfig``；无法定位群号时返回全局配置。
         """
         try:
-            return self.cfg.for_group(self.group_id(event))
-        except Exception:
+            gid = group_id if group_id not in (None, "") else self.group_id(event)
+            return self.cfg.for_group(gid)
+        except Exception as e:
+            # 静默退化会让「按群配置不生效」这类问题极难排查，必须留痕。
+            logger.warning(f"[磐石] 读取按群配置失败，已退化为全局配置: {e}")
             return self.cfg
 
     @staticmethod
@@ -69,7 +82,6 @@ class BaseHandle:
             logger.warning(f"[磐石] 调用 {action} 失败: {e}")
             return False, humanize(e)
 
-    @staticmethod
     @staticmethod
     def failure_hint(action: str) -> str:
         """只取操作建议（💡 那行），用于已经有更准原因说明的场景。"""

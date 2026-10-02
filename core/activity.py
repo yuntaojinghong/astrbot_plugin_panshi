@@ -19,8 +19,10 @@ class ActivityHandle(BaseHandle):
             points = self.db.get_points(group_id, user_id)
             return f"📅 你今天已经签到过啦，当前积分 {points}"
 
-        base = int(self.cfg.activity.get("checkin_points", 10))
-        bonus_max = int(self.cfg.activity.get("checkin_random_bonus", 10))
+        # 按群视角取配置：面板「独立配置」里的签到积分必须真的生效。
+        activity = self.cfg_for(event).activity
+        base = int(activity.get("checkin_points", 10))
+        bonus_max = int(activity.get("checkin_random_bonus", 10))
         bonus = random.randint(0, bonus_max) if bonus_max > 0 else 0
         total = base + bonus
 

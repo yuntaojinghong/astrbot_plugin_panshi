@@ -173,6 +173,34 @@ class GroupInfoCache:
         candidates, _diag = self._collect_candidates()
         return candidates
 
+    async def call_client(
+        self, client: Any, action: str, timeout: float = CALL_TIMEOUT, **params
+    ) -> tuple[bool, Any]:
+        """调用协议端 API：带短超时 + 失败判定。
+
+        本模块开头就记着「未连接时 call_action 会空等 api_timeout_sec（默认
+        180s）」这个坑，但那只在拉群列表时做了防护；宵禁的全体禁言走
+        ``iter_clients()`` 直接调用，没有超时，一个半连接的协议端会把宵禁
+        循环卡住好几分钟（每个群一次）。
+
+        Returns:
+            ``(成功?, 结果或错误说明)``，与 ``BaseHandle.call_api`` 语义一致。
+        """
+        try:
+            result = await asyncio.wait_for(client.call_action(action, **params), timeout=timeout)
+        except asyncio.TimeoutError:
+            msg = f"{action} 超时（{timeout}s 无响应）"
+            logger.warning(f"[磐石] {msg}")
+            return False, msg
+        except Exception as e:
+            logger.warning(f"[磐石] 调用 {action} 失败: {e}")
+            return False, str(e)
+        if isinstance(result, dict):
+            if result.get("status") == "failed" or result.get("retcode") not in (None, 0):
+                reason = result.get("message") or result.get("wording") or result
+                return False, str(reason)
+        return True, result
+
     # ---------- 内部实现 ----------
     def _probe(self) -> dict:
         """遍历平台适配器，汇总连接诊断信息。"""

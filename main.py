@@ -68,13 +68,14 @@ class PanshiPlugin(Star):
         self.group_cache = GroupInfoCache(context)
 
         # 功能模块
+        self.automate = AutomateHandle(self.cfg, self.db)
         self.normal = NormalHandle(self.cfg, self.db)
-        self.guard = GuardHandle(self.cfg, self.db)
+        # GuardHandle 需要 automate：宵禁时段内按 automate.curfew_ban_time 加重处罚
+        self.guard = GuardHandle(self.cfg, self.db, self.automate)
         self.welcome = WelcomeHandle(self.cfg, self.db)
         self.join = JoinHandle(self.cfg, self.db)
         self.warning = WarningHandle(self.cfg, self.db)
         self.activity = ActivityHandle(self.cfg, self.db)
-        self.automate = AutomateHandle(self.cfg, self.db)
         self.interact = InteractHandle(self.cfg, self.db)
         # 面板 / 自检 / 配置向导
         self.panel = PanelHandle(self.cfg, self.db)
@@ -142,22 +143,25 @@ class PanshiPlugin(Star):
         except Exception:
             return self._enabled_groups
 
-    async def _send_group_text(self, group_id: str, text: str):
-        """向指定群发送纯文本（定时公告用），支持多账号。"""
+    async def _send_group_text(self, group_id: str, text: str) -> bool:
+        """向指定群发送纯文本（定时公告用），支持多账号。
+
+        走 ``group_cache.call_client``：协议端半连接时 call_action 会空等
+        api_timeout（默认 180s），必须套短超时，否则公告/宵禁循环会被拖死。
+        """
         clients = self.group_cache.iter_clients()
         if not clients:
             logger.warning("[磐石] 发送群消息时协议端未连接")
-            return
+            return False
         for sid, cli in clients:
-            try:
-                params = {"group_id": int(group_id), "message": str(text)}
-                if sid:
-                    params["self_id"] = sid
-                await cli.call_action("send_group_msg", **params)
-                return
-            except Exception as e:
-                logger.warning(f"[磐石] 群消息发送失败(账号 {sid or '默认'}): {e}")
-                continue
+            params = {"group_id": int(group_id), "message": str(text)}
+            if sid:
+                params["self_id"] = sid
+            ok, err = await self.group_cache.call_client(cli, "send_group_msg", **params)
+            if ok:
+                return True
+            logger.warning(f"[磐石] 群消息发送失败(账号 {sid or '默认'}): {err}")
+        return False
 
     async def terminate(self):
         await self.automate.stop_curfew()
@@ -194,40 +198,38 @@ class PanshiPlugin(Star):
         except Exception as e:
             logger.warning(f"[磐石] 宵禁即时同步失败: {e}")
 
-    async def _send_whole_ban(self, group_id: str, enable: bool):
+    async def _send_whole_ban(self, group_id: str, enable: bool) -> bool:
         """宵禁时对指定群开/关全体禁言。
 
         注意：此前用 platform_manager.get_instances()，该方法并不存在，
         异常被静默吞掉，导致宵禁全体禁言一直不生效。
         现改走 group_cache 的统一客户端解析（含多账号 self_id 显式传参）。
+
+        Returns:
+            True 表示确认下发成功。调用方据此判断「是否真的解除了全体禁言」，
+            避免协议端不可用时提示「已解除」却什么都没发生。
         """
         try:
             clients = self.group_cache.iter_clients()
         except Exception as e:
             logger.warning(f"[磐石] 宵禁获取协议端客户端失败: {e}")
-            return
+            return False
         if not clients:
             logger.warning("[磐石] 宵禁执行时协议端未连接，跳过全体禁言")
-            return
+            return False
         for sid, cli in clients:
-            try:
-                if sid:
-                    await cli.call_action(
-                        "set_group_whole_ban",
-                        group_id=int(group_id),
-                        enable=enable,
-                        self_id=sid,
-                    )
-                else:
-                    await cli.call_action(
-                        "set_group_whole_ban",
-                        group_id=int(group_id),
-                        enable=enable,
-                    )
-                return
-            except Exception as e:
-                logger.warning(f"[磐石] 宵禁全体禁言失败(账号 {sid or '默认'}): {e}")
-                continue
+            params = {"group_id": int(group_id), "enable": enable}
+            if sid:
+                params["self_id"] = sid
+            ok, err = await self.group_cache.call_client(
+                cli, "set_group_whole_ban", **params
+            )
+            if ok:
+                return True
+            logger.warning(
+                f"[磐石] 宵禁全体禁言失败(账号 {sid or '默认'}): {err}"
+            )
+        return False
 
     # ========== 群消息总入口（事件监听，优先级低于指令） ==========
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE)
@@ -253,7 +255,7 @@ class PanshiPlugin(Star):
 
         # 2.5 关键词自动回复（命中即回复，不打断后续统计）
         try:
-            if self.cfg.interact.get("auto_reply_enable", False):
+            if self.cfg.for_group(group_id).interact.get("auto_reply_enable", False):
                 reply = self.interact.match_auto_reply(text)
                 if reply:
                     yield event.plain_result(reply)
@@ -287,89 +289,96 @@ class PanshiPlugin(Star):
                 return
 
         # 6. 智能意图识别
-        #    策略：**LLM 为主（听得懂人话），本地规则为辅（零成本快速通道）**。
-        #    - 本地规则只处理「目标明确、句式标准」的指令，命中即秒执行，不消耗 token；
-        #    - 其余一切交给 AstrBot 里已配置的模型理解，覆盖口语化表达；
+        #    策略：**本地规则保底 + LLM 听懂人话**。
+        #    - 本地规则处理「目标明确、句式标准」的指令，命中即秒执行，不消耗 token；
+        #    - 本地没覆盖时交给 AstrBot 里已配置的模型理解口语化表达；
         #    - 完全没有模型时，本地规则仍能扛住常用指令，不会变成不可用。
         try:
-            if self.intent.should_trigger(event, text):
-                # 权限门槛：至少管理员才能驱动智能操作
-                if not check_permission(event, PermLevel.ADMIN, self._super_admins):
-                    yield event.plain_result("⛔ 抱歉，管理操作需要管理员权限。")
-                    return
+            llm_ok = self._llm_available()
+            group_key = get_group_id(event) or ""
+            intent = None
+            source = ""
 
-                llm_ok = self._llm_available()
-                intent = None
-                source = ""
-                group_key = get_group_id(event) or ""
-
-                # 6a. 缓存优先：短时间内同一句话不重复问模型
-                if group_key:
-                    try:
-                        intent = self.gate.cached(group_key, text)
-                        if intent:
-                            source = "缓存"
-                    except Exception:
-                        intent = None
-
-                # 6b. 本地规则快速通道：仅在「有 LLM」时作为前置快路径，
-                #     命中则省一次模型调用；本地判定不了会返回 None，
-                #     自然落到 LLM，不会因为本地没覆盖就丢掉这句话。
-                if intent is None and self.cfg.smart.get("local_fast_path", True):
-                    try:
-                        intent = self.local_intent.parse(event, text)
-                        if intent:
-                            source = "本地规则"
-                    except Exception as e:
-                        logger.warning(f"[磐石] 本地意图解析异常: {e}")
-                        intent = None
-
-                # 6c. 主通道：交给 AstrBot 已配置的模型理解（听得懂人话的关键）
-                if intent is None and llm_ok:
-                    intent = await self.intent.parse(event)
+            # 6a. 缓存优先：短时间内同一句话不重复问模型
+            if group_key:
+                try:
+                    intent = self.gate.cached(group_key, text)
                     if intent:
-                        source = "AI 理解"
-                        # 记住结果，短时间内相同句子直接复用
-                        if group_key:
-                            try:
-                                self.gate.remember(group_key, text, intent)
-                            except Exception:
-                                pass
+                        source = "缓存"
+                except Exception:
+                    intent = None
 
-                # 6d. 没有 LLM 时的兜底：再试一次本地规则
-                #     （上面 local_fast_path 关闭时也要保证无模型可用）
-                if intent is None and not llm_ok:
-                    try:
-                        intent = self.local_intent.parse(event, text)
-                        if intent:
-                            source = "本地规则"
-                    except Exception:
-                        intent = None
+            # 6b. 本地规则：**先于**闸门判定运行。
+            #     闸门只负责「要不要花钱问模型」，不该顺带把本地能处理的明确指令
+            #     一起吞掉——此前「改名片 阿伟」「违规记录」这类本地可解析的句子
+            #     被闸门拦下后既不执行也不回复，等于插件哑巴了。
+            if intent is None:
+                try:
+                    intent = self.local_intent.parse(event, text)
+                    if intent:
+                        source = "本地规则"
+                except Exception as e:
+                    logger.warning(f"[磐石] 本地意图解析异常: {e}")
+                    intent = None
 
-                if intent:
-                    action = intent.get("action")
-                    if action and action != "none":
-                        result = await self.executor.execute(event, intent)
-                        if result:
-                            yield event.plain_result(result)
-                            return
-                elif not llm_ok:
-                    # 本地也没覆盖 + 没有可用模型：给可执行引导，
-                    # 而不是「未找到 LLM 供应商」这种让人一头雾水的报错。
-                    yield event.plain_result(
-                        "🤔 我没太理解这句话的意图。\n"
-                        "可以试试这些说法：\n"
-                        "· 「禁言张三 10 分钟」（也可以 @他 或引用他的消息）\n"
-                        "· 「@某人 再发广告就踢了」\n"
-                        "· 「全体禁言」「解除全体禁言」\n"
-                        "· 「宵禁改到 23:30 到 07:00」\n"
-                        "· 或直接发送 /群管帮助 查看全部指令\n"
-                        "💡 想让我听懂更口语化的表达，可在 AstrBot「服务提供商」里配置一个对话模型。"
-                    )
+            if intent is not None:
+                # 本地规则命中的都是真实管理动作：先过权限门槛。
+                # 注意这里**不能**对普通闲聊回「权限不足」——那种提示会误伤群友。
+                if not check_permission(event, PermLevel.ADMIN, self._super_admins):
+                    logger.info(f"[磐石] 本地意图命中但发送者无管理权限，已忽略：{text[:40]}")
                     return
-                elif self.intent.last_error:
-                    # 配了模型但这次解析失败：把真实原因透出来，便于排查
-                    logger.warning(f"[磐石] 意图解析未成功：{self.intent.last_error}")
+                action = intent.get("action")
+                if action and action != "none":
+                    result = await self.executor.execute(event, intent)
+                    if result:
+                        yield event.plain_result(result)
+                        return
+                return
+
+            # 6c. 闸门：只有通过本地解析仍不明确时，才判断是否值得调用模型
+            if not self.intent.should_trigger(event, text):
+                return
+
+            if not check_permission(event, PermLevel.ADMIN, self._super_admins):
+                logger.info(f"[磐石] 智能识别命中但发送者无管理权限，已静默忽略：{text[:40]}")
+                return
+
+            # 6d. 主通道：交给 AstrBot 已配置的模型理解（听得懂人话的关键）
+            if llm_ok:
+                intent = await self.intent.parse(event)
+                if intent:
+                    source = "AI 理解"
+                    # 记住结果，短时间内相同句子直接复用
+                    if group_key:
+                        try:
+                            self.gate.remember(group_key, text, intent)
+                        except Exception:
+                            pass
+
+            if intent:
+                action = intent.get("action")
+                if action and action != "none":
+                    result = await self.executor.execute(event, intent)
+                    if result:
+                        yield event.plain_result(result)
+                        return
+            elif not llm_ok:
+                # 没有可用模型：给可执行引导，
+                # 而不是「未找到 LLM 供应商」这种让人一头雾水的报错。
+                yield event.plain_result(
+                    "🤔 我没太理解这句话的意图。\n"
+                    "可以试试这些说法：\n"
+                    "· 「禁言张三 10 分钟」（也可以 @他 或引用他的消息）\n"
+                    "· 「@某人 再发广告就踢了」\n"
+                    "· 「全体禁言」「解除全体禁言」\n"
+                    "· 「宵禁改到 23:30 到 07:00」\n"
+                    "· 或直接发送 /群管帮助 查看全部指令\n"
+                    "💡 想让我听懂更口语化的表达，可在 AstrBot「服务提供商」里配置一个对话模型。"
+                )
+                return
+            elif self.intent.last_error:
+                # 配了模型但这次解析失败：把真实原因透出来，便于排查
+                logger.warning(f"[磐石] 意图解析未成功：{self.intent.last_error}")
         except Exception as e:
             logger.error(f"[磐石] 智能识别异常: {e}")
 
@@ -420,7 +429,9 @@ class PanshiPlugin(Star):
             flag = str(getattr(raw, "flag", ""))
             user_id = str(getattr(raw, "user_id", ""))
             comment = str(getattr(raw, "comment", "") or "")
-            result = await self.join.on_request(event, flag, user_id, comment)
+            # sub_type 必须透传（add / invite），否则邀请类请求会被协议端拒绝
+            sub_type = str(getattr(raw, "sub_type", "add") or "add")
+            result = await self.join.on_request(event, flag, user_id, comment, sub_type)
             if result:
                 yield event.plain_result(result)
         except Exception as e:
@@ -623,7 +634,7 @@ class PanshiPlugin(Star):
     @filter.command("投票", alias={"vote"})
     async def cmd_vote(self, event: AstrMessageEvent, arg: str = ""):
         """投票：/投票 标题|选项1|选项2 或 /投票 编号"""
-        if not self.cfg.interact.get("vote_enable", True):
+        if not self.cfg.for_group(get_group_id(event)).interact.get("vote_enable", True):
             yield event.plain_result("🗳️ 本群未开启投票功能。")
             return
         text = arg.strip()
@@ -646,7 +657,7 @@ class PanshiPlugin(Star):
     @filter.command("接龙", alias={"chain"})
     async def cmd_chain(self, event: AstrMessageEvent, arg: str = ""):
         """接龙：/接龙 主题 发起，/接龙 内容 参与"""
-        if not self.cfg.interact.get("chain_enable", True):
+        if not self.cfg.for_group(get_group_id(event)).interact.get("chain_enable", True):
             yield event.plain_result("🔗 本群未开启接龙功能。")
             return
         text = arg.strip()
@@ -658,14 +669,14 @@ class PanshiPlugin(Star):
     @filter.command("我的", alias={"群档案", "我的信息"})
     async def cmd_self_query(self, event: AstrMessageEvent, arg: str = ""):
         """自助查询：/我的 [积分|警告|发言|签到]"""
-        if not self.cfg.interact.get("self_query_enable", True):
+        if not self.cfg.for_group(get_group_id(event)).interact.get("self_query_enable", True):
             return
         yield event.plain_result(await self.interact.self_query(event, arg))
 
     @filter.command("自助", alias={"查询"})
     async def cmd_self_help(self, event: AstrMessageEvent, arg: str = ""):
         """自助查询（别名）：/自助 积分"""
-        if not self.cfg.interact.get("self_query_enable", True):
+        if not self.cfg.for_group(get_group_id(event)).interact.get("self_query_enable", True):
             return
         yield event.plain_result(await self.interact.self_query(event, arg))
 
@@ -716,17 +727,29 @@ class PanshiPlugin(Star):
             self.cfg.apply_payload({"automate": payload})
         except ValueError as e:
             return f"❌ 参数无效：{e}"
-        await self._apply_automate_sync()
+
+        # 用 apply_now() 的真实结果生成文案：解禁失败时不会谎报「已解除」。
+        try:
+            state = await self.automate.apply_now()
+        except Exception as e:
+            logger.warning(f"[磐石] 宵禁即时同步失败: {e}")
+            state = "off"
 
         start = self.cfg.get("automate", "curfew_start", "23:00")
         end = self.cfg.get("automate", "curfew_end", "07:00")
         enabled = bool(self.cfg.get("automate", "curfew_enable", False))
-        state = self.automate.is_enforcing()
         base = f"🌙 宵禁{'已开启' if enabled else '已关闭'} · 时段 {start} ~ {end}"
-        if enabled and state:
+        if state == "lift_failed":
+            base += (
+                "\n⚠️ 已停止宵禁，但解除全体禁言下发失败（协议端可能未连接）。"
+                "\n请用 /全禁 关 手动兜底，或检查协议端连接后重试。"
+            )
+        elif enabled and self.automate.is_enforcing():
             base += "\n🔴 当前正处于宵禁时段，已自动开启全体禁言。"
         elif enabled:
             base += "\n🟢 当前不在宵禁时段，到点会自动全体禁言。"
+        elif state == "lifted_now":
+            base += "\n🟢 已解除全体禁言。"
         return base
 
     def _curfew_status_text(self) -> str:
@@ -917,12 +940,20 @@ class PanshiPlugin(Star):
         """从参数里拆出目标与时长。
 
         支持: "/禁言 @某人 10m"、"/禁言 10m"（配合引用）、"/禁言 @某人"。
+
+        注意：必须先把 @/QQ 号剥掉再找时长。此前是「第一个含数字的 token 即为
+        时长」，于是 ``/禁言 @某人 10m`` 里的 ``[CQ:at,qq=123456789]`` 会被当成
+        时长，禁言 123456789 秒（被上限截成 30 天）——用户只想要 10 分钟。
         """
         target, _ = parse_target(event)
         duration_text = ""
         if arg:
-            for token in arg.split():
-                if any(ch.isdigit() for ch in token) or token.startswith(("无限", "永久")):
+            cleaned = re.sub(r"\[CQ:at,qq=\d+\]", " ", arg)
+            cleaned = re.sub(r"@\S+", " ", cleaned)
+            for token in cleaned.split():
+                if _DURATION_TOKEN_RE.fullmatch(token) or token.startswith(
+                    ("无限", "永久")
+                ):
                     duration_text = token
                     break
         return target, duration_text
@@ -994,11 +1025,13 @@ HELP_TEXT = """🪨 磐石 · 智能群管
 /投票结果                  — 结算投票
 /接龙 主题                 — 发起接龙
 /我的 [积分|警告|发言|签到] — 成员自助查询
+/自助 [积分|警告|发言|签到] — 同上（别名）
 
 【管理面板】
 /面板        — 一屏总览本群已开启能力与参数
 /自检        — 体检：权限/适配器/存储/配置
 /配置 [主题] — 配置向导（风控|活跃|互动|宵禁|按群|本地）
+/群管帮助    — 显示本帮助
 """
 
 

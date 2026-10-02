@@ -242,6 +242,9 @@ def main():
     test_errors()
     test_role_precheck()
     test_curfew_intent()
+    test_curfew_lift_reporting()
+    test_per_group_runtime()
+    test_issue_regressions(inst)
     test_banword_and_backup(inst)
     test_page_service(inst)
     test_local_intent()
@@ -1137,6 +1140,428 @@ def test_curfew_intent():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def test_per_group_runtime():
+    """回归 Issue #1：面板「按群独立配置」必须在运行期真正生效。
+
+    v1.6.0 只把 guard/panel 切到了 cfg_for()，welcome / join / activity /
+    warning 仍在读全局配置，导致这几组「独立配置」在群里静默失效。
+    """
+    import asyncio
+    import os
+    import shutil
+    import tempfile
+
+    from astrbot_plugin_panshi.config import PluginConfig
+    from astrbot_plugin_panshi.core.activity import ActivityHandle
+    from astrbot_plugin_panshi.core.join import JoinHandle
+    from astrbot_plugin_panshi.core.warning import WarningHandle
+    from astrbot_plugin_panshi.core.welcome import WelcomeHandle
+    from astrbot_plugin_panshi.data import Storage
+
+    GID, UID = "123456", "789"
+    global_cfg = {
+        "basic": {"anon_protect": True, "super_admins": [], "enable_groups": []},
+        "guard": {"forbidden_enable": False, "whitelist": [], "forbidden_words": []},
+        "warning": {
+            "warning_enable": True,
+            "warn_expire_days": 30,
+            "warn_ban_threshold": 3,
+            "warn_kick_threshold": 5,
+            "warn_ban_time": 3600,
+            "escalation_ladder": "",
+        },
+        "welcome": {
+            "welcome_enable": True,
+            "verify_enable": False,
+            "join_review_enable": False,
+            "join_accept_words": [],
+            "join_reject_words": [],
+            "join_no_match_reject": False,
+            "leave_block": False,
+            "leave_notify": True,
+        },
+        "activity": {"checkin_enable": True, "checkin_points": 10, "checkin_random_bonus": 0},
+    }
+
+    class _Bot:
+        def __init__(self):
+            self.calls = []
+
+        def _mk(self, name):
+            async def _call(**kw):
+                self.calls.append((name, kw))
+                return {"status": "ok", "retcode": 0}
+
+            return _call
+
+        def __getattr__(self, name):
+            if name.startswith("_"):
+                raise AttributeError(name)
+            return self._mk(name)
+
+    class _Ev:
+        message_str = ""
+
+        def __init__(self, text=""):
+            self.message_str = text
+            self.bot = _Bot()
+
+        def get_group_id(self):
+            return int(GID)
+
+        def get_sender_id(self):
+            return int(UID)
+
+        def get_self_id(self):
+            return 999
+
+        def get_sender_name(self):
+            return "用户3"
+
+        def get_messages(self):
+            return []
+
+    def stack():
+        tmp = tempfile.mkdtemp(prefix="panshi_pg_")
+        db = Storage(os.path.join(tmp, "d.json"))
+        cfg = PluginConfig(global_cfg)
+        cfg.bind_storage(db)
+        return tmp, cfg, db
+
+    tmp, cfg, db = stack()
+    try:
+        # --- welcome.welcome_enable 按群关闭 ---
+        db.set_group_override(GID, "follow_default", False)
+        db.set_group_override(GID, "welcome", {"welcome_enable": False})
+        wh = WelcomeHandle(cfg, db)
+        assert asyncio.run(wh.on_member_increase(_Ev(), "555", "approve")) is None, (
+            "按群关闭欢迎后仍然发了欢迎语"
+        )
+
+        # --- welcome.leave_notify 按群关闭 ---
+        db.reset_group(GID)
+        db.set_group_override(GID, "follow_default", False)
+        db.set_group_override(GID, "welcome", {"leave_notify": False})
+        assert asyncio.run(WelcomeHandle(cfg, db).on_member_decrease(_Ev(), "555")) is None, (
+            "按群关闭退群播报后仍然播报"
+        )
+
+        # --- welcome.join_review_enable 按群开启 ---
+        db.reset_group(GID)
+        db.set_group_override(GID, "follow_default", False)
+        db.set_group_override(
+            GID, "welcome", {"join_review_enable": True, "join_accept_words": ["暗号"]}
+        )
+        r = asyncio.run(JoinHandle(cfg, db).on_request(_Ev(), "flag1", "555", "暗号", "add"))
+        assert r and "批准" in r, f"按群开启入群审核后没有批准: {r!r}"
+
+        # --- activity.checkin_points 按群生效 ---
+        db.reset_group(GID)
+        db.set_group_override(GID, "follow_default", False)
+        db.set_group_override(GID, "activity", {"checkin_points": 100})
+        asyncio.run(ActivityHandle(cfg, db).checkin(_Ev()))
+        assert db.get_points(GID, UID) == 100, (
+            f"按群签到积分未生效: {db.get_points(GID, UID)}"
+        )
+
+        # --- warning.warn_kick_threshold 按群生效 ---
+        db.reset_group(GID)
+        db.set_group_override(GID, "follow_default", False)
+        db.set_group_override(
+            GID, "warning", {"warn_kick_threshold": 1, "warn_ban_threshold": 0}
+        )
+        ev = _Ev()
+        asyncio.run(WarningHandle(cfg, db).add_warning(ev, UID, "测试"))
+        assert any(c[0] == "set_group_kick" for c in ev.bot.calls), (
+            f"按群警告阈值未触发踢出: {[c[0] for c in ev.bot.calls]}"
+        )
+
+        # --- guard.whitelist 按群生效（guard 早已切 cfg_for，防回归） ---
+        from astrbot_plugin_panshi.core.guard import GuardHandle
+
+        db.reset_group(GID)
+        db.set_group_override(GID, "follow_default", False)
+        db.set_group_override(GID, "guard", {"whitelist": [UID], "forbidden_enable": True})
+        ev2 = _Ev("加微信 免费领取")
+        assert asyncio.run(GuardHandle(cfg, db).inspect(ev2, "1")) is None, (
+            "按群白名单没有豁免处罚"
+        )
+        print("PER_GROUP_RUNTIME_OK")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_curfew_lift_reporting():
+    """回归 Issue #2：解禁失败时绝不能回报「已解除」。
+
+    v1.6.0 补上了「关闭宵禁时下发解禁」，但无论下发成功与否都回 lifted_now，
+    且未校验协议端返回值 / 未连接的情况，仍会出现「提示与事实相反」。
+    """
+    import asyncio
+    import os
+    import shutil
+    import tempfile
+
+    from astrbot_plugin_panshi.config import PluginConfig
+    from astrbot_plugin_panshi.core.automate import AutomateHandle
+    from astrbot_plugin_panshi.data import Storage
+
+    GID = "123456"
+    tmp = tempfile.mkdtemp(prefix="panshi_curfew_")
+    _seq = {"n": 0}
+
+    def fresh_db():
+        """每个场景独立存储：宵禁禁言记录是持久化的，共用会互相污染。"""
+        _seq["n"] += 1
+        return Storage(os.path.join(tmp, f"d{_seq['n']}.json"))
+
+    class _Cli:
+        def __init__(self, fail=False, retcode=0):
+            self.calls = []
+            self.fail = fail
+            self.retcode = retcode
+
+        async def call_action(self, action, **kw):
+            self.calls.append((action, kw))
+            if self.fail:
+                raise RuntimeError("协议端未连接")
+            return {"status": "ok" if self.retcode == 0 else "failed", "retcode": self.retcode}
+
+    def make(cli, storage=None, group=GID):
+        cfg = PluginConfig(
+            {
+                "automate": {
+                    "curfew_enable": True,
+                    "curfew_start": "00:00",
+                    "curfew_end": "23:59",
+                    "announce_enable": False,
+                }
+            }
+        )
+        auto = AutomateHandle(cfg, storage if storage is not None else fresh_db())
+
+        async def sender(gid, enable):
+            result = await cli.call_action(
+                "set_group_whole_ban", group_id=int(gid), enable=enable
+            )
+            return not (result.get("status") == "failed" or result.get("retcode") not in (None, 0))
+
+        auto.bind_sender(sender, [group])
+
+        async def provider():
+            return [group]
+
+        auto.bind_groups_provider(provider)
+        return cfg, auto
+
+    # 1) 正常：关闭宵禁 -> 下发解禁 -> lifted_now
+    cli = _Cli()
+    cfg, auto = make(cli)
+    asyncio.run(auto.apply_now())
+    cfg.raw["automate"]["curfew_enable"] = False
+    assert asyncio.run(auto.apply_now()) == "lifted_now"
+    assert cli.calls[-1][1].get("enable") is False
+
+    # 2) 禁言下发失败（协议端不可用）：禁言没确认成功，但「可能已生效」，
+    #    因此关闭宵禁时必须尝试解禁，且解禁同样失败 -> 只能回报 lift_failed，
+    #    绝不能回报「已解除」（那正是 Issue #2 里「提示与事实相反」的形态）。
+    cli_fail = _Cli(fail=True)
+    cfg2, auto2 = make(cli_fail)
+    asyncio.run(auto2.apply_now())
+    cfg2.raw["automate"]["curfew_enable"] = False
+    state = asyncio.run(auto2.apply_now())
+    assert state == "lift_failed", f"禁言/解禁都失败却回报: {state}"
+    assert auto2.has_pending_lift() is True, "解禁失败却不再重试"
+    assert any(
+        c[0] == "set_group_whole_ban" and c[1].get("enable") is False for c in cli_fail.calls
+    ), f"没有尝试下发解禁: {cli_fail.calls}"
+
+    # 3) 协议端返回 retcode != 0：同样不能算成功
+    cli_rc = _Cli(retcode=1400)
+    cfg3, auto3 = make(cli_rc)
+    asyncio.run(auto3.apply_now())
+    cfg3.raw["automate"]["curfew_enable"] = False
+    assert asyncio.run(auto3.apply_now()) == "lift_failed", "retcode 非 0 却回报已解除"
+
+    # 4) 重启后仍能解禁（Issue #2 的残留形态）：
+    #    上一个进程把群置为全体禁言后崩了/被重启，新进程内存标记为 False，
+    #    若只看内存标记，这个群将永远没人解除。
+    try:
+        db4 = Storage(os.path.join(tmp, "restart.json"))
+        cli4 = _Cli()
+        cfg4, auto4 = make(cli4, storage=db4)
+        asyncio.run(auto4.apply_now())  # 进入宵禁 -> 全体禁言
+        assert db4.get_curfew_banned() == [GID], db4.get_curfew_banned()
+        cli4.calls.clear()
+
+        # —— 模拟重启：全新的 handle + 内存标记为 False，但存储里记着这个群
+        cfg5 = PluginConfig(
+            {
+                "automate": {
+                    "curfew_enable": False,  # 重启后宵禁是关闭状态
+                    "curfew_start": "00:00",
+                    "curfew_end": "23:59",
+                    "announce_enable": False,
+                }
+            }
+        )
+        auto5 = AutomateHandle(cfg5, db4)
+
+        async def sender5(gid, enable):
+            result = await cli4.call_action(
+                "set_group_whole_ban", group_id=int(gid), enable=enable
+            )
+            return not (result.get("status") == "failed" or result.get("retcode") not in (None, 0))
+
+        auto5.bind_sender(sender5, [GID])
+
+        async def provider5():
+            return [GID]
+
+        auto5.bind_groups_provider(provider5)
+
+        state5 = asyncio.run(auto5.apply_now())
+        assert state5 == "lifted_now", f"重启后没有补解禁: {state5}"
+        assert any(
+            c[0] == "set_group_whole_ban" and c[1].get("enable") is False for c in cli4.calls
+        ), f"重启后未下发解禁: {cli4.calls}"
+        assert db4.get_curfew_banned() == [], "解禁成功后记录应清空"
+        print("CURFEW_RESTART_LIFT_OK")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+    print("CURFEW_LIFT_REPORTING_OK")
+
+
+def test_issue_regressions(inst):
+    """本轮修复的回归测试：否定误执行、时长被 QQ 号劫持、面板配置语义。
+
+    这些问题的共同点是「CI 全绿但线上行为是错的」——单测只覆盖了解析函数的
+    正常输入，没有覆盖真实指令参数与否定语境。
+    """
+    import asyncio
+    import re
+
+    from astrbot_plugin_panshi.config import PluginConfig
+    from astrbot_plugin_panshi.core.intent_executor import _as_bool, _as_int
+    from astrbot_plugin_panshi.core.local_intent import LocalIntentParser
+    from astrbot_plugin_panshi.utils import parse_duration
+    from astrbot_plugin_panshi.utils.parser import _DURATION_TOKEN_RE
+
+    # 1) 时长不能被 QQ 号劫持（/禁言 @某人 10m）
+    def split_duration(arg: str) -> str:
+        cleaned = re.sub(r"\[CQ:at,qq=\d+\]", " ", arg)
+        cleaned = re.sub(r"@\S+", " ", cleaned)
+        for token in cleaned.split():
+            if _DURATION_TOKEN_RE.fullmatch(token) or token.startswith(("无限", "永久")):
+                return token
+        return ""
+
+    cases = {
+        "[CQ:at,qq=123456789] 10m": 600,
+        "[CQ:at,qq=123456789] 2h": 7200,
+        "123456789 10m": 600,
+        "[CQ:at,qq=123456789] 1d": 86400,
+        "[CQ:at,qq=123456789] 600": 600,
+    }
+    for arg, want in cases.items():
+        tok = split_duration(arg)
+        got = parse_duration(tok, 60) if tok else 60
+        assert got == want, f"arg={arg!r} token={tok!r} 得到 {got}s，期望 {want}s"
+    # 5-12 位 QQ 号本身绝不能被当成秒数
+    assert parse_duration("123456789", 60) == 60
+    assert parse_duration("[CQ:at,qq=123456789] 10m", 60) == 600
+    assert parse_duration("1.5h", 60) == 5400, "小数时长仍应正确"
+    print("DURATION_NO_HIJACK_OK")
+
+    # 2) 否定指令绝不能被解析成执行动作
+    cfg = PluginConfig({"basic": {"default_ban_time": 60}})
+    parser = LocalIntentParser(cfg)
+
+    class _At:
+        def __init__(self, qq):
+            self.qq = qq
+
+    class _Ev:
+        message_str = ""
+
+        def __init__(self, text, ats=()):
+            self.message_str = text
+            self._ats = [_At(q) for q in ats]
+
+        def get_group_id(self):
+            return 123456
+
+        def get_sender_id(self):
+            return 999
+
+        def get_self_id(self):
+            return 888
+
+        def get_messages(self):
+            return self._ats
+
+    for text, ats in (
+        ("别禁言张三", ()),
+        ("不用禁言@张三", ("10001",)),
+        ("别禁言他", ()),
+        ("算了别踢了", ()),
+        ("不要拉黑", ()),
+    ):
+        got = parser.parse(_Ev(text, ats), text)
+        assert got is None, f"否定指令 {text!r} 竟被解析成 {got!r}"
+    print("NEGATION_GUARD_OK")
+
+    # 3) 正常指令仍要能解析（否定守卫不能误伤）
+    got = parser.parse(_Ev("禁言@10001 10分钟", ("10001",)), "禁言@10001 10分钟")
+    assert got and got.get("action") == "ban", got
+    assert str(got.get("target")) == "10001", f"目标解析错误: {got}"
+    assert got.get("duration") == 600, f"@ 后面的时长被吃掉了: {got}"
+    # 没有引用的「@昵称 10分钟」找不到目标时应放弃，但时长解析本身要正确
+    assert parser._extract_duration_text("禁言@张三 10分钟".replace("@张三", " ")) != ""
+    assert parse_duration(parser._extract_duration_text("禁言 10分钟"), 60) == 600
+    got2 = parser.parse(_Ev("全体禁言"), "全体禁言")
+    assert got2 and got2.get("action") == "whole_ban" and got2.get("enable") is True, got2
+    got3 = parser.parse(_Ev("解除全体禁言"), "解除全体禁言")
+    assert got3 and got3.get("action") == "whole_ban" and got3.get("enable") is False, got3
+    # 「永久禁言」不应退化成默认 60 秒
+    got4 = parser.parse(_Ev("永久禁言@10001", ("10001",)), "永久禁言@10001")
+    assert got4 and got4.get("duration") == 2592000, f"永久禁言时长错误: {got4}"
+    print("LOCAL_PARSE_STILL_OK")
+
+    # 4) 「别人在刷屏」不能被否定词误伤（裸「别」不再是否定）
+    from astrbot_plugin_panshi.core.intent_gate import IntentGate
+
+    gate = IntentGate(cfg, None)
+    allowed, reason = gate.allow("123456", "别人一直在刷屏，管一下")
+    assert reason != "否定语境", f"「别人」被误判成否定语境: {reason}"
+    assert allowed, f"真实的举报被拦截: {reason}"
+    blocked, reason2 = gate.allow("123456", "别禁言张三")
+    assert not blocked and reason2 == "否定语境", f"否定指令未被拦截: {reason2}"
+    print("NEGATION_FALSE_POSITIVE_OK")
+
+    # 5) 模型给的 "false" 不能变成 True（否则「关闭全体禁言」会执行成开启）
+    assert _as_bool("false", True) is False
+    assert _as_bool("关闭", True) is False
+    assert _as_bool(False, True) is False
+    assert _as_bool("true", False) is True
+    assert _as_int("3条", 1) == 3, "「3条」应能取出 3"
+    assert _as_int(None, 30) == 30
+    print("LLM_SCALAR_COERCION_OK")
+
+    # 6) danger: 确认「关闭宵禁」在真实 IntentExecutor 上不会写成开启
+    from astrbot_plugin_panshi.core.intent_executor import IntentExecutor
+
+    class _Normal:
+        async def whole_ban(self, event, enable):
+            return f"whole_ban={enable}"
+
+    ex = IntentExecutor(cfg, inst.db, None, _Normal(), None, None)
+    out = asyncio.run(ex._dispatch(_Ev("x"), {"action": "whole_ban", "enable": "false"}, None))
+    assert out == "whole_ban=False", f"字符串 false 被当成 True: {out}"
+    print("WHOLE_BAN_STRING_FALSE_OK")
+
+
 def test_banword_and_backup(inst):
     """违禁词自然语言维护 + 面板配置导出/导入回路。"""
     import asyncio
@@ -1145,25 +1570,32 @@ def test_banword_and_backup(inst):
 
     ex = inst.executor
 
+    # _banword 现在需要事件（用于按群视角读词表）；给一个最小事件即可。
+    class _Ev:
+        def get_group_id(self):
+            return 123456
+
+    ev = _Ev()
+
     # 1) 添加违禁词
-    r = ex._banword("测试违禁ABC", add=True)
+    r = ex._banword(ev, "测试违禁ABC", add=True)
     assert "已添加" in r, r
     words = inst.cfg.get("guard", "forbidden_words", []) or []
     assert "测试违禁ABC" in words, words
 
     # 2) 重复添加
-    r2 = ex._banword("测试违禁ABC", add=True)
+    r2 = ex._banword(ev, "测试违禁ABC", add=True)
     assert "存在" in r2, r2
 
     # 3) 模糊匹配删除（输入词是已有词的子串）
-    r3 = ex._banword("测试违禁", add=False)
+    r3 = ex._banword(ev, "测试违禁", add=False)
     assert "已删除" in r3 and "测试违禁ABC" in r3, r3
     words = inst.cfg.get("guard", "forbidden_words", []) or []
     assert "测试违禁ABC" not in words, words
 
     # 4) 空词与不存在的词
-    assert "请告诉我" in ex._banword("  ", add=True)
-    assert "没有" in ex._banword("根本不存在XYZ", add=False)
+    assert "请告诉我" in ex._banword(ev, "  ", add=True)
+    assert "没有" in ex._banword(ev, "根本不存在XYZ", add=False)
     print("BANWORD_INTENT_OK")
 
     # 5) 导出 -> 改动 -> 导入还原
@@ -1295,6 +1727,48 @@ def test_page_service(inst):
     assert (after2["override"] or {}).get("guard", {}) == {}, after2["override"]
     assert after2["follow_default"] is False, "清掉覆盖后仍应是独立配置"
     print("GROUP_OVERRIDE_SELF_CLEAN_OK")
+    svc.reset_group_config("123456")
+
+    # 回归：把某个字段「改回全局值」必须真的改回去。
+    # 前端不会提交与全局相同的字段，旧实现只遍历 payload 里出现的分组，
+    # 于是 diff 为空 → 分组整体缺失 → 旧覆盖永远清不掉，用户以为改回去了，
+    # 运行时却还在用旧值（面板提示「已保存」但行为没变）。
+    svc.update_global_config({"guard": {"spam_count": 5}})
+    svc.update_group_config("123456", {"follow_default": False, "guard": {"spam_count": 9}})
+    assert svc.get_group_config("123456")["effective"]["guard"]["spam_count"] == 9
+    # 用户把 9 改回全局的 5 -> 前端只发 follow_default（没有 guard 分组）
+    after_revert = svc.update_group_config("123456", {"follow_default": False})
+    assert (after_revert["override"] or {}).get("guard", {}) == {}, (
+        f"改回全局值后仍残留覆盖: {after_revert['override']}"
+    )
+    assert after_revert["effective"]["guard"]["spam_count"] == 5, (
+        f"改回全局值后实际仍用旧值: {after_revert['effective']['guard']}"
+    )
+    # 运行时视图也必须跟着回到全局值
+    assert inst.cfg.for_group("123456").guard.get("spam_count") == 5, (
+        "运行时 for_group 仍在用已删除的覆盖值"
+    )
+    print("GROUP_REVERT_TO_GLOBAL_OK")
+
+    # 回归：老备份里缺 follow_default 时，面板与运行时的判断必须一致。
+    # panel 的 get_group_config 读作「跟随全局」，而 for_group() 读作「应用覆盖」，
+    # 两边默认值相反时会出现「面板显示跟随全局、实际按独立配置执行」的分裂。
+    svc.reset_group_config("123456")
+    legacy = {
+        "plugin": "astrbot_plugin_panshi",
+        "global_config": {"guard": {"spam_count": 5}},
+        "groups": {"123456": {"guard": {"spam_count": 9}}},  # 老备份：没有 follow_default
+    }
+    svc.import_all(legacy)
+    ov_after = inst.db.get_group_override("123456")
+    assert ov_after.get("follow_default") is False, (
+        f"导入老备份后应显式标记为独立配置: {ov_after}"
+    )
+    panel_view = svc.get_group_config("123456")["follow_default"]
+    runtime_view = inst.cfg.for_group("123456").guard.get("spam_count")
+    assert panel_view is False, f"面板显示「跟随全局」而运行时按覆盖执行: {panel_view}"
+    assert runtime_view == 9, runtime_view
+    print("FOLLOW_DEFAULT_CONSISTENT_OK")
     svc.reset_group_config("123456")
 
     # 非法群号

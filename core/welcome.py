@@ -36,7 +36,8 @@ class WelcomeHandle(BaseHandle):
     async def on_member_increase(self, event, user_id: str, sub_type: str = "approve") -> str | None:
         """成员入群事件。"""
         group_id = str(event.get_group_id())
-        cfg = self.cfg.welcome
+        # 按群视角取配置：面板「独立配置」里的欢迎/验证项必须真的生效。
+        cfg = self.cfg_for(event).welcome
 
         # 黑名单：直接踢出
         if self.db.is_blacklisted(group_id, user_id):
@@ -71,7 +72,7 @@ class WelcomeHandle(BaseHandle):
 
     async def _build_welcome(self, event, group_id: str, user_id: str) -> str:
         """构造欢迎语（支持变量、随机模板、图片）。"""
-        cfg = self.cfg.welcome
+        cfg = self.cfg_for(event).welcome
 
         # 群名与人数
         group_name = await self._group_name(event)
@@ -113,12 +114,19 @@ class WelcomeHandle(BaseHandle):
             a, b = random.randint(1, 9), random.randint(1, 9)
             answer = a * b
 
-        timeout = int(self.cfg.welcome.get("verify_timeout", 120))
+        timeout = int(self.cfg_for(event).welcome.get("verify_timeout", 120))
         key = (group_id, user_id)
-        self._pending[key] = {"answer": answer, "expire": time.time() + timeout}
+        # 用 token 标记「这一次」验证：旧的超时任务只允许处理它自己发起的挑战，
+        # 否则同一个人「验证通过→退群→再入群」时，旧任务会把新挑战一起踢掉。
+        token = time.time()
+        self._pending[key] = {
+            "answer": answer,
+            "expire": token + timeout,
+            "token": token,
+        }
 
         # 超时任务：未答对则拒绝
-        asyncio.create_task(self._verify_timeout(event, group_id, user_id, timeout))
+        asyncio.create_task(self._verify_timeout(event, group_id, user_id, timeout, token))
 
         return (
             f"👋 欢迎新成员！请回答下面的问题以完成验证（{timeout} 秒内）：\n"
@@ -151,29 +159,34 @@ class WelcomeHandle(BaseHandle):
                 user_id=int(user_id),
                 duration=0,
             )
-            if self.cfg.welcome.get("welcome_enable", True):
+            if self.cfg_for(event).welcome.get("welcome_enable", True):
                 return await self._build_welcome(event, group_id, user_id)
             return "✅ 验证通过，欢迎加入本群！"
         else:
             return "❌ 答案不对，请再试一次～"
 
-    async def _verify_timeout(self, event, group_id: str, user_id: str, timeout: int) -> None:
+    async def _verify_timeout(
+        self, event, group_id: str, user_id: str, timeout: int, token: float | None = None
+    ) -> None:
         await asyncio.sleep(timeout)
         key = (group_id, user_id)
-        if key in self._pending:
-            self._pending.pop(key, None)
-            await self.call_api(
-                event,
-                "set_group_kick",
-                group_id=int(group_id),
-                user_id=int(user_id),
-                reject_add_request=False,
-            )
+        current = self._pending.get(key)
+        # token 不匹配说明这是一次已被替换的旧挑战：什么都不做。
+        if current is None or (token is not None and current.get("token") != token):
+            return
+        self._pending.pop(key, None)
+        await self.call_api(
+            event,
+            "set_group_kick",
+            group_id=int(group_id),
+            user_id=int(user_id),
+            reject_add_request=False,
+        )
 
     # ========== 退群 ==========
     async def on_member_decrease(self, event, user_id: str) -> str | None:
         group_id = str(event.get_group_id())
-        cfg = self.cfg.welcome
+        cfg = self.cfg_for(event).welcome
 
         if cfg.get("leave_block", False):
             self.db.add_blacklist(group_id, user_id)

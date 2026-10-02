@@ -276,6 +276,28 @@ async function apiPost(endpoint, body) {
 /* ==================================================================
  *  数据加载
  * ================================================================== */
+
+/**
+ * 某个分组/字段能否按群覆盖。
+ *
+ * 后端 OVERRIDABLE_GROUPS 允许 basic 整组覆盖，但只放行其中少数字段
+ * （super_admins / enable_groups / max_ban_time 属于插件级全局设置）。
+ * 这里按后端下发的白名单把那些字段显示为只读，避免「面板能改、后端静默丢弃」
+ * 的假开关——用户以为改好了，实际运行时仍是全局值。
+ */
+function isFieldOverridable(groupKey, fieldKey) {
+  const groups = state.meta.overridable_groups;
+  if (Array.isArray(groups) && groups.length && !groups.includes(groupKey)) {
+    return false;
+  }
+  const fields = state.meta.overridable_fields;
+  if (fields && typeof fields === "object") {
+    const allowed = fields[groupKey];
+    if (Array.isArray(allowed)) return allowed.includes(fieldKey);
+  }
+  return true;
+}
+
 async function loadAll(force = false) {
   const btn = $("#btnReload");
   btn.disabled = true;
@@ -684,6 +706,8 @@ function renderContent() {
   }
 
   const readonly = !state.selected.is_default && state.followDefault;
+  // 只有「具体某个群」才有按群覆盖的概念；全局默认页不受字段白名单限制。
+  const perGroup = !state.selected.is_default;
   const sel = state.selected;
 
   // 标题区
@@ -743,12 +767,12 @@ function renderContent() {
   // 配置分组
   const wrap = el("div", { class: "groups" });
   for (const group of state.schema) {
-    wrap.appendChild(renderGroupSection(group, readonly));
+    wrap.appendChild(renderGroupSection(group, readonly, perGroup));
   }
   box.appendChild(wrap);
 }
 
-function renderGroupSection(group, readonly) {
+function renderGroupSection(group, readonly, perGroup = false) {
   const collapsed = !!state.collapsed[group.key];
   const section = el("section", {
     class: "config-group" + (collapsed ? " collapsed" : ""),
@@ -778,15 +802,21 @@ function renderGroupSection(group, readonly) {
 
   const fields = el("div", { class: "fields" });
   for (const field of group.fields) {
-    fields.appendChild(renderField(group.key, field, readonly));
+    fields.appendChild(renderField(group.key, field, readonly, perGroup));
   }
   body.appendChild(fields);
   section.appendChild(body);
   return section;
 }
 
-function renderField(groupKey, field, readonly) {
+function renderField(groupKey, field, readonly, perGroup = false) {
   const row = el("div", { class: `field field-${field.type}` });
+
+  // 按群视图下，不能按群覆盖的字段必须是只读的。
+  // 否则用户在面板上改了、后端静默丢弃，看起来像保存成功其实没生效。
+  // 全局视图（perGroup=false）里这些字段当然可以正常编辑。
+  const overridable = !perGroup || isFieldOverridable(groupKey, field.key);
+  const fieldDisabled = readonly || !overridable;
 
   // 标签
   const label = el("label", { class: "field-label" }, [
@@ -795,6 +825,15 @@ function renderField(groupKey, field, readonly) {
   if (field.hint) {
     label.appendChild(
       el("span", { class: "hint-icon", text: "?", title: field.hint })
+    );
+  }
+  if (!overridable) {
+    label.appendChild(
+      el("span", {
+        class: "field-tail",
+        text: "全局",
+        title: "该字段属于插件级全局设置，不支持按群独立配置",
+      })
     );
   }
   row.appendChild(label);
@@ -806,7 +845,7 @@ function renderField(groupKey, field, readonly) {
     const input = el("input", {
       type: "checkbox",
       checked: value ? "checked" : false,
-      disabled: readonly,
+      disabled: fieldDisabled,
     });
     input.addEventListener("change", () =>
       setValue(groupKey, field.key, input.checked)
@@ -848,7 +887,7 @@ function renderField(groupKey, field, readonly) {
     const input = el("textarea", {
       class: "input textarea",
       rows: 3,
-      disabled: readonly,
+      disabled: fieldDisabled,
       placeholder: "每行一项，或用逗号分隔",
     });
     input.value = list.join("\n");
@@ -860,8 +899,23 @@ function renderField(groupKey, field, readonly) {
     });
     row.appendChild(input);
     row.appendChild(tail);
+  } else if (field.type === "text") {
+    // 多行文本必须用 textarea：<input type="text"> 会在赋值时把换行去掉，
+    // 像 escalation_ladder / auto_replies_text 这种「一行一条」的配置
+    // 一编辑就会被压成一行，等于把阶梯和自动回复规则弄坏。
+    const input = el("textarea", {
+      class: "input textarea",
+      rows: 4,
+      disabled: fieldDisabled,
+      placeholder: "每行一条",
+    });
+    input.value = value ?? "";
+    input.addEventListener("input", () =>
+      setValue(groupKey, field.key, input.value)
+    );
+    row.appendChild(input);
   } else if (field.options && field.options.length) {
-    const select = el("select", { class: "input", disabled: readonly });
+    const select = el("select", { class: "input", disabled: fieldDisabled });
     for (const opt of field.options) {
       const o = el("option", { value: opt, text: opt });
       if (opt === value) o.selected = true;
@@ -876,7 +930,7 @@ function renderField(groupKey, field, readonly) {
       class: "input",
       type: "text",
       value: value ?? "",
-      disabled: readonly,
+      disabled: fieldDisabled,
     });
     input.addEventListener("input", () =>
       setValue(groupKey, field.key, input.value)

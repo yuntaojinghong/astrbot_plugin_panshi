@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from .parser import safe_int
+
 
 def get_ats(event) -> list[str]:
     """取出消息中所有被 @ 的 QQ 号（排除 @全体）。"""
@@ -21,7 +23,10 @@ def get_ats(event) -> list[str]:
 
 async def get_nickname(event, user_id: str | int) -> str:
     """获取群成员的群名片 / 昵称，失败时回退为 QQ 号。"""
-    uid = int(user_id)
+    # 用 safe_int：非数字 id（十六进制/匿名昵称）不该把调用方炸掉。
+    uid = safe_int(user_id)
+    if uid is None:
+        return str(user_id)
     gid = _group_id(event)
     if gid:
         try:
@@ -92,7 +97,10 @@ async def get_member_role(event, user_id: str | int) -> str:
     Returns:
         ``"owner"`` / ``"admin"`` / ``"member"``；无法确证时返回 ``"unknown"``
     """
-    uid = int(user_id)
+    # 用 safe_int：非数字 id 不该抛异常，无法确证时统一按 unknown 处理。
+    uid = safe_int(user_id)
+    if uid is None:
+        return "unknown"
     gid = _group_id(event)
     if not gid:
         return "unknown"

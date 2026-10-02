@@ -42,8 +42,11 @@ _AD_PATTERNS = [
 class GuardHandle(BaseHandle):
     """消息防护处理器。"""
 
-    def __init__(self, config, storage):
+    def __init__(self, config, storage, automate=None):
         super().__init__(config, storage)
+        # 宵禁句柄（可选）：宵禁时段内用 automate.curfew_ban_time 加重处罚。
+        # 该配置项此前只写在 schema/面板里、没有任何代码读取，是个假开关。
+        self._automate = automate
         # 每用户最近发言时间戳: {(gid, uid): deque[ts]}
         self._msg_times: dict[tuple, deque] = {}
         # 最近消息缓存（用于撤回）: {gid: deque[{"user_id","message_id","text","ts"}]}
@@ -52,6 +55,31 @@ class GuardHandle(BaseHandle):
         self._repeat: dict[str, deque] = {}
         # 上次内存清理时间
         self._last_cleanup: float = 0.0
+
+    def _apply_curfew_penalty(self, group_id, ban_time: int) -> int:
+        """宵禁时段内按 automate.curfew_ban_time 加重处罚时长。
+
+        仅在「宵禁正在对该群生效」且配置了更长的时长时才调整，
+        避免把用户为风控单独设的时长无声改短。
+        """
+        if self._automate is None or ban_time <= 0:
+            return ban_time
+        try:
+            gid = str(group_id)
+            if not self._automate.is_enforcing():
+                return ban_time
+            if gid not in (self._automate._banned_groups() or []):
+                return ban_time
+            curfew_time = int(self.cfg.automate.get("curfew_ban_time", 0) or 0)
+        except Exception:
+            return ban_time
+        if curfew_time > ban_time:
+            logger.info(
+                f"[磐石] 群 {group_id} 处于宵禁时段，违规禁言时长按宵禁设置调整为 "
+                f"{curfew_time}s（原 {ban_time}s）"
+            )
+            return curfew_time
+        return ban_time
 
     # ========== 主入口：每条群消息都过一遍 ==========
     async def inspect(self, event, message_id: str | None = None) -> str | None:
@@ -74,12 +102,12 @@ class GuardHandle(BaseHandle):
         # 按群配置视图（修复 Issue #1：面板「独立配置」运行时不生效）
         cfg = self.cfg_for(event)
 
-        # 匿名转述内容豁免（按昵称/格式识别）
-        if cfg.anon_protect and self._is_anon_relay(text):
+        # 匿名转述内容豁免（按昵称/格式识别）——昵称池同样走该群视角
+        if cfg.anon_protect and self._is_anon_relay(text, cfg):
             return None
 
-        # 风控白名单豁免（不参与任何防护处罚）
-        if self._is_whitelisted(event):
+        # 风控白名单豁免（不参与任何防护处罚）——白名单同样走该群视角
+        if self._is_whitelisted(event, cfg):
             return None
 
         # 管理员/超管豁免（可按需调整）
@@ -195,6 +223,8 @@ class GuardHandle(BaseHandle):
         # 禁言
         msg = f"⚠️ 检测到 {reason}，已处理。"
         if ban_time > 0:
+            # 宵禁时段内按 curfew_ban_time 加重处罚（此前该配置项无人读取）
+            ban_time = self._apply_curfew_penalty(group_id, ban_time)
             ban_time = cfg.clamp_ban_time(ban_time)
             from ..utils import format_duration
 
@@ -271,11 +301,14 @@ class GuardHandle(BaseHandle):
         except Exception:
             return False
 
-    def _is_whitelisted(self, event) -> bool:
-        """风控白名单：命中则豁免防护处罚（如官方客服号）。"""
+    def _is_whitelisted(self, event, cfg=None) -> bool:
+        """风控白名单：命中则豁免防护处罚（如官方客服号）。
+
+        白名单按群视角读取，面板里给单个群加的客服号才能真正生效。
+        """
         try:
             uid = str(event.get_sender_id())
-            return bool(uid) and uid in self.cfg.whitelist
+            return bool(uid) and uid in (cfg or self.cfg).whitelist
         except Exception:
             return False
 
@@ -293,11 +326,11 @@ class GuardHandle(BaseHandle):
         except Exception:
             return False
 
-    def _is_anon_relay(self, text: str) -> bool:
+    def _is_anon_relay(self, text: str, cfg=None) -> bool:
         """识别匿名树洞的转述内容。
 
         识别方式（任一命中即视为匿名转述）：
-        1. 文本中包含配置的匿名昵称池中的昵称；
+        1. 文本中包含配置的匿名昵称池中的昵称（按群视角读取）；
         2. 文本匹配匿名树洞的默认转述格式 ``【昵称】：内容`` / ``【匿名倾诉】``。
 
         Returns:
@@ -306,7 +339,7 @@ class GuardHandle(BaseHandle):
         if not text:
             return False
         # 1) 昵称黑名单（配置的匿名昵称）
-        for name in self.cfg.anon_nicknames:
+        for name in (cfg or self.cfg).anon_nicknames:
             if name and name in text:
                 return True
         # 2) 格式识别：【xxx】开头（匿名树洞默认 relay_format）

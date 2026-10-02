@@ -26,6 +26,39 @@ except Exception:  # pragma: no cover
 
 from ..utils import parse_duration
 
+# ---------- 否定判定 ----------
+#
+# 「别禁言@张三」「不用禁言他」「算了别踢了」的语义与指挥**相反**。
+# 此前本地解析完全没有否定概念，这类句子会被解析成 ban/kick 并立刻执行，
+# 是本模块最危险的一类误判。
+#
+# 「别」单独出现不算否定：像「别人一直在刷屏，管一下」里的「别」只是
+# 「别人」的一部分，按裸子串匹配会把真实的举报丢掉。因此要求
+# 「否定词 + 可选修饰 + 动作词」出现在一起才算否定指令。
+_NEGATION_ACTION_RE = re.compile(
+    r"(?:别|不要|不用|不必|无需|甭|请勿|停止|取消|撤销|拒绝)\s*"
+    r"(?:再|去|给我|给他|给他|把他|把她|把|帮忙|帮我|随便|乱)?\s*"
+    r"(?:禁言|解禁|踢|拉黑|撤回|删|清理|清屏|净化|全禁|全体禁言|闭嘴|"
+    r"警告|改名|改名片|头衔|上管|下管|公告|设精|精华|群名|封|处理|管|安排|宵禁)"
+)
+
+# 表示「否定整个后续动作」的收尾词：出现在动作词之前时一律放弃解析。
+_NEGATION_TAIL = ("算了", "随便了", "不用了", "别了")
+
+
+def _is_negated_command(text: str) -> bool:
+    """判断一句话是否是否定指令（如「别禁言他」）。
+
+    仅在「否定词紧邻动作词」时判定为否定，避免误伤「别人在刷屏」这类陈述。
+    """
+    if not text:
+        return False
+    if _NEGATION_ACTION_RE.search(text):
+        return True
+    # 「算了，别管了」这类收尾否定 + 任何动作词
+    return any(t in text for t in _NEGATION_TAIL)
+
+
 # ---------- 动作词表（长词优先，避免「全体禁言」被「禁言」抢先匹配） ----------
 _WHOLE_BAN_WORDS = ("全体禁言", "全员禁言", "全禁", "全体闭嘴", "所有人闭嘴")
 _WHOLE_HINTS = ("全体", "全员", "全群", "所有人", "每个人", "大家", "整个群")
@@ -142,7 +175,11 @@ class LocalIntentParser:
             return None
 
         # 去掉 @机器人 段与礼貌前缀
-        text = re.sub(r"@\S+\s*", "", text).strip()
+        # 去掉 @提及本身。注意**不能**用 ``@\S+``：它会一路吃掉后面紧邻的时长，
+        # 于是「禁言@张三10分钟」被削成「禁言」，时长退化成默认 60 秒。
+        # 这里限定「@ + 不含空白与数字的短串」，把「10分钟」留给时长解析。
+        text = re.sub(r"@[^\s\d@]{1,32}\s*", " ", text)
+        text = text.strip()
         text = _PREFIX_RE.sub("", text)
         text = _PREFIX_RE2.sub("", text)
         text = text.strip()
@@ -151,6 +188,12 @@ class LocalIntentParser:
 
         # 目标来源：引用 / @（优先级最高，最可靠）
         target_from_ctx = self._target_from_event(event)
+
+        # 否定否决：必须在动作匹配**之前**。
+        # 「别禁言@张三」「不用禁言他」「算了别踢了」的语义与指挥相反，
+        # 此前会被照样解析成 ban/kick 并立即执行——这是最危险的一类误判。
+        if _is_negated_command(text):
+            return None
 
         # —— 按「特异性从高到低」匹配动作，避免误判 ——
         # 1) 全体禁言 / 解禁
@@ -307,10 +350,15 @@ class LocalIntentParser:
     # ---------- 时长 / 数量 ----------
     @staticmethod
     def _extract_duration_text(text: str) -> str:
-        """从文本里抽出时长片段，如「10分钟」「2小时」「1天」。"""
+        """从文本里抽出时长片段，如「10分钟」「2小时」「1天」「永久」。"""
+        # 「永久禁言」这类说法没有任何数字，此前拿不到时长就直接退回默认 60 秒，
+        # 与 /禁言 指令通道（支持 永久/无限）行为不一致。
+        if any(w in text for w in ("永久", "无限", "forever", "永远")):
+            return "永久"
         text = _norm_duration(text)
         m = re.search(
-            r"(\d+\s*(?:分钟|分|小时|个小时|秒|天))|(\d+\s*(?:m|min|h|hr|d|s)\b)",
+            r"(\d+(?:\.\d+)?\s*(?:分钟|分|小时|个小时|秒|天))|"
+            r"(\d+(?:\.\d+)?\s*(?:m|min|h|hr|d|s)\b)",
             text,
             re.IGNORECASE,
         )
@@ -321,22 +369,33 @@ class LocalIntentParser:
     @staticmethod
     def _extract_count(text: str) -> int | None:
         """抽出数量，如「清屏 20 条」。"""
-        m = re.search(r"(\d+)\s*(?:条|个)", text)
+        m = re.search(r"(\d{1,4})\s*(?:条|个)", text)
         if m:
             return int(m.group(1))
-        m = re.search(r"(?:撤回|清屏|净化)\s*(\d+)", text)
+        m = re.search(r"(?:撤回|清屏|净化)\s*(\d{1,4})", text)
         if m:
             return int(m.group(1))
         return None
 
     @staticmethod
     def _extract_new_name(text: str, words: tuple) -> str:
-        """抽出新昵称/头衔，如「给张三改名叫 阿伟」。"""
-        for pat in (r"改(?:名|昵称|名片)?(?:为|成|叫|：|:)?\s*(.+)", r"[设更]为\s*(.+)"):
+        """抽出新昵称/头衔，如「给张三改名叫 阿伟」。
+
+        注意 ``(?:昵称|名片|名)`` 的顺序：反过来写成 ``(?:名|昵称|名片)`` 时，
+        「改名片 阿伟」会先匹配到「名」，结果新名片变成「片 阿伟」。
+        """
+        for pat in (
+            r"改(?:昵称|名片|名)(?:为|成|叫|：|:)?\s*(.+)",
+            r"(?:设为|设置为|改为|改成|叫)\s*(.+)",
+        ):
             m = re.search(pat, text)
             if m:
                 val = m.group(1).strip().strip("「」\"'’‘“”")
-                val = re.sub(r"^(?:叫|为|成)\s*", "", val)
+                # 去掉可能被一起捕获的动作词前缀，如「头衔 大佬」
+                for w in tuple(words) + ("头衔", "称号", "昵称", "名片"):
+                    if val.startswith(w):
+                        val = val[len(w):].strip()
+                val = re.sub(r"^(?:叫|为|成)\s*", "", val).strip()
                 if val:
                     return val
         return ""

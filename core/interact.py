@@ -157,7 +157,8 @@ class InteractHandle(BaseHandle):
             return self.db.get_message_count(group_id, uid)
 
         def _warns():
-            expire = int(self.cfg.warning.get("warn_expire_days", 30))
+            # 与 /警告 的处置口径保持一致：按群视角读保留天数
+            expire = int(self.cfg_for(event).warning.get("warn_expire_days", 30))
             ws = self.db.get_warnings(group_id, uid, expire)
             if not ws:
                 return "✅ 暂无违规记录"

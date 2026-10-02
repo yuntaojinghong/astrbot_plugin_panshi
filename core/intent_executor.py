@@ -20,6 +20,53 @@ except Exception:
 from ..utils import get_ats, parse_duration
 
 
+def _safe_gid(event):
+    """从事件安全取群号；取不到返回 None（调用方会退化为全局配置）。"""
+    try:
+        return event.get_group_id()
+    except Exception:
+        return None
+
+
+def _as_bool(value, default: bool = False) -> bool:
+    """把模型给的「布尔」值稳妥地转成 bool。
+
+    ``bool("false")`` 是 ``True``——直接把字符串塞进 bool() 会让
+    「关闭全体禁言」执行成「开启」，因此这里显式识别常见假值写法。
+    """
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text = str(value).strip().lower()
+    if text in ("false", "0", "no", "off", "否", "不", "关", "关闭", "取消"):
+        return False
+    if text in ("true", "1", "yes", "on", "是", "开", "开启"):
+        return True
+    return default
+
+
+def _as_int(value, default: int) -> int:
+    """把模型给的数量值稳妥转成 int（「3条」「3 条」这类也能取到 3）。"""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return default
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    m = re.search(r"\d+", str(value))
+    if m:
+        try:
+            return int(m.group(0))
+        except (TypeError, ValueError):
+            return default
+    return default
+
+
 class IntentExecutor:
     """执行智能识别的结果。"""
 
@@ -43,8 +90,10 @@ class IntentExecutor:
         # 解析目标
         target = await self._resolve_target(event, intent)
 
-        # 高风险操作需确认
-        if action in ("kick", "block") and self.cfg.smart.get("smart_confirm_dangerous", True):
+        # 高风险操作需确认（按群视角读配置）
+        if action in ("kick", "block") and self.cfg.for_group(
+            _safe_gid(event)
+        ).smart.get("smart_confirm_dangerous", True):
             return self._ask_confirm(event, intent, target)
 
         return await self._dispatch(event, intent, target)
@@ -168,11 +217,13 @@ class IntentExecutor:
         if action == "block":
             return await self.normal.kick(event, target, reject=True, reason=intent.get("reason", ""))
         if action == "recall":
-            return await self.normal.recall(event, count=int(intent.get("count", 1) or 1))
+            return await self.normal.recall(event, count=_as_int(intent.get("count"), 1))
         if action == "purge":
-            return await self.normal.purge(event, count=int(intent.get("count", 30) or 30))
+            return await self.normal.purge(event, count=_as_int(intent.get("count"), 30))
         if action == "whole_ban":
-            return await self.normal.whole_ban(event, enable=bool(intent.get("enable", True)))
+            # 注意不能直接 bool()：模型偶尔给字符串 "false"，bool("false") is True，
+            # 会导致「关闭全体禁言」实际执行成「开启全体禁言」。
+            return await self.normal.whole_ban(event, enable=_as_bool(intent.get("enable"), True))
         if action == "warn":
             return await self.warning.add_warning(event, target, intent.get("reason", ""))
         if action == "query_warn":
@@ -190,24 +241,37 @@ class IntentExecutor:
         if action == "set_name":
             return await self.normal.set_group_name(event, str(intent.get("name", "")))
         if action == "essence":
-            return await self.normal.set_essence(event, enable=bool(intent.get("enable", True)))
+            return await self.normal.set_essence(
+                event, enable=_as_bool(intent.get("enable"), True)
+            )
         if action == "set_curfew":
             return await self.set_curfew(intent)
         if action == "banword_add":
-            return self._banword(str(intent.get("content", "")), add=True)
+            return self._banword(event, str(intent.get("content", "")), add=True)
         if action == "banword_del":
-            return self._banword(str(intent.get("content", "")), add=False)
+            return self._banword(event, str(intent.get("content", "")), add=False)
         return None
 
     # ========== 违禁词维护（自然语言） ==========
-    def _banword(self, word: str, add: bool) -> str:
-        """添加/删除违禁词，写入配置并持久化。"""
+    def _banword(self, event, word: str, add: bool) -> str:
+        """添加/删除违禁词，写入配置并持久化。
+
+        注意：违禁词表是**全局**配置项，这里读的是当前群视角的词表
+        （好让「删掉XX」在本群视角下能找到词），但写入始终落到全局配置，
+        避免把一次群内指令变成只对该群生效的隐藏覆盖。
+        """
         word = (word or "").strip().strip("「」\"'‘’“”")
         if not word:
             return "🤔 请告诉我具体要添加/删除哪个违禁词。"
 
         try:
-            words = [str(w) for w in (self.cfg.get("guard", "forbidden_words", []) or [])]
+            words = [
+                str(w)
+                for w in (
+                    self.cfg.for_group(_safe_gid(event)).get("guard", "forbidden_words", [])
+                    or []
+                )
+            ]
         except Exception:
             words = []
 
@@ -283,6 +347,10 @@ class IntentExecutor:
         tail = {
             "banned_now": "\n🔴 当前正处于宵禁时段，已自动开启全体禁言。",
             "lifted_now": "\n🟢 已解除全体禁言。",
+            "lift_failed": (
+                "\n⚠️ 已停止宵禁，但解除全体禁言下发失败（协议端可能未连接）。"
+                "\n请用 /全禁 关 手动兜底。"
+            ),
             "waiting": "\n🟢 已开启，到点会自动全体禁言。",
             "in_window": "\n🔴 当前正处于宵禁时段（全体禁言中）。",
             "off": "",

@@ -148,7 +148,10 @@ class PanshiWebController:
 
     async def api_import(self):
         payload = await _json_body()
-        return _ok(self.service.import_all(payload))
+        result = _ok(self.service.import_all(payload))
+        # 导入会替换全局配置与各群覆盖，必须重新同步宵禁/公告任务
+        await self._notify_saved()
+        return result
 
     async def api_groups(self):
         force = _query_bool("force")
@@ -171,14 +174,21 @@ class PanshiWebController:
         payload = await _json_body()
         config = payload.get("config", payload)
         result = _ok(self.service.update_global_config(config))
-        # 配置已落盘：通知宿主插件做即时同步（如宵禁启停），失败不影响保存结果
+        await self._notify_saved()
+        return result
+
+    async def _notify_saved(self) -> None:
+        """通知宿主插件做即时同步（宵禁启停 / 定时公告），失败不影响保存结果。
+
+        按群配置也会影响宵禁：某个群若把 ``automate.curfew_enable`` 关掉，
+        必须立刻重新同步，否则面板上「已关掉」而群里仍被执行全体禁言。
+        """
         hook = getattr(self, "on_config_saved", None)
         if callable(hook):
             try:
                 await hook()
             except Exception as e:
                 logger.warning(f"[磐石] 配置保存后同步失败: {e}")
-        return result
 
     async def api_get_group(self):
         gid = _query_str("group_id")
@@ -192,14 +202,18 @@ class PanshiWebController:
         if not gid:
             return _err("缺少参数 group_id", 400)
         config = payload.get("config", {})
-        return _ok(self.service.update_group_config(str(gid), config))
+        result = _ok(self.service.update_group_config(str(gid), config))
+        await self._notify_saved()
+        return result
 
     async def api_reset_group(self):
         payload = await _json_body()
         gid = payload.get("group_id")
         if not gid:
             return _err("缺少参数 group_id", 400)
-        return _ok(self.service.reset_group_config(str(gid)))
+        result = _ok(self.service.reset_group_config(str(gid)))
+        await self._notify_saved()
+        return result
 
 
 # ======================================================================
