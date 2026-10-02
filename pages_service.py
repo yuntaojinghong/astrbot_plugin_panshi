@@ -10,19 +10,14 @@ import copy
 import os
 from typing import Any
 
-try:
-    from astrbot.api import logger
-except Exception:  # 便于脱离 AstrBot 单测
-    import logging
-
-    logger = logging.getLogger("panshi")
+from astrbot.api import logger
 
 DEFAULT_GROUP_ID = "__default__"
 FOLLOW_DEFAULT_KEY = "follow_default"
 PLUGIN_NAME = "astrbot_plugin_panshi"
 
 # 与 metadata.yaml 保持一致的插件版本（读取失败时的兜底值）
-FALLBACK_VERSION = "v1.6.1"
+FALLBACK_VERSION = "v1.6.2"
 
 # 按群可覆盖的配置分组（与 _conf_schema.json 的分组保持一致）
 OVERRIDABLE_GROUPS = [

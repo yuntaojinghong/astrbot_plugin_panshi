@@ -10,12 +10,7 @@ from __future__ import annotations
 
 import re
 
-try:
-    from astrbot.api import logger
-except Exception:
-    import logging
-
-    logger = logging.getLogger("panshi")
+from astrbot.api import logger
 
 from ..utils import get_ats, parse_duration
 

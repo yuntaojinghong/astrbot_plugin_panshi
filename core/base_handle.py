@@ -2,12 +2,7 @@
 
 from __future__ import annotations
 
-try:
-    from astrbot.api import logger
-except Exception:
-    import logging
-
-    logger = logging.getLogger("panshi")
+from astrbot.api import logger
 
 from .errors import hint_for, humanize
 

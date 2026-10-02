@@ -6,12 +6,7 @@ import re
 import time
 from collections import deque
 
-try:
-    from astrbot.api import logger
-except Exception:
-    import logging
-
-    logger = logging.getLogger("panshi")
+from astrbot.api import logger
 
 from .base_handle import BaseHandle
 from ..utils import safe_int

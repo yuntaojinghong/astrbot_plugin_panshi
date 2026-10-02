@@ -4,13 +4,13 @@
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0.html)
 [![AstrBot](https://img.shields.io/badge/AstrBot-4.24.2%2B-orange.svg)](https://github.com/AstrBotDevs/AstrBot)
-[![Version](https://img.shields.io/badge/version-v1.6.1-green.svg)](https://github.com/yuntaojinghong/astrbot_plugin_panshi/releases)
+[![Version](https://img.shields.io/badge/version-v1.6.2-green.svg)](https://github.com/yuntaojinghong/astrbot_plugin_panshi/releases)
 
 一个为 [AstrBot](https://github.com/AstrBotDevs/AstrBot) 打造的 QQ 群管理插件，基于 NapCat / OneBot v11（`aiocqhttp`）协议。
 
 **🌐 项目主页：** https://yuntaojinghong.github.io/astrbot_plugin_panshi/
 
-> **当前版本 v1.6.1** · 32 个指令 · 8 个 LLM 工具 · 9 类功能 · 8 组配置
+> **当前版本 v1.6.2** · 32 个指令 · 8 个 LLM 工具 · 9 类功能 · 8 组配置
 
 
 ## ✨ 特色
@@ -321,6 +321,11 @@ python _selftest.py
 ## 📝 更新日志
 
 完整历史见 [Releases 页面](https://github.com/yuntaojinghong/astrbot_plugin_panshi/releases)。
+
+### v1.6.2 — 适配插件市场安全审查（日志导入规范）
+- **改为只从 `astrbot.api` 导入 logger**：此前每个模块都写成 `try: from astrbot.api import logger / except: import logging`，这个回退分支被 AstrBot 插件市场安全审查判定为「日志使用违反规范」（要求 logger 必须且只能从 `astrbot.api` 导入，禁止使用 Python 内置 `logging.getLogger`）。现已删除全部 15 个文件中的回退分支，统一为 `from astrbot.api import logger`
+- 这是审查唯一未通过项，其余（无恶意代码、无网络外联、无 `eval/exec/subprocess`、无遥测）均判定合规
+- 行为无变化：`astrbot.api.logger` 本就是 AstrBot 提供的插件专用 logger，错误/警告/信息输出位置与格式不变
 
 ### v1.6.1 — 修复「按群独立配置」与宵禁解禁的遗留问题
 - **修复 #1（按群独立配置仍不生效）**：v1.6.0 只给 `guard` / `panel` 接上了按群配置视图，欢迎语、入群审核、积分、警告阈值仍读全局值，导致面板上「独立配置」看着生效、实际没用。现已全部改走 `cfg_for()`

@@ -14,12 +14,7 @@ import os
 import re
 from typing import Any
 
-try:
-    from astrbot.api import logger
-except Exception:  # 便于脱离 AstrBot 单测
-    import logging
-
-    logger = logging.getLogger("panshi")
+from astrbot.api import logger
 
 # 配置分组的展示顺序（与 _conf_schema.json 的 key 一致）
 GROUP_ORDER = ["basic", "guard", "welcome", "warning", "smart", "activity", "automate", "interact"]

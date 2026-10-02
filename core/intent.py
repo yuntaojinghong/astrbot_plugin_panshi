@@ -12,12 +12,7 @@ from __future__ import annotations
 import json
 import re
 
-try:
-    from astrbot.api import logger
-except Exception:
-    import logging
-
-    logger = logging.getLogger("panshi")
+from astrbot.api import logger
 
 
 def _safe_group_id(event) -> str:

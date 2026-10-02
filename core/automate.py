@@ -5,12 +5,7 @@ from __future__ import annotations
 import asyncio
 import time
 
-try:
-    from astrbot.api import logger
-except Exception:
-    import logging
-
-    logger = logging.getLogger("panshi")
+from astrbot.api import logger
 
 from .base_handle import BaseHandle
 

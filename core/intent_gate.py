@@ -41,12 +41,7 @@ import hashlib
 import re
 import time
 
-try:
-    from astrbot.api import logger
-except Exception:
-    import logging
-
-    logger = logging.getLogger("panshi")
+from astrbot.api import logger
 
 
 # ---------------------------------------------------------------------------

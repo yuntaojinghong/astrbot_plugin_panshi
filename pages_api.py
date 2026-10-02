@@ -13,12 +13,7 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-try:
-    from astrbot.api import logger
-except Exception:  # 便于脱离 AstrBot 单测
-    import logging
-
-    logger = logging.getLogger("panshi")
+from astrbot.api import logger
 
 PLUGIN_NAME = "astrbot_plugin_panshi"
 

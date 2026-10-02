@@ -23,12 +23,7 @@ import asyncio
 import time
 from typing import Any
 
-try:
-    from astrbot.api import logger
-except Exception:  # 便于脱离 AstrBot 单测
-    import logging
-
-    logger = logging.getLogger("panshi")
+from astrbot.api import logger
 
 # 缓存有效期（秒）
 DEFAULT_TTL = 60

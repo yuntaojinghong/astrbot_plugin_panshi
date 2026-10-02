@@ -17,12 +17,7 @@ from __future__ import annotations
 
 import re
 
-try:
-    from astrbot.api import logger
-except Exception:  # pragma: no cover
-    import logging
-
-    logger = logging.getLogger("panshi")
+from astrbot.api import logger
 
 from ..utils import parse_duration
 
