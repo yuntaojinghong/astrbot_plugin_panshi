@@ -26,6 +26,10 @@ EXCLUDE_DIRS = {
     "__pycache__", ".git", ".idea", ".vscode", "dist", "scripts",
     "docs",  # GitHub Pages 说明站，插件运行不需要
     "panshi_data", ".ruff_cache", ".pytest_cache",
+    # 前端测试要用 jsdom；本地跑测试时它可能被装成 node_modules（甚至是软链接）。
+    # 一旦漏进包里，压缩包会从 41 个文件暴涨到上千个——必须排除。
+    "node_modules",
+    "tests",  # 测试代码不随插件分发
 }
 EXCLUDE_FILES = {
     ".DS_Store", "Thumbs.db",

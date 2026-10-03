@@ -4,13 +4,13 @@
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0.html)
 [![AstrBot](https://img.shields.io/badge/AstrBot-4.24.2%2B-orange.svg)](https://github.com/AstrBotDevs/AstrBot)
-[![Version](https://img.shields.io/badge/version-v1.6.2-green.svg)](https://github.com/yuntaojinghong/astrbot_plugin_panshi/releases)
+[![Version](https://img.shields.io/badge/version-v1.7.0-green.svg)](https://github.com/yuntaojinghong/astrbot_plugin_panshi/releases)
 
 一个为 [AstrBot](https://github.com/AstrBotDevs/AstrBot) 打造的 QQ 群管理插件，基于 NapCat / OneBot v11（`aiocqhttp`）协议。
 
 **🌐 项目主页：** https://yuntaojinghong.github.io/astrbot_plugin_panshi/
 
-> **当前版本 v1.6.2** · 32 个指令 · 8 个 LLM 工具 · 9 类功能 · 8 组配置
+> **当前版本 v1.7.0** · 32 个指令 · 8 个 LLM 工具 · 9 类功能 · 8 组配置
 
 
 ## ✨ 特色
@@ -321,6 +321,17 @@ python _selftest.py
 ## 📝 更新日志
 
 完整历史见 [Releases 页面](https://github.com/yuntaojinghong/astrbot_plugin_panshi/releases)。
+
+### v1.7.0 — 面板体验：群头像 / 插件图标 / 切换更跟手 / 恢复默认更可靠
+- **群头像**：左侧群列表显示真实群头像（协议端 `get_group_info` 不返回头像，改用按群号取的公开接口）。加载失败自动回退成首字图标，不会留破图；`loading=lazy` 让群多时首屏不受阻
+- **插件图标**：面板左上角改用插件自带的 `logo.png`（此前是一个「磐」字方块）。该图标在插件页面里的静态资源路径随 AstrBot 版本不同，因此**逐个候选路径尝试**，全部失败才回退成「磐」字
+- **切换更跟手**：
+  - 点击立即高亮 + 内容区显示加载态，不再出现"点了没反应"
+  - 加请求序号丢弃过期响应——快速连点多个群时，先前发出的请求若后返回，不会再把你后点选的群覆盖掉
+- **「恢复默认」改用页面内确认框**（不再依赖原生 `confirm()`）
+  - 原生 `confirm()` 在 iframe 未授予 `allow-modals` 时会被直接拦掉（返回 false 且不报错），而「恢复默认」正是靠它兜底的——被拦掉的表现就是**点了没反应、改不回默认配置**，且完全查不出原因
+  - 现在改为自绘对话框，不依赖该权限；「导入配置」的确认同样换掉
+- **新增 `tests/test_panel_frontend.js`**：用 jsdom 覆盖以上全部行为（头像地址与回退、图标候选逐试、加载态、自绘确认框且断言原生 `confirm()` 零调用），并接入 CI
 
 ### v1.6.2 — 适配插件市场安全审查（日志导入规范）
 - **改为只从 `astrbot.api` 导入 logger**：此前每个模块都写成 `try: from astrbot.api import logger / except: import logging`，这个回退分支被 AstrBot 插件市场安全审查判定为「日志使用违反规范」（要求 logger 必须且只能从 `astrbot.api` 导入，禁止使用 Python 内置 `logging.getLogger`）。现已删除全部 15 个文件中的回退分支，统一为 `from astrbot.api import logger`

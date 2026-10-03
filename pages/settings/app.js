@@ -22,6 +22,9 @@ const state = {
   followDefault: true,
   collapsed: {},
   keyword: "",
+  // 快速连点群列表时的请求序号：只认最后一次点选的响应，避免切错群
+  selectSeq: 0,
+  selecting: false,
 };
 
 /* ==================================================================
@@ -376,11 +379,43 @@ async function refreshGroups() {
   }
 }
 
+/**
+ * QQ 群头像地址。
+ *
+ * 协议端（NapCat）的 get_group_info 不返回群头像，所以用腾讯公开的群头像接口，
+ * 按群号直接取：https://p.qlogo.cn/gh/<群号>/<群号>/100
+ *
+ * 注意这会向腾讯发起一次请求（等于把群号告诉它）。管理员可在
+ * 「基础 → 面板显示群头像」里关掉，关掉后回退成首字图标。
+ */
+function groupAvatarUrl(groupId) {
+  const gid = String(groupId || "").trim();
+  if (!/^\d{5,12}$/.test(gid)) return "";
+  return `https://p.qlogo.cn/gh/${gid}/${gid}/100`;
+}
+
+/**
+ * 是否显示群头像。
+ *
+ * 目前固定开启。头像走的是腾讯公开接口（等于把群号发给它），
+ * 如果以后有管理员不希望外链，再加一个配置项在这里读即可——
+ * 现在不引入配置项，避免为了一个开关去动插件的配置解析链路。
+ */
+function showAvatarEnabled() {
+  return true;
+}
+
 async function selectGroup(groupId) {
   if (!groupId) return;
+
+  // 快速连点时，先发出的请求可能后返回，把后点选的群覆盖掉——
+  // 表现为"点了没反应/切错群"。用一个自增序号丢弃过期响应。
+  const seq = ++state.selectSeq;
+  setSelectionLoading(true);
   try {
     if (groupId === (state.meta.default_group_id || "__default__")) {
       const data = state.global || (await apiGet("global"));
+      if (seq !== state.selectSeq) return;
       state.global = data;
       state.selected = {
         group_id: groupId,
@@ -392,6 +427,7 @@ async function selectGroup(groupId) {
       state.draft = deepClone(data.config || {});
     } else {
       const data = await apiGet("group", { group_id: groupId });
+      if (seq !== state.selectSeq) return;
       state.selected = data;
       state.followDefault = !!data.follow_default;
       state.draft = deepClone(
@@ -401,7 +437,28 @@ async function selectGroup(groupId) {
     renderGroups();
     renderContent();
   } catch (e) {
+    if (seq !== state.selectSeq) return;
     toast("加载配置失败：" + (e.message || e), "err");
+  } finally {
+    if (seq === state.selectSeq) setSelectionLoading(false);
+  }
+}
+
+/** 切换群时的即时反馈：立刻高亮 + 内容区显示加载态，避免"点了没反应"。 */
+function setSelectionLoading(loading) {
+  state.selecting = !!loading;
+  const list = $("#groupList");
+  if (list) list.classList.toggle("busy", !!loading);
+  if (loading) {
+    const box = $("#content");
+    if (!box) return;
+    box.innerHTML = "";
+    box.appendChild(
+      el("div", { class: "placeholder" }, [
+        el("div", { class: "placeholder-icon spinner" }),
+        el("p", { text: "正在加载该群配置…" }),
+      ])
+    );
   }
 }
 
@@ -526,9 +583,76 @@ async function enableOverride() {
   }
 }
 
+/* ==================================================================
+ *  页面内确认框
+ * ================================================================== */
+
+/**
+ * 自绘确认框，代替原生 ``confirm()``。
+ *
+ * 为什么不用 confirm()：这个面板跑在 AstrBot 的 iframe 里，宿主若没给
+ * ``allow-modals``，``confirm()`` 会被直接拦掉（返回 false 或抛异常）。
+ * 而「恢复默认」正是靠 confirm() 兜底的——被拦掉就表现为**点了没反应、
+ * 改不回默认配置**，且不报任何错，很难排查。自绘对话框不依赖该权限。
+ *
+ * @returns {Promise<boolean>} 用户是否确认
+ */
+function askConfirm({ title, message, confirmText = "确定", danger = false }) {
+  return new Promise((resolve) => {
+    const overlay = el("div", { class: "modal-overlay" });
+    let done = false;
+    const finish = (ok) => {
+      if (done) return;
+      done = true;
+      document.removeEventListener("keydown", onKey);
+      overlay.remove();
+      resolve(ok);
+    };
+    const onKey = (e) => {
+      if (e.key === "Escape") finish(false);
+      if (e.key === "Enter") finish(true);
+    };
+
+    const card = el("div", { class: "modal-card" }, [
+      el("h3", { class: "modal-title", text: title }),
+      el("p", { class: "modal-msg", text: message }),
+      el("div", { class: "modal-actions" }, [
+        el("button", {
+          class: "btn ghost",
+          type: "button",
+          text: "取消",
+          onClick: () => finish(false),
+        }),
+        el("button", {
+          class: danger ? "btn danger" : "btn primary",
+          type: "button",
+          text: confirmText,
+          onClick: () => finish(true),
+        }),
+      ]),
+    ]);
+    overlay.appendChild(card);
+    overlay.addEventListener("click", (e) => {
+      if (e.target === overlay) finish(false); // 点遮罩取消
+    });
+    document.addEventListener("keydown", onKey);
+    document.body.appendChild(overlay);
+    const focusTarget = card.querySelector(".btn.primary, .btn.danger");
+    if (focusTarget) focusTarget.focus();
+  });
+}
+
 async function resetCurrentGroup() {
   if (!state.selected || state.selected.is_default) return;
-  if (!confirm("确定要清除该群的独立配置，恢复跟随全局默认吗？")) return;
+  const ok = await askConfirm({
+    title: "恢复默认配置",
+    message:
+      `确定要清除「${state.selected.group_name || state.selected.group_id}」的独立配置，` +
+      "恢复跟随全局默认吗？该群已单独改过的项会被丢弃。",
+    confirmText: "恢复默认",
+    danger: true,
+  });
+  if (!ok) return;
   try {
     const data = await apiPost("group/reset", {
       group_id: state.selected.group_id,
@@ -676,16 +800,43 @@ function groupItem({ group_id, group_name, sub, tags = [], isDefault, active }) 
       },
     },
     [
-      el("span", {
-        class: "avatar" + (isDefault ? " default" : ""),
-        text: isDefault ? "默" : (group_name || "?").slice(0, 1),
-      }),
+      buildAvatar(group_id, group_name, isDefault),
       el("div", { class: "group-meta" }, [
         el("span", { class: "group-name", text: group_name }),
         subNode,
       ]),
     ]
   );
+}
+
+/**
+ * 群头像：能取到就显示真实群头像，取不到/加载失败就回退成首字图标。
+ *
+ * 头像走的是外链图片，可能因为网络或权限失败，所以必须挂 onerror 回退，
+ * 否则会留一片空白（比首字图标更难看）。
+ */
+function buildAvatar(groupId, groupName, isDefault) {
+  const fallbackText = isDefault ? "默" : (groupName || "?").slice(0, 1);
+  const base = "avatar" + (isDefault ? " default" : "");
+
+  const url = isDefault || !showAvatarEnabled() ? "" : groupAvatarUrl(groupId);
+  if (!url) {
+    return el("span", { class: base, text: fallbackText });
+  }
+
+  const img = el("img", {
+    class: base + " avatar-img",
+    src: url,
+    alt: "",
+    loading: "lazy",       // 群多时不阻塞首屏
+    referrerPolicy: "no-referrer",
+  });
+  // 加载失败 -> 换成首字图标（把 img 替换掉，避免残留破图）
+  img.addEventListener("error", () => {
+    const span = el("span", { class: base, text: fallbackText });
+    if (img.parentNode) img.parentNode.replaceChild(span, img);
+  });
+  return img;
 }
 
 /* ==================================================================
@@ -972,13 +1123,14 @@ function importConfig() {
   input.onchange = async () => {
     const file = input.files && input.files[0];
     if (!file) return;
-    if (
-      !confirm(
-        "导入会覆盖当前的全部配置与各群独立配置，且不可撤销。\n确定继续吗？"
-      )
-    ) {
-      return;
-    }
+    const ok = await askConfirm({
+      title: "导入配置",
+      message:
+        "导入会覆盖当前的全部配置与各群独立配置，且不可撤销。确定继续吗？",
+      confirmText: "导入并覆盖",
+      danger: true,
+    });
+    if (!ok) return;
     try {
       const payload = JSON.parse(await file.text());
       const res = await apiPost("import", payload);
@@ -1081,10 +1233,48 @@ function bounceButton(btn) {
 }
 
 /* ==================================================================
+ *  品牌图标
+ * ================================================================== */
+
+/**
+ * 把品牌位的「磐」字换成插件自己的 logo.png。
+ *
+ * 为什么逐个试候选路径：这个页面由 AstrBot 的插件页面服务托管，静态资源路径
+ * 与插件目录的对应关系随版本不同（可能是 ./ 也可能是 ../），写死一个路径
+ * 在某些版本上就是 404。候选全部失败就保留「磐」字，不留白。
+ */
+function loadBrandLogo() {
+  const host = $("#brandLogo");
+  if (!host) return;
+  const candidates = String(host.dataset.candidates || "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (!candidates.length) return;
+
+  const tryNext = (idx) => {
+    if (idx >= candidates.length) return; // 全失败：保留「磐」字
+    const probe = new Image();
+    probe.onload = () => {
+      const img = el("img", {
+        class: host.className + " logo-img",
+        src: candidates[idx],
+        alt: "磐石",
+      });
+      if (host.parentNode) host.parentNode.replaceChild(img, host);
+    };
+    probe.onerror = () => tryNext(idx + 1);
+    probe.src = candidates[idx];
+  };
+  tryNext(0);
+}
+
+/* ==================================================================
  *  启动
  * ================================================================== */
 async function main() {
   spawnParticles();
+  loadBrandLogo();
 
   if (!bridge) {
     showError("未检测到 AstrBot 页面桥接（bridge）。请从 AstrBot 插件详情页打开本面板。");

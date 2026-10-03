@@ -21,7 +21,13 @@
       <!-- 顶部栏 -->
       <header class="topbar">
         <div class="brand">
-          <span class="logo">磐</span>
+          <!--
+            插件图标：用插件自带的 logo.png（随包分发）。
+            这个页面由 AstrBot 的插件页面服务托管，静态资源路径与插件目录的
+            对应关系随版本不同（可能是 ./ 也可能是 ../），所以候选路径逐个试，
+            全都取不到才回退成「磐」字——不猜单一路径，避免直接空白。
+          -->
+          <span class="logo" id="brandLogo" data-candidates="./logo.png,../logo.png">磐</span>
           <div class="titles">
             <h1>磐石 · 智能群管</h1>
             <p class="sub">

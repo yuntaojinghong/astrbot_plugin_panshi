@@ -17,3 +17,40 @@ jobs:
 
       - name: Run selftest
         run: python _selftest.py
+
+      - name: 面板前端测试（jsdom）
+        run: |
+          npm install --no-save --no-audit --no-fund jsdom
+          node tests/test_panel_frontend.js
+
+      - name: 市场审查规则校验（logger 来源 + 禁止内置 logging）
+        run: |
+          python - <<'PY'
+          # 审查方要求：logger 必须且只能从 astrbot.api 导入，严禁内置 logging。
+          # 只检查随包分发的代码（_selftest.py 不随包分发，允许自用 logging）。
+          import pathlib, re, sys
+          SKIP = {"tests", "scripts", ".github", "docs", "dist", "__pycache__"}
+          SKIP_FILES = {"_selftest.py"}
+          RULES = [
+              ("import logging", re.compile(r"^\s*import\s+logging\s*$", re.M)),
+              ("from logging", re.compile(r"^\s*from\s+logging\b", re.M)),
+              ("logging.getLogger", re.compile(r"logging\s*\.\s*getLogger")),
+              ("logging.<level>()", re.compile(
+                  r"\blogging\s*\.\s*(?:info|warning|error|debug|exception|critical)\s*\(")),
+          ]
+          bad = []
+          for path in pathlib.Path(".").rglob("*.py"):
+              if SKIP & set(path.parts) or path.name in SKIP_FILES:
+                  continue
+              text = path.read_text(encoding="utf-8", errors="replace")
+              for label, pat in RULES:
+                  for m in pat.finditer(text):
+                      line = text[: m.start()].count("\n") + 1
+                      bad.append(f"{path}:{line} <{label}> {text.splitlines()[line-1].strip()[:70]}")
+          if bad:
+              print("发现违反市场审查规则的写法：")
+              for item in bad:
+                  print("  ", item)
+              sys.exit(1)
+          print("OK: logger 只从 astrbot.api 导入")
+          PY

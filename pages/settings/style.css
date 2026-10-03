@@ -796,6 +796,91 @@ body::before {
 .avatar.default {
   background: linear-gradient(135deg, var(--accent), #a06cff);
 }
+
+/* 真实群头像：与首字图标同尺寸同圆角，object-fit 防止非方形图被拉伸 */
+img.avatar-img {
+  object-fit: cover;
+  padding: 0;
+  background: var(--panel-hover, #2a2f3a);
+  box-shadow: var(--shadow-sm);
+}
+
+/* 品牌图标用插件自带 logo.png 时去掉文字底色 */
+img.logo-img {
+  object-fit: cover;
+  padding: 0;
+  background: none;
+  box-shadow: var(--shadow-sm);
+}
+
+/* 切换群时的加载反馈：列表变暗并禁止点击 + 内容区转圈，避免"点了没反应" */
+.group-list.busy {
+  opacity: 0.55;
+  pointer-events: none;
+  transition: opacity 0.12s ease;
+}
+.spinner {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  border: 3px solid rgba(128, 128, 128, 0.25);
+  border-top-color: var(--accent);
+  animation: spin 0.75s linear infinite;
+  font-size: 0; /* 覆盖 .placeholder-icon 的字号，不然会撑开 */
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* 页面内确认框（代替可能被 iframe 权限拦掉的 confirm()） */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: grid;
+  place-items: center;
+  background: rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(2px);
+  animation: modal-fade 0.12s ease;
+}
+.modal-card {
+  width: min(420px, calc(100vw - 40px));
+  padding: 20px;
+  border-radius: 14px;
+  background: var(--panel, #1b1f27);
+  border: 1px solid rgba(128, 128, 128, 0.22);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.4);
+  animation: modal-pop 0.14s ease;
+}
+.modal-title {
+  margin: 0 0 8px;
+  font-size: 15.5px;
+}
+.modal-msg {
+  margin: 0 0 18px;
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--muted, #9aa3b2);
+  white-space: pre-line;
+}
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 9px;
+}
+@keyframes modal-fade {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes modal-pop {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.98);
+  }
+}
 .group-meta {
   min-width: 0;
   display: flex;
