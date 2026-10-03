@@ -91,7 +91,25 @@ class BaseHandle:
         return f"{reason}\n💡 {tip}" if tip else reason
 
     def stop(self, event) -> None:
-        """阻止事件继续向后传播（避免触发其他插件/LLM）。"""
+        """阻止事件继续向后传播（避免触发其他插件/LLM）。
+
+        同时打上 ``panshi.consumed`` 标记：这条消息是**磐石按管理指令/风控
+        主动处理掉**的，不该被别的插件当成"群友的普通发言"再去学习或接话。
+
+        为什么要这个标记：学习类插件（如自进化）需要区分两种完全不同的
+        「事件已停止」：
+
+        - **磐石处理掉了**（比如「全体禁言」被当指令执行）→ 不该学习
+        - **AstrBot 觉得不需要回复**（普通群消息没 @ 机器人）→ 恰恰是最该学的
+          隐式反馈素材
+
+        只靠 ``event.is_stopped()`` 分不开这两者，会把后者全部误判成前者。
+        所以这里显式留痕，让伙伴插件有可靠的判据。
+        """
+        try:
+            event.set_extra("panshi.consumed", True)
+        except Exception:
+            pass
         try:
             event.stop_event()
         except Exception:

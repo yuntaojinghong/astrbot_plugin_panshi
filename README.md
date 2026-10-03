@@ -4,13 +4,13 @@
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0.html)
 [![AstrBot](https://img.shields.io/badge/AstrBot-4.24.2%2B-orange.svg)](https://github.com/AstrBotDevs/AstrBot)
-[![Version](https://img.shields.io/badge/version-v1.7.1-green.svg)](https://github.com/yuntaojinghong/astrbot_plugin_panshi/releases)
+[![Version](https://img.shields.io/badge/version-v1.7.2-green.svg)](https://github.com/yuntaojinghong/astrbot_plugin_panshi/releases)
 
 一个为 [AstrBot](https://github.com/AstrBotDevs/AstrBot) 打造的 QQ 群管理插件，基于 NapCat / OneBot v11（`aiocqhttp`）协议。
 
 **🌐 项目主页：** https://yuntaojinghong.github.io/astrbot_plugin_panshi/
 
-> **当前版本 v1.7.1** · 32 个指令 · 8 个 LLM 工具 · 9 类功能 · 8 组配置
+> **当前版本 v1.7.2** · 32 个指令 · 8 个 LLM 工具 · 9 类功能 · 8 组配置
 
 
 ## ✨ 特色
@@ -322,7 +322,7 @@ python _selftest.py
 
 完整历史见 [Releases 页面](https://github.com/yuntaojinghong/astrbot_plugin_panshi/releases)。
 
-### v1.7.1 — 修复两个线上 bug：「按群配置静默失效」与「关闭全体禁言反被开启」
+### v1.7.2 — 修复两个线上 bug：「按群配置静默失效」与「关闭全体禁言反被开启」
 - **修复：按群独立配置静默失效**（日志 `cannot pickle '_thread.lock' object`）
   - **现象**：群里每条消息都打三条警告/错误——`读取按群配置失败，已退化为全局配置`、`自动回复异常`、`智能识别异常`，**按群独立配置完全不生效**
   - **根因**：AstrBot 传入的配置对象 `AstrBotConfig` 是 `dict` 子类，但实例上挂了
