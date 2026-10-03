@@ -30,9 +30,15 @@ from ..utils import parse_duration
 # 「别」单独出现不算否定：像「别人一直在刷屏，管一下」里的「别」只是
 # 「别人」的一部分，按裸子串匹配会把真实的举报丢掉。因此要求
 # 「否定词 + 可选修饰 + 动作词」出现在一起才算否定指令。
+# 「别/不要/……让机器人**别做**某事」才是否定指令。
+#
+# **「取消」「停止」不在此列**：它们是「关掉某个已开启功能」的正常指令动词，
+# 不是对动作的否定。「取消全体禁言」「停止全体禁言」必须被解析成
+# whole_ban/False；此前它俩被当成否定前缀，整句直接返回 None——
+# 于是既没关掉全体禁言，也不回复，用户再喊一次「关闭全体禁言」又被判成开启。
 _NEGATION_ACTION_RE = re.compile(
-    r"(?:别|不要|不用|不必|无需|甭|请勿|停止|取消|撤销|拒绝)\s*"
-    r"(?:再|去|给我|给他|给他|把他|把她|把|帮忙|帮我|随便|乱)?\s*"
+    r"(?:别|不要|不用|不必|无需|甭|请勿|拒绝)\s*"
+    r"(?:再|去|给我|给他|把他|把她|把|帮忙|帮我|随便|乱)?\s*"
     r"(?:禁言|解禁|踢|拉黑|撤回|删|清理|清屏|净化|全禁|全体禁言|闭嘴|"
     r"警告|改名|改名片|头衔|上管|下管|公告|设精|精华|群名|封|处理|管|安排|宵禁)"
 )
@@ -82,6 +88,54 @@ _CN_NUM = {
     "零": 0, "一": 1, "两": 2, "二": 2, "三": 3, "四": 4, "五": 5,
     "六": 6, "七": 7, "八": 8, "九": 9, "十": 10,
 }
+
+# 「关闭/停用」类否定动词，必须**紧贴**在对象关键词旁边才算否定。
+#
+# 为什么不能像 _UNBAN_HINTS 那样当成全局词表用：
+# 「关闭」既可以修饰全体禁言（关闭全体禁言 = 解除），也可以修饰宵禁
+# （关闭宵禁 = 停用宵禁功能）。把它们混在一个 contains 判断里，
+# 「关闭宵禁」就会被误判成「解除全体禁言」。所以这里按「关键词邻近」匹配。
+_NEGATE_BEFORE = r"(?:关闭|关掉|关一下|取消|停止|停掉|解除|解除掉|撤销|撤掉|停用|禁用|不要|别|不用|关)\s*"
+_NEGATE_AFTER = r"\s*(?:关闭|关掉|取消|停止|停掉|解除|撤销|撤掉|停用|禁用|关掉吧|关了|关一下)"
+
+
+def _is_negated(text: str, keyword: str) -> bool:
+    """判断 ``keyword``（如「全体禁言」）是否被否定动词修饰。
+
+    同时覆盖前置与后置两种语序：
+
+    - 「**关闭**全体禁言」「别全体禁言」 -> True
+    - 「全体禁言**关掉**」              -> True
+    - 「全体禁言」                      -> False
+
+    注意「关闭宵禁」不会命中：关键词必须是真的出现在文本里的那个词，
+    而「宵禁」里没有「禁言」，所以不会互相误伤。
+    """
+    if not text or keyword not in text:
+        return False
+    key = re.escape(keyword)
+    return bool(
+        re.search(_NEGATE_BEFORE + key, text) or re.search(key + _NEGATE_AFTER, text)
+    )
+
+
+# 「别开 X」「不要开启 X」：否定词修饰的是**开启动作**本身。
+# 不能把「开」并进 _NEGATE_BEFORE——那样「开会全体禁言」里的「开」也会被算成
+# 开启动词。这里要求「开」后面紧跟开启动词的余下部分或直接跟对象词。
+_NEGATE_THEN_OPEN_RE = re.compile(
+    r"(?:别|不要|不用|不必|无需|甭|请勿)\s*(?:再|去|给我|把|帮忙|帮我)?\s*"
+    r"(?:开|开启|打开|启用)\s*(?:启|一下|着)?\s*"
+    r"(?:全体|全员|全群|所有人|每个人|大家|整个群|禁言|闭嘴|全禁|宵禁|夜间)"
+)
+
+
+def _is_negated_open(text: str) -> bool:
+    """「别开全体禁言」这类：否定词修饰的是**开启动作**。
+
+    这种句子不是"开启"。判成"解除"最贴近意图（管理员不希望它开着）；
+    至少绝不能反过来执行成开启——那正是用户报障的方向性错误。
+    """
+    return bool(text) and bool(_NEGATE_THEN_OPEN_RE.search(text))
 
 # 目标指代关键词（模糊指代 -> recent_offender）
 _OFFENDER_HINTS = (
@@ -191,6 +245,13 @@ class LocalIntentParser:
             return None
 
         # —— 按「特异性从高到低」匹配动作，避免误判 ——
+
+        # 0) 宵禁必须排在「全体禁言」**之前**。
+        #    因为「关闭宵禁」里含「关闭」，而宵禁本身就是靠全体禁言实现的，
+        #    曾被整段误判成 whole_ban。宵禁有明确的设置动作，特异性最高。
+        if any(w in text for w in _CURFEW_WORDS):
+            return self._parse_curfew(text)
+
         # 1) 全体禁言 / 解禁
         #    先判「全体 + 禁言」的任意组合（允许「把全体都禁言了」这类插入字）
         is_whole = any(w in text for w in _WHOLE_HINTS)
@@ -201,18 +262,21 @@ class LocalIntentParser:
         if is_whole and is_unban:
             return {"action": "whole_ban", "enable": False}
         if is_whole and has_ban_verb:
+            # 「关闭全体禁言」这类否定语序必须判成解除。
+            # 此前它落进下面那条兜底分支被判成 enable=True，
+            # 于是管理员让关，机器人回「已开启全体禁言」——正是实测报障的现象。
+            if any(_is_negated(text, w) for w in _WHOLE_BAN_WORDS) or _is_negated_open(text):
+                return {"action": "whole_ban", "enable": False}
             return {"action": "whole_ban", "enable": True}
         if any(w in text for w in _UNBAN_WORDS) and is_whole:
             return {"action": "whole_ban", "enable": False}
         if any(w in text for w in _WHOLE_BAN_WORDS):
-            # 「解除全体禁言」已在上面处理
+            # 「解除全体禁言」「关闭全体禁言」都已在上面的否定判定里处理
+            if any(_is_negated(text, w) for w in _WHOLE_BAN_WORDS):
+                return {"action": "whole_ban", "enable": False}
             return {"action": "whole_ban", "enable": True}
 
-        # 2) 宵禁
-        if any(w in text for w in _CURFEW_WORDS):
-            return self._parse_curfew(text)
-
-        # 3) 违禁词
+        # 2) 违禁词
         if any(re.search(w, text) for w in _BANWORD_ADD_WORDS):
             word = self._extract_banword(text, add=True)
             return {"action": "banword_add", "content": word} if word else None

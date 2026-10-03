@@ -4,13 +4,13 @@
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0.html)
 [![AstrBot](https://img.shields.io/badge/AstrBot-4.24.2%2B-orange.svg)](https://github.com/AstrBotDevs/AstrBot)
-[![Version](https://img.shields.io/badge/version-v1.7.0-green.svg)](https://github.com/yuntaojinghong/astrbot_plugin_panshi/releases)
+[![Version](https://img.shields.io/badge/version-v1.7.1-green.svg)](https://github.com/yuntaojinghong/astrbot_plugin_panshi/releases)
 
 一个为 [AstrBot](https://github.com/AstrBotDevs/AstrBot) 打造的 QQ 群管理插件，基于 NapCat / OneBot v11（`aiocqhttp`）协议。
 
 **🌐 项目主页：** https://yuntaojinghong.github.io/astrbot_plugin_panshi/
 
-> **当前版本 v1.7.0** · 32 个指令 · 8 个 LLM 工具 · 9 类功能 · 8 组配置
+> **当前版本 v1.7.1** · 32 个指令 · 8 个 LLM 工具 · 9 类功能 · 8 组配置
 
 
 ## ✨ 特色
@@ -321,6 +321,26 @@ python _selftest.py
 ## 📝 更新日志
 
 完整历史见 [Releases 页面](https://github.com/yuntaojinghong/astrbot_plugin_panshi/releases)。
+
+### v1.7.1 — 修复两个线上 bug：「按群配置静默失效」与「关闭全体禁言反被开启」
+- **修复：按群独立配置静默失效**（日志 `cannot pickle '_thread.lock' object`）
+  - **现象**：群里每条消息都打三条警告/错误——`读取按群配置失败，已退化为全局配置`、`自动回复异常`、`智能识别异常`，**按群独立配置完全不生效**
+  - **根因**：AstrBot 传入的配置对象 `AstrBotConfig` 是 `dict` 子类，但实例上挂了
+    `_save_state_lock` / `_save_commit_lock`（`threading.Lock`）。`for_group()` 里的
+    `copy.deepcopy` 对 dict 子类会去 pickle 它的 `__dict__`，撞上锁直接抛
+    `TypeError: cannot pickle '_thread.lock' object`；异常被 `cfg_for()` 的兜底
+    catch 成「退化为全局配置」——**不崩溃、不报错，只是按群配置全部失效**
+  - **修法**：`_safe_deepcopy()` 先试常规深拷贝，失败则只取字典内容再深拷（只丢实例属性、不丢配置数据）
+  - **为什么以前没发现**：自测里的配置一直是普通 `dict`，`deepcopy` 不走 `__dict__`，所以永远复现不出来。现已补上「带锁配置对象」的回归用例
+- **修复：说「关闭全体禁言」却被执行成「开启」**（实测对同一个群连说三次，三次都被开启）
+  - **根因**：本地规则的动作词表里，解除侧只有 `解禁 / 解除 / 取消 / 放开 / 恢复 / 开禁`，**没有「关闭」**。于是「关闭全体禁言」落到兜底分支命中「全体禁言」→ 判成 `enable=True`。而本地规则在 `main.py` 里**先于** LLM 闸门运行，所以它一口咬定要开启，根本不问模型
+  - **修法**：按「否定动词**紧邻**关键词」判定（`_is_negated`），而不是往全局词表里塞「关闭」——后者会把「关闭宵禁」也误判成解除全体禁言
+  - 顺带把「取消/停止」从**否定前缀**里移除：它们是「关掉某功能」的正常指令动词，此前被判成否定指令后整句返回 `None`，于是既没关掉、也不回复
+  - 新增 `_is_negated_open()` 处理「别开全体禁言」这类否定修饰开启动作的语序
+  - **宵禁路由**：`set_curfew` 提到 `whole_ban` 之前判定（「关闭宵禁」里含「关闭」，且宵禁本就靠全体禁言实现，容易被整段抢走）
+- 新增自测回归：`FOR_GROUP_LOCKED_CONFIG_OK`、`WHOLE_BAN_NEGATION_OK`、
+  `WHOLE_BAN_E2E_OK`（连回复文案一起断言）、`CURFEW_ROUTING_OK`、`TOGGLE_DIRECTION_OK`
+  （穷举「关闭/取消/停止/别开 X」不得产生 `enable=True`，同时确认开启侧没被修死）
 
 ### v1.7.0 — 面板体验：群头像 / 插件图标 / 切换更跟手 / 恢复默认更可靠
 - **群头像**：左侧群列表显示真实群头像（协议端 `get_group_info` 不返回头像，改用按群号取的公开接口）。加载失败自动回退成首字图标，不会留破图；`loading=lazy` 让群多时首屏不受阻

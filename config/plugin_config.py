@@ -31,6 +31,31 @@ GROUP_ICONS = {
 }
 
 
+def _safe_deepcopy(value):
+    """深拷贝，但容忍「带线程锁的 dict 子类」。
+
+    为什么需要它：AstrBot 传进来的配置对象是 ``AstrBotConfig``——它是 ``dict``
+    的子类，但实例上挂了 ``_save_state_lock`` / ``_save_commit_lock``
+    （``threading.Lock``）。``copy.deepcopy`` 对 dict 子类会去 pickle 它的
+    ``__dict__``，撞上锁就抛::
+
+        TypeError: cannot pickle '_thread.lock' object
+
+    这个异常会一路冒到 ``cfg_for()``，被兜底 catch 成
+    「读取按群配置失败，已退化为全局配置」——**按群配置静默失效**，
+    而日志里只有一句 pickle 报错，根因很难看出来。
+
+    修法：先试常规 deepcopy；失败则只取字典内容（``dict(value)``）再深拷贝。
+    只丢实例属性、不丢任何配置数据，因此对配置语义没有影响。
+    """
+    try:
+        return copy.deepcopy(value)
+    except Exception:
+        if isinstance(value, dict):
+            return copy.deepcopy(dict(value))
+        raise
+
+
 class PluginConfig:
     """插件配置访问器。
 
@@ -256,7 +281,7 @@ class PluginConfig:
 
         # override 结构为「与全局的差异」的扁平字典：
         # {"follow_default": False, "guard": {...}, "automate": {...}}
-        merged_raw = _deep_merge(copy.deepcopy(self.raw), override)
+        merged_raw = _deep_merge(_safe_deepcopy(self.raw), override)
         view = PluginConfig(merged_raw, self.context)
         view._schema = self._schema
         view._plugin_dir = self._plugin_dir
@@ -371,13 +396,13 @@ class PluginConfig:
                 if not isinstance(fnode, dict):
                     continue
                 default = fnode.get("default")
-                bucket[fkey] = copy.deepcopy(grp.get(fkey, default))
+                bucket[fkey] = _safe_deepcopy(grp.get(fkey, default))
             out[gkey] = bucket
 
         # 兼容：如果 schema 读取失败，直接按常见分组回退
         if not out:
             for gkey in GROUP_ORDER:
-                out[gkey] = copy.deepcopy(self._group(gkey))
+                out[gkey] = _safe_deepcopy(self._group(gkey))
         return out
 
     def _field_index(self) -> dict[tuple[str, str], dict]:

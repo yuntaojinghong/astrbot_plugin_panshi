@@ -1230,6 +1230,41 @@ def test_per_group_runtime():
 
     tmp, cfg, db = stack()
     try:
+        # --- 回归：raw 是 AstrBotConfig 那种「带线程锁的 dict 子类」时，
+        #     for_group 不能炸。
+        #
+        #     线上日志：
+        #       [磐石] 读取按群配置失败，已退化为全局配置: cannot pickle '_thread.lock' object
+        #     根因：AstrBotConfig 继承 dict，但实例上挂了 _save_state_lock /
+        #     _save_commit_lock（threading.Lock）。copy.deepcopy 对 dict 子类会去
+        #     pickle 它的 __dict__，撞上锁直接抛 TypeError，异常冒到 cfg_for()
+        #     被兜底 catch 成「退化为全局配置」——**按群配置静默失效**。
+        #
+        #     为什么以前没测出来：这里的 cfg 用的是普通 dict，deepcopy 不走 __dict__。
+        import threading
+
+        class _LockedConfig(dict):
+            """模拟真实 AstrBotConfig：dict 子类 + 实例上挂锁。"""
+
+            def __init__(self, *a, **k):
+                super().__init__(*a, **k)
+                self._save_state_lock = threading.Lock()
+                self._save_commit_lock = threading.Lock()
+                self._save_revision = 0
+
+            def save_config(self, replace_config=None, indent=None):
+                return True
+
+        locked_cfg = PluginConfig(_LockedConfig(global_cfg))
+        locked_cfg.bind_storage(db)
+        db.set_group_override(GID, "follow_default", False)
+        db.set_group_override(GID, "guard", {"spam_count": 9})
+        view = locked_cfg.for_group(GID)
+        assert view.guard.get("spam_count") == 9, (
+            f"带锁配置对象下按群覆盖没生效（又退化全局了）: {view.guard.get('spam_count')}"
+        )
+        print("FOR_GROUP_LOCKED_CONFIG_OK")
+
         # --- welcome.welcome_enable 按群关闭 ---
         db.set_group_override(GID, "follow_default", False)
         db.set_group_override(GID, "welcome", {"welcome_enable": False})
@@ -1511,6 +1546,142 @@ def test_issue_regressions(inst):
         got = parser.parse(_Ev(text, ats), text)
         assert got is None, f"否定指令 {text!r} 竟被解析成 {got!r}"
     print("NEGATION_GUARD_OK")
+
+    # 2b) 全体禁言的「关闭」语序（用户实测报障）
+    #     日志：管理员说「关闭全体禁言」，机器人回「🔇 已开启全体禁言」，
+    #     连说三次三次都被开启。
+    #     根因：_UNBAN_HINTS 里没有「关闭」，句子落到兜底分支命中「全体禁言」
+    #     → enable=True。修法是按「否定动词紧邻关键词」判定，
+    #     而不是往全局词表里塞「关闭」——后者会把「关闭宵禁」也误判成解除全体禁言。
+    for text, want in (
+        ("关闭全体禁言", False),
+        ("关闭全体禁言。", False),
+        ("关掉全体禁言", False),
+        ("把全体禁言关掉", False),
+        ("全体禁言关掉", False),
+        ("停止全体禁言", False),
+        ("停用全体禁言", False),
+        ("取消全体禁言", False),
+        ("全体禁言取消", False),
+        ("解除全体禁言", False),
+        ("关闭全员禁言", False),
+        ("关闭全禁", False),
+        # 开启侧不能回归
+        ("全体禁言", True),
+        ("开启全体禁言", True),
+        ("打开全体禁言", True),
+        ("全员禁言", True),
+        ("全禁", True),
+        ("把全体都禁言了", True),
+    ):
+        got = parser.parse(_Ev(text, ()), text)
+        assert got is not None, f"{text!r} 竟解析不出意图"
+        assert got.get("action") == "whole_ban", f"{text!r} -> {got!r}"
+        assert got.get("enable") is want, f"{text!r} 期望 enable={want}，实际 {got!r}"
+    print("WHOLE_BAN_NEGATION_OK")
+
+    # 2b-2) 端到端：不只解析对，**下发参数与回复文案**也要对。
+    #       用户看到的是「🔇 已开启全体禁言」，所以必须断言回复文案——
+    #       只断言 enable 会漏掉「解析对了但回复写反」这类问题。
+    class _WholeBanNormal:
+        def __init__(self, cfg):
+            from astrbot_plugin_panshi.core.normal import NormalHandle
+
+            self._h = NormalHandle(cfg, None)
+
+        async def whole_ban(self, event, enable):
+            return await self._h.whole_ban(event, enable)
+
+    class _Cli:
+        def __init__(self):
+            self.calls = []
+
+        async def __call__(self, action, **params):
+            self.calls.append((action, params))
+            return {"status": "ok", "retcode": 0}
+
+    class _BanBot:
+        def __init__(self, cli):
+            self._cli = cli
+
+        def __getattr__(self, name):
+            async def _m(**kw):
+                return await self._cli(name, **kw)
+
+            return _m
+
+    class _BanEv:
+        def __init__(self, text, cli):
+            self.message_str = text
+            self.bot = _BanBot(cli)
+
+        def get_group_id(self):
+            return 1077250302
+
+        def get_sender_id(self):
+            return 2226175932
+
+        def get_self_id(self):
+            return 3823105457
+
+        def get_messages(self):
+            return []
+
+        def stop_event(self):
+            pass
+
+    for text, want_enable, want_word in (
+        ("关闭全体禁言", False, "已解除"),
+        ("把全体禁言关掉", False, "已解除"),
+        ("全体禁言", True, "已开启"),
+    ):
+        from astrbot_plugin_panshi.core.intent_executor import IntentExecutor
+
+        cfg2 = PluginConfig({"basic": {"default_ban_time": 60}})
+        p2 = LocalIntentParser(cfg2)
+        cli = _Cli()
+        ev = _BanEv(text, cli)
+        it = p2.parse(ev, text)
+        assert it is not None, f"{text!r} 解析失败"
+        ex = IntentExecutor(cfg2, None, None, _WholeBanNormal(cfg2), None)
+        reply = asyncio.run(ex.execute(ev, it))
+        api_enable = next(
+            (pr.get("enable") for a, pr in cli.calls if a == "set_group_whole_ban"), None
+        )
+        assert it.get("enable") is want_enable, f"{text!r} 解析 enable 错: {it!r}"
+        assert api_enable is want_enable, f"{text!r} 下发 enable 错: {api_enable}"
+        assert want_word in (reply or ""), f"{text!r} 回复文案错: {reply!r}"
+    print("WHOLE_BAN_E2E_OK")
+
+    # 2c) 宵禁不能被「全体禁言」抢走（「关闭」同时能修饰两者，必须分开路由）
+    for text, want_enable in (
+        ("关闭宵禁", False),
+        ("关闭夜间禁言", False),
+        ("开启宵禁", True),
+    ):
+        got = parser.parse(_Ev(text, ()), text)
+        assert got is not None, f"{text!r} 竟解析不出意图"
+        assert got.get("action") == "set_curfew", f"{text!r} 被误判成 {got!r}"
+        assert got.get("enable") is want_enable, f"{text!r} -> {got!r}"
+    print("CURFEW_ROUTING_OK")
+
+    # 2d) 开关方向总检：任何「关闭/取消/停止/别开 X」都**不得**产生 enable=True。
+    #     这类方向性错误在群里表现为"我让它关，它给我开"，观感极差，
+    #     所以在自测里做一次穷举兜底。
+    for text in (
+        "关闭全体禁言", "关闭宵禁", "取消全体禁言", "停止全体禁言",
+        "关掉全体禁言", "停用全体禁言", "别开全体禁言", "别开启全体禁言",
+        "把全体禁言关掉", "全体禁言关掉",
+    ):
+        got = parser.parse(_Ev(text, ()), text) or {}
+        assert got.get("enable") is not True, (
+            f"方向性错误：{text!r} 被判成开启 -> {got!r}"
+        )
+    # 开启侧仍必须为 True（别把功能一起修死）
+    for text in ("全体禁言", "开启全体禁言", "打开全体禁言", "开启宵禁"):
+        got = parser.parse(_Ev(text, ()), text) or {}
+        assert got.get("enable") is True, f"{text!r} 开启侧失效 -> {got!r}"
+    print("TOGGLE_DIRECTION_OK")
 
     # 3) 正常指令仍要能解析（否定守卫不能误伤）
     got = parser.parse(_Ev("禁言@10001 10分钟", ("10001",)), "禁言@10001 10分钟")
