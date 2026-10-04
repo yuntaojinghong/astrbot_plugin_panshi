@@ -866,12 +866,26 @@ class PanshiPlugin(Star):
     # ========== LLM 工具（供 AI 自主调用）==========
     @filter.llm_tool(name="panshi_ban_user")
     async def llm_ban(self, event: AstrMessageEvent, target: str, duration: int = 60, reason: str = ""):
-        """禁言群成员。
+        """禁言群成员。用于明确要求禁言，或辱骂、刷屏、发广告等已确认的严重违规。
+
+        **target 必须是「要被禁言的那个人」的 QQ 号，绝不能是机器人自己。**
+        按以下顺序确定 target，取到第一个可用的就停：
+        1. 消息里被 @ 的人（At 段里的 qq 号）
+        2. 被引用的那条消息的发送者
+        3. 消息里直接写出的 QQ 号
+        4. 只有"禁言他""把这人禁了"而没有 @ 或引用时，用**当前这条消息的发送者**
+           （也就是正在跟你说话的人）
+
+        拿不准是谁时**不要调用本工具**，先回一句问清楚"禁言谁"。
+        禁错人比不动作严重得多——线上出现过把机器人自己当成目标的情况。
+
+        程度判断：轻微冒犯、初犯用 panshi_warn_user（累计到阈值会自动升级）；
+        本工具只用于明确要求或严重违规。
 
         Args:
-            target(string): 目标 QQ 号
+            target(string): 要被禁言的成员 QQ 号（纯数字，不要带 @ 符号）
             duration(number): 禁言时长（秒），默认 60
-            reason(string): 禁言原因
+            reason(string): 禁言原因，用于回执和记录
         """
         if not await self._check(event):
             yield event.plain_result(self._no_perm())
@@ -893,10 +907,19 @@ class PanshiPlugin(Star):
 
     @filter.llm_tool(name="panshi_kick_user")
     async def llm_kick(self, event: AstrMessageEvent, target: str, reason: str = ""):
-        """将群成员踢出群聊（需管理员权限）。
+        """将群成员踢出群聊。**最后手段**：仅用于明确要求、或警告已累计到阈值、
+        或广告号/恶性刷屏这类没有挽回余地的情形。
+
+        只骂了一句、或第一次违规，请改用 panshi_warn_user。
+        踢出是不可逆的，用错了没法补救。
+
+        **target 必须是「要被踢的那个人」的 QQ 号，绝不能是机器人自己。**
+        确定方式与 panshi_ban_user 相同：消息里被 @ 的人 → 被引用消息的发送者 →
+        消息里写出的 QQ 号 → 当前消息的发送者。
+        拿不准就不要调用，先问清楚。
 
         Args:
-            target(string): 目标 QQ 号
+            target(string): 要被踢出的成员 QQ 号（纯数字，不要带 @ 符号）
             reason(string): 踢出原因
         """
         if not await self._check(event):
@@ -930,11 +953,20 @@ class PanshiPlugin(Star):
 
     @filter.llm_tool(name="panshi_warn_user")
     async def llm_warn(self, event: AstrMessageEvent, target: str, reason: str = ""):
-        """警告群成员（累计达阈值会自动禁言或踢出）。
+        """警告群成员。累计到阈值会自动禁言、再升级为踢出。
+
+        **处理违规时的首选动作。** 轻度冒犯、阴阳怪气、初犯、以及机器人在群里
+        被骂但对方没有明确要求处置时，都用这个——不必立刻禁言，
+        警告本身就是威慑，而且累计机制会自动升级。
+
+        **target 必须是「被警告的那个人」的 QQ 号，绝不能是机器人自己。**
+        确定方式与 panshi_ban_user 相同：消息里被 @ 的人 → 被引用消息的发送者 →
+        消息里写出的 QQ 号 → 当前消息的发送者。
+        拿不准就不要调用，先问清楚。
 
         Args:
-            target(string): 目标 QQ 号
-            reason(string): 警告原因
+            target(string): 要被警告的成员 QQ 号（纯数字，不要带 @ 符号）
+            reason(string): 警告原因，会记入该成员的违规记录
         """
         if not await self._check(event):
             yield event.plain_result(self._no_perm())

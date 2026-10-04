@@ -256,8 +256,125 @@ def main():
     test_never_target_self()
     test_notice_dispatch()
     test_group_role_permission()
+    test_autonomous_enforcement()
 
     print("ALL_SELFTEST_PASS")
+
+
+def test_autonomous_enforcement():
+    """自主处置：说明书要让模型能认准目标，且真禁到自己时会被挡下。
+
+    线上现象（用户日志）：
+        Agent 使用工具: panshi_warn_user
+        参数: {'target': '226067490', ...}
+    226067490 是**机器人自己的 QQ**，不是骂它的人。也就是模型没认准"该处置谁"。
+
+    LLM 工具的 docstring 就是模型看到的工具说明书，所以"怎么确定目标"必须写进去。
+    这里断言两件事：
+
+    1. 三个处置工具的说明书都写明「绝不能是机器人自己」并给出识别顺序。
+    2. 即使模型真的传了机器人自己的 QQ，运行时也会被挡下（第二道防线）。
+    """
+    import asyncio
+
+    from astrbot_plugin_panshi.main import PanshiPlugin
+
+    # ---------- 1. 说明书（模型看到的就是它）----------
+    #    用一个固定短语做断言，避免因为各工具措辞略有不同而误报。
+    TARGET_RULE = "绝不能是机器人自己"
+    ORDER_HINT = "被 @ 的人"
+    for name in ("llm_ban", "llm_warn", "llm_kick"):
+        doc = (getattr(PanshiPlugin, name).__doc__ or "")
+        assert TARGET_RULE in doc, f"{name} 的说明书没写明不许把机器人当目标"
+        assert ORDER_HINT in doc, f"{name} 的说明书没给出目标识别顺序"
+
+    # 违规处置应当引导"先警告"，而不是动不动就禁言/踢人
+    warn_doc = PanshiPlugin.llm_warn.__doc__ or ""
+    assert "首选" in warn_doc, "llm_warn 应说明它是处理违规的首选动作"
+    kick_doc = PanshiPlugin.llm_kick.__doc__ or ""
+    assert "最后手段" in kick_doc, "llm_kick 应说明它是最后手段"
+
+    # ---------- 2. 运行时第二道防线 ----------
+    GID = 1077250302
+    BOT_ID = "3823105457"
+    OFFENDER = "1370874686"
+
+    class _Bot:
+        def __init__(self):
+            self.bans = []
+
+        async def get_group_member_info(self, **kw):
+            uid = str(kw.get("user_id", ""))
+            role = "admin" if uid == BOT_ID else "member"
+            return {"role": role, "card": f"成员{uid}", "nickname": f"成员{uid}"}
+
+        async def get_group_member_list(self, **kw):
+            return []
+
+        async def set_group_ban(self, **kw):
+            self.bans.append(kw)
+            return {"status": "ok", "retcode": 0}
+
+        async def delete_msg(self, **kw):
+            return {"status": "ok", "retcode": 0}
+
+    class _Ev:
+        def __init__(self):
+            self.bot = _Bot()
+            self.message_obj = types.SimpleNamespace(raw_message={})
+            self._stopped = False
+
+        def get_group_id(self):
+            return GID
+
+        def get_self_id(self):
+            return BOT_ID
+
+        def get_sender_id(self):
+            return OFFENDER
+
+        def get_sender_name(self):
+            return "某人"
+
+        def get_messages(self):
+            return []
+
+        def get_message_str(self):
+            return ""
+
+        def is_stopped(self):
+            return self._stopped
+
+        def stop_event(self):
+            self._stopped = True
+
+        def plain_result(self, text):
+            return {"text": text}
+
+    from astrbot_plugin_panshi.config import PluginConfig
+    from astrbot_plugin_panshi.data import Storage
+
+    class _Ctx:
+        def register_web_api(self, *a, **k):
+            pass
+
+    inst = PanshiPlugin(_Ctx(), {"basic": {"default_ban_time": 60}})
+
+    async def run():
+        ev = _Ev()
+        # 模型把机器人自己当成目标 —— 必须被挡下，且不能真的发出禁言请求
+        r_self = await inst.normal.set_ban(ev, BOT_ID, 60)
+        assert "机器人自己" in r_self, f"禁到自己时没有拒绝: {r_self!r}"
+        assert not ev.bot.bans, f"禁到自己时竟然真的调用了协议端: {ev.bot.bans!r}"
+
+        # 正常目标仍然要能禁言（别把防线做成把功能关掉）
+        r_ok = await inst.normal.set_ban(ev, OFFENDER, 60)
+        assert "已禁言" in r_ok, f"正常禁言失败了: {r_ok!r}"
+        assert len(ev.bot.bans) == 1, f"正常禁言没有下发: {ev.bot.bans!r}"
+        assert str(ev.bot.bans[0].get("user_id")) == OFFENDER
+
+    asyncio.run(run())
+    print("AUTONOMOUS_ENFORCEMENT_OK (目标识别说明书 + 禁到自己被挡下 + 正常目标可用)")
 
 
 def test_group_role_permission():
