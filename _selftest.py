@@ -254,8 +254,128 @@ def main():
     test_intent_gate()
     test_command_vs_question()
     test_never_target_self()
+    test_notice_dispatch()
 
     print("ALL_SELFTEST_PASS")
+
+
+def test_notice_dispatch():
+    """入群通知必须能从 on_notice 一路走到欢迎语。
+
+    线上反馈「入群没欢迎」。on_notice 原本挂着
+    `@filter.event_message_type(GROUP_MESSAGE)`，而 AstrBot 的 aiocqhttp 适配器在
+    `_convert_handle_notice_event()` 里是按「有没有 group_id」把通知事件标成
+    GROUP_MESSAGE 或 OTHER_MESSAGE 的 —— 被标成后者的通知会被该过滤器静默丢弃，
+    日志里一个字都不会有，非常难查。
+
+    本用例直接驱动 on_notice，断言：
+      · group_increase 通知能产出欢迎语
+      · 非通知事件（post_type 不是 notice）被忽略，不会误发
+      · 关闭欢迎时不再产出内容
+    """
+    import asyncio
+
+    from astrbot_plugin_panshi.main import PanshiPlugin
+
+    GID = 1077250302
+    NEWBIE = "226067490"
+
+    class _Raw:
+        """模拟 event.message_obj（AstrBot 把原始事件挂在 raw_message 上）。"""
+
+        def __init__(self, post_type="notice", notice_type="group_increase",
+                     user_id=NEWBIE, sub_type="approve"):
+            self.post_type = post_type
+            self.notice_type = notice_type
+            self.user_id = user_id
+            self.sub_type = sub_type
+
+    class _Bot:
+        def __init__(self):
+            self.calls = []
+
+        def __getattr__(self, name):
+            async def _m(**kw):
+                self.calls.append((name, kw))
+                if name == "get_group_member_info":
+                    return {"card": "", "nickname": f"新人{NEWBIE}"}
+                return {"status": "ok", "retcode": 0}
+            return _m
+
+    class _Ev:
+        def __init__(self, robot, raw):
+            self.bot = _Bot()
+            self.message_obj = raw
+            self._group = GID
+            self._self = robot
+            self._stopped = False
+
+        def get_group_id(self):
+            return self._group
+
+        def get_self_id(self):
+            return self._self
+
+        def get_sender_id(self):
+            return NEWBIE
+
+        def get_sender_name(self):
+            return "新人"
+
+        def get_messages(self):
+            return []
+
+        def is_stopped(self):
+            return self._stopped
+
+        def stop_event(self):
+            self._stopped = True
+
+        def plain_result(self, text):
+            return {"text": text}
+
+    def run_notice(cfg_extra=None, raw=None):
+        from astrbot_plugin_panshi.config import PluginConfig
+
+        cfg = {"basic": {"default_ban_time": 60}, "welcome": {"welcome_enable": True}}
+        if cfg_extra:
+            for key, val in cfg_extra.items():
+                cfg.setdefault(key, {}).update(val)
+
+        class _Ctx:
+            def register_web_api(self, *a, **k):
+                pass
+
+        inst = PanshiPlugin(_Ctx(), cfg)
+        ev = _Ev(inst.cfg.get("basic", "self_id", "") or "3823105457",
+                 raw or _Raw())
+
+        async def collect():
+            out = []
+            async for item in inst.on_notice(ev):
+                out.append(item)
+            return out
+
+        return asyncio.run(collect())
+
+    # 1) 入群通知 → 应产出欢迎语
+    got = run_notice()
+    assert got, "入群通知没有产出欢迎语 —— on_notice 分派断了"
+    text = got[0].get("text") if isinstance(got[0], dict) else str(got[0])
+    assert text and len(text.strip()) > 0, f"欢迎语是空的: {got!r}"
+    print(f"NOTICE_WELCOME_OK ({text[:26]}…)")
+
+    # 2) 非通知事件 → 不该产出任何东西（避免误发）
+    got2 = run_notice(raw=_Raw(post_type="message", notice_type="group_increase"))
+    assert not got2, f"非通知事件竟然产出了内容: {got2!r}"
+
+    # 3) 关闭欢迎 → 不产出
+    got3 = run_notice(cfg_extra={"welcome": {"welcome_enable": False}})
+    assert not got3, f"已关闭欢迎却仍然产出: {got3!r}"
+
+    # 4) 退群通知 → 有会员退群时不该崩（内容可有可无）
+    run_notice(raw=_Raw(notice_type="group_decrease"))
+    print("NOTICE_OTHER_TYPES_OK")
 
 
 # ======================================================================
