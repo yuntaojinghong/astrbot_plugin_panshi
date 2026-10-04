@@ -32,6 +32,7 @@ from .core import (
     PanelHandle,
     WarningHandle,
     WelcomeHandle,
+    looks_like_command,
 )
 from .data import GroupInfoCache, Storage
 from .utils import PermLevel, check_permission, parse_duration, parse_target
@@ -326,6 +327,8 @@ class PanshiPlugin(Star):
                 # 注意这里**不能**对普通闲聊回「权限不足」——那种提示会误伤群友。
                 if not check_permission(event, PermLevel.ADMIN, self._super_admins):
                     logger.info(f"[磐石] 本地意图命中但发送者无管理权限，已忽略：{text[:40]}")
+                    yield event.plain_result(self._no_perm())
+                    self._consume(event)
                     return
                 action = intent.get("action")
                 if action and action != "none":
@@ -340,7 +343,24 @@ class PanshiPlugin(Star):
                 return
 
             if not check_permission(event, PermLevel.ADMIN, self._super_admins):
-                logger.info(f"[磐石] 智能识别命中但发送者无管理权限，已静默忽略：{text[:40]}")
+                # 权限门槛只在「确实像管理指令」时生效。
+                #
+                # 背景：should_trigger 对任何 @机器人 的消息都返回 True，
+                # 其中包括「总结一下今天群里聊了什么」这类普通提问。若把这类
+                # 消息也拦下来，群友就再也问不了机器人的正常问题了。
+                #
+                # 反过来，像「有本事你禁言我」这种带动作词的，如果只是记条日志
+                # 就 return，事件会继续流向 AstrBot，机器人照样回一句 ——
+                # 用户看到「日志说无权限已忽略，可它还是回话了」，像是插件没生效。
+                # 所以这类必须消费掉，并明确告知无权限。
+                if looks_like_command(text):
+                    logger.info(
+                        f"[磐石] 疑似管理指令但发送者无权限，已拦截：{text[:40]}"
+                    )
+                    yield event.plain_result(self._no_perm())
+                    self._consume(event)
+                else:
+                    logger.info(f"[磐石] 普通提问，交给 AstrBot 回答：{text[:40]}")
                 return
 
             # 6d. 主通道：交给 AstrBot 已配置的模型理解（听得懂人话的关键）
@@ -383,7 +403,15 @@ class PanshiPlugin(Star):
             logger.error(f"[磐石] 智能识别异常: {e}")
 
     # ========== 入群 / 退群 / 加群申请事件 ==========
-    @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE)
+    # 通知事件（入群/退群/加群申请）刻意**不加** event_message_type 过滤。
+    #
+    # 原因：AstrBot 的 aiocqhttp 适配器在 _convert_handle_notice_event() 里按
+    # 「有没有 group_id」把通知事件标成 GROUP_MESSAGE 或 OTHER_MESSAGE。
+    # 加上 GROUP_MESSAGE 过滤后，被标成 OTHER_MESSAGE 的那部分通知会被静默丢弃，
+    # 表现就是「入群没欢迎」且日志里什么都没有，非常难查。
+    #
+    # 这里改成：只按平台适配器过滤，然后靠消息体里的 post_type/notice_type 自行判定
+    # （本来就是这么写的）。这样无论适配器把它标成哪种类型都能收到。
     @filter.platform_adapter_type(filter.PlatformAdapterType.AIOCQHTTP)
     async def on_notice(self, event: AstrMessageEvent):
         """处理群成员变动与加群申请的通知事件。"""
@@ -397,6 +425,7 @@ class PanshiPlugin(Star):
         notice_type = getattr(raw, "notice_type", None)
         group_id = get_group_id(event)
         if group_id and not self.cfg.group_enabled(group_id):
+            logger.debug(f"[磐石] 群 {group_id} 未启用，跳过通知事件 {notice_type}")
             return
 
         try:
@@ -404,9 +433,12 @@ class PanshiPlugin(Star):
             if notice_type == "group_increase":
                 user_id = str(getattr(raw, "user_id", ""))
                 sub_type = getattr(raw, "sub_type", "approve")
+                logger.info(f"[磐石] 收到入群通知：群 {group_id} 用户 {user_id} ({sub_type})")
                 result = await self.welcome.on_member_increase(event, user_id, sub_type)
                 if result:
                     yield event.plain_result(result)
+                else:
+                    logger.info("[磐石] 入群欢迎未产生内容（可能已关闭欢迎且未启用验证）")
             # 成员减少
             elif notice_type == "group_decrease":
                 user_id = str(getattr(raw, "user_id", ""))
@@ -935,6 +967,22 @@ class PanshiPlugin(Star):
     @staticmethod
     def _no_perm(level: str = "管理员") -> str:
         return f"⛔ 权限不足，该操作需要「{level}」及以上权限。"
+
+    def _consume(self, event) -> None:
+        """把事件标记为「磐石已处理」，阻止它继续流向 AstrBot 或其他插件。
+
+        用于两种情况：执行完管理动作之后，以及判定为管理指令但发送者无权限时。
+        不消费的话，事件会继续走到 LLM 那一层，机器人照样回一句，
+        于是出现「日志说已忽略，可它还是回话了」的观感。
+        """
+        try:
+            event.set_extra("panshi.consumed", True)
+        except Exception:
+            pass
+        try:
+            event.stop_event()
+        except Exception:
+            pass
 
     def _split_target_duration(self, event, arg: str) -> tuple[str | None, str]:
         """从参数里拆出目标与时长。

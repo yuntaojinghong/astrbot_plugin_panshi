@@ -67,11 +67,23 @@ class NormalHandle(BaseHandle):
             return "❓ 请 @某人、引用其消息或直接给出 QQ 号。"
 
         results = []
+        self_id = safe_int(self.safe_self_id(event))
         for tid in targets:
             uid = safe_int(tid)
             if uid is None:
                 # message_id / 匿名昵称等非数字目标：跳过，避免 int() 崩溃。
                 results.append(f"❓ 无法识别的操作对象「{tid}」，已跳过。")
+                continue
+            # 目标是机器人自己：直接拒绝。
+            # 线上出现过这种情况——模型把 @ 到自己身上的对象当成"被骂的人"，
+            # 于是插件去禁言机器人，协议端回 cannot ban admin，
+            # 而回执里的名字是机器人自己的昵称，用户看到「对 deepseek-v4.1-flash
+            # 的禁言失败」，完全看不懂发生了什么。
+            if self_id is not None and uid == self_id:
+                results.append(
+                    "❓ 操作对象是机器人自己，已跳过。"
+                    "如果本意是禁言某个群友，请 @他 或引用他的消息。"
+                )
                 continue
             name = await get_nickname(event, uid)
 
@@ -97,6 +109,14 @@ class NormalHandle(BaseHandle):
                 )
         return "\n".join(results)
 
+    @staticmethod
+    def safe_self_id(event) -> str:
+        """取机器人自身 QQ（取不到返回空串）。"""
+        try:
+            return str(event.get_self_id() or "")
+        except Exception:
+            return ""
+
     async def cancel_ban(self, event, target_id: str | int | None) -> str:
         """解除禁言。"""
         return await self.set_ban(event, target_id, 0)
@@ -121,10 +141,17 @@ class NormalHandle(BaseHandle):
             return "❓ 请 @某人、引用其消息或直接给出 QQ 号。"
 
         results = []
+        self_id = safe_int(self.safe_self_id(event))
         for tid in targets:
             uid = safe_int(tid)
             if uid is None:
                 results.append(f"❓ 无法识别的操作对象「{tid}」，已跳过。")
+                continue
+            if self_id is not None and uid == self_id:
+                results.append(
+                    "❓ 操作对象是机器人自己，已跳过。"
+                    "如果本意是踢某个群友，请 @他 或引用他的消息。"
+                )
                 continue
             name = await get_nickname(event, uid)
 

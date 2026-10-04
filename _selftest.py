@@ -252,8 +252,132 @@ def main():
     test_panel_layer()
     test_natural_language()
     test_intent_gate()
+    test_command_vs_question()
+    test_never_target_self()
 
     print("ALL_SELFTEST_PASS")
+
+
+# ======================================================================
+#  v1.7.3：权限分流与自我目标保护
+# ======================================================================
+def test_command_vs_question():
+    """区分「管理指令」与「普通提问」。
+
+    线上现象：无权限的群友 @机器人 问「总结一下今天群里聊了什么」，
+    磐石日志说「无权限已忽略」，可机器人还是回答了 —— 因为磐石只是 return，
+    没有消费事件，消息继续流向 AstrBot。
+
+    修法要在两者之间分流：
+      · 普通提问 → 放给 AstrBot 回答（拦下来群友就问不了问题了）
+      · 管理指令 → 明确回权限不足并消费事件（否则又是"日志说忽略、它却回话"）
+    """
+    from astrbot_plugin_panshi.core.intent_gate import looks_like_command
+
+    # 应当判为管理指令
+    for text in (
+        "有本事你禁言我", "禁言 5m", "把张三踢了", "撤回他刚才那条",
+        "开全体禁言", "关闭全体禁言", "给他一个警告", "改名片 阿伟",
+        "设置头衔 学霸", "发个群公告", "开启宵禁", "签到",
+        "加入违禁词 广告", "上管 @张三", "清屏",
+    ):
+        assert looks_like_command(text), f"这明明是指令，却被当成提问: {text!r}"
+
+    # 应当判为普通提问（拦下来会让群友问不了问题）
+    for text in (
+        "总结一下今天群里聊了什么",
+        "你是什么样的气候",
+        "介绍一下你自己",
+        "今天天气怎么样",
+        "我爸妈会对我说一些气话",
+        "？", "蠢鱼", "你好冷淡", "能不能对我好一点",
+        "大智若鱼～",
+    ):
+        assert not looks_like_command(text), f"这是普通提问，却被当成指令: {text!r}"
+
+    print("COMMAND_VS_QUESTION_OK")
+
+
+def test_never_target_self():
+    """禁止把机器人自己当成操作对象。
+
+    线上现象：用户说「有本事你禁言我」，模型把目标解析成了机器人自己，
+    协议端回 cannot ban admin，回执却是
+        ❌ 对 deepseek-v4.1-flash 的禁言失败：...
+    那个名字是机器人自己的昵称，用户完全看不懂发生了什么。
+
+    现在遇到「目标 == 自己」直接跳过并说明，不发那趟注定失败的 API。
+    """
+    import asyncio
+
+    from astrbot_plugin_panshi.config import PluginConfig
+    from astrbot_plugin_panshi.core.normal import NormalHandle
+
+    BOT = "3823105457"
+    OTHER = "226067490"
+
+    class _Cli:
+        def __init__(self):
+            self.calls = []
+
+        async def __call__(self, action, **params):
+            self.calls.append((action, params))
+            return {"status": "ok", "retcode": 0}
+
+    class _Bot:
+        def __init__(self, cli):
+            self._cli = cli
+
+        def __getattr__(self, name):
+            async def _m(**kw):
+                return await self._cli(name, **kw)
+            return _m
+
+    class _Ev:
+        def __init__(self, cli):
+            self.bot = _Bot(cli)
+
+        def get_group_id(self):
+            return 1001
+
+        def get_self_id(self):
+            return BOT
+
+        def get_sender_id(self):
+            return "999"
+
+        def get_sender_name(self):
+            return "群友"
+
+        def get_messages(self):
+            return []
+
+        async def get_group_member_info(self, **kw):
+            return {"card": "", "nickname": f"u{kw.get('user_id')}"}
+
+    for method, label in (("set_ban", "禁言"), ("kick", "踢出")):
+        cli = _Cli()
+        handle = NormalHandle(PluginConfig({"basic": {"default_ban_time": 60}}), None)
+        if method == "set_ban":
+            reply = asyncio.run(handle.set_ban(_Ev(cli), BOT, 300))
+        else:
+            reply = asyncio.run(handle.kick(_Ev(cli), BOT))
+        assert "机器人自己" in reply, f"{label}：目标是自己却没被拦住 -> {reply!r}"
+        # 只关心「有没有真的下发处置动作」——查昵称那步不算
+        acted = [c for c in cli.calls
+                 if c[0] in ("set_group_ban", "set_group_kick")]
+        assert not acted, f"{label}：目标是自己却仍然下发了 API 调用 -> {acted}"
+
+    # 正常目标仍要照常执行（别把功能一起修死）
+    cli = _Cli()
+    handle = NormalHandle(PluginConfig({"basic": {"default_ban_time": 60}}), None)
+    reply = asyncio.run(handle.set_ban(_Ev(cli), OTHER, 300))
+    bans = [c for c in cli.calls if c[0] == "set_group_ban"]
+    assert len(bans) == 1, f"正常禁言没下发: {cli.calls}"
+    assert bans[0][1].get("user_id") == int(OTHER), bans
+    assert "已禁言" in reply, reply
+
+    print("NEVER_TARGET_SELF_OK")
 
 
 # ======================================================================

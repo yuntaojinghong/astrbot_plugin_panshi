@@ -10,7 +10,7 @@ from .activity import ActivityHandle
 from .automate import AutomateHandle
 from .context import ContextCollector
 from .intent import IntentParser
-from .intent_gate import IntentGate
+from .intent_gate import IntentGate, looks_like_command
 from .local_intent import LocalIntentParser
 from .interact import InteractHandle
 from .panel import PanelHandle
@@ -28,6 +28,7 @@ __all__ = [
     "ContextCollector",
     "IntentParser",
     "IntentGate",
+    "looks_like_command",
     "LocalIntentParser",
     "IntentExecutor",
     "InteractHandle",
