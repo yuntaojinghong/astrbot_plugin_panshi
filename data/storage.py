@@ -49,8 +49,23 @@ class Storage:
             "users": {},
             "blacklist": {},
             "stats": {},
+            # 自主还手的冷却与当日计数（按群），需持久化以便重启后仍然限流
+            "defense": {},
         }
         self._load()
+
+    # ---------- 自主还手 ----------
+    def get_defense(self) -> dict:
+        """读取自主还手状态（供 DefenseState.from_dict）。"""
+        with self._lock:
+            d = self._data.get("defense")
+            return dict(d) if isinstance(d, dict) else {}
+
+    def set_defense(self, payload: dict) -> None:
+        """写入自主还手状态并落盘。"""
+        with self._lock:
+            self._data["defense"] = dict(payload or {})
+        self.save()
 
     # ---------- 基础读写 ----------
     def _load(self):

@@ -32,11 +32,15 @@ from .core import (
     PanelHandle,
     WarningHandle,
     WelcomeHandle,
+    DefenseState,
+    allow,
+    is_self_defense,
     looks_like_command,
 )
+from .core.intent_executor import _as_bool, _as_int
 from .data import GroupInfoCache, Storage
 from .utils import (PermLevel, check_permission, check_permission_async,
-                   parse_duration, parse_target)
+                   parse_duration, parse_target, safe_int)
 from .utils.helpers import get_group_id
 
 # 内置事件子类型常量（aiocqhttp / OneBot v11）
@@ -81,6 +85,15 @@ class PanshiPlugin(Star):
         self.interact = InteractHandle(self.cfg, self.db)
         # 面板 / 自检 / 配置向导
         self.panel = PanelHandle(self.cfg, self.db)
+
+        # 自主还手状态（按群记录冷却与当日次数，随存储持久化）
+        try:
+            self.defense = DefenseState.from_dict(self.db.get_defense())
+        except Exception as e:
+            logger.warning(f"[磐石] 读取自主还手状态失败，按空状态处理: {e}")
+            self.defense = DefenseState()
+        #: 上一次 _check_enforce 是否为"自主还手"（供工具决定处置轻重）
+        self._last_enforce_was_defense = False
 
         # 消息缓存打通：让「撤回/净化」能读到 GuardHandle 缓存的最近消息
         self.normal.bind_cache(self.guard)
@@ -887,10 +900,19 @@ class PanshiPlugin(Star):
             duration(number): 禁言时长（秒），默认 60
             reason(string): 禁言原因，用于回执和记录
         """
-        if not await self._check(event):
-            yield event.plain_result(self._no_perm())
+        allowed, deny = await self._check_enforce(event, target)
+        if not allowed:
+            yield event.plain_result(deny)
+            return
+        # 自主还手时以配置的轻重为准：mode=warn 就先记警告（警告会累计升级），
+        # 不让"还手"直接跳过用户选择的温和选项。
+        if self._last_enforce_was_defense and self._defense_config().mode == "warn":
+            yield event.plain_result(await self.warning.add_warning(
+                event, target, reason or "被 @ 辱骂后自主还手"))
             return
         seconds = self.cfg.clamp_ban_time(int(duration or 60))
+        if self._last_enforce_was_defense:
+            seconds = self.cfg.clamp_ban_time(self._defense_config().ban_seconds)
         yield event.plain_result(await self.normal.set_ban(event, target, seconds))
 
     @filter.llm_tool(name="panshi_unban_user")
@@ -922,8 +944,9 @@ class PanshiPlugin(Star):
             target(string): 要被踢出的成员 QQ 号（纯数字，不要带 @ 符号）
             reason(string): 踢出原因
         """
-        if not await self._check(event):
-            yield event.plain_result(self._no_perm())
+        allowed, deny = await self._check_enforce(event, target)
+        if not allowed:
+            yield event.plain_result(deny)
             return
         yield event.plain_result(await self.normal.kick(event, target, reject=False, reason=reason))
 
@@ -968,8 +991,9 @@ class PanshiPlugin(Star):
             target(string): 要被警告的成员 QQ 号（纯数字，不要带 @ 符号）
             reason(string): 警告原因，会记入该成员的违规记录
         """
-        if not await self._check(event):
-            yield event.plain_result(self._no_perm())
+        allowed, deny = await self._check_enforce(event, target)
+        if not allowed:
+            yield event.plain_result(deny)
             return
         yield event.plain_result(await self.warning.add_warning(event, target, reason))
 
@@ -1042,6 +1066,82 @@ class PanshiPlugin(Star):
         if group_id and not self.cfg.group_enabled(group_id):
             return False
         return await check_permission_async(event, required, self._super_admins)
+
+    async def _check_enforce(self, event, target: str,
+                             required: PermLevel = PermLevel.ADMIN) -> tuple[bool, str]:
+        """处置类工具的权限判定，带「机器人自己被骂时还手」的窄口子。
+
+        Returns:
+            ``(是否放行, 不放行时给用户看的说明)``。
+
+        顺序：
+          1. 常规判定——发送者是管理员及以上 → 放行。
+          2. 否则看是否构成**自主还手**：被处置的人就是骂机器人的人，
+             且这条消息 @ 了机器人。成立则受频率限制约束后放行。
+          3. 都不满足 → 拒绝，并给出**准确**的原因。
+
+        第 3 步的措辞很重要：旧提示是「该操作需要『管理员』及以上权限」，
+        读起来像在说"你权限不够"，而用户自己是管理员时会以为是故障
+        （线上就出现过这种反馈）。现在按情形分开说。
+        """
+        group_id = get_group_id(event)
+        if group_id and not self.cfg.group_enabled(group_id):
+            return False, self._no_perm()
+
+        # 每次判定前先清掉上一次的"还手"标记，避免跨调用串味
+        self._last_enforce_was_defense = False
+
+        if await check_permission_async(event, required, self._super_admins):
+            return True, ""
+
+        # 常规路径不通过，看是否是"它在为自己还手"
+        self_id = str(safe_int(self.normal.safe_self_id(event)) or "")
+        is_def, why = is_self_defense(event, target, self_id=self_id)
+        if not is_def:
+            return False, self._no_perm_reason(why)
+
+        cfg = self._defense_config()
+        allowed, deny = allow(self.defense, group_id, cfg)
+        if not allowed:
+            logger.info(f"[磐石] 自主还手被限流拦下：{deny}")
+            return False, f"⛔ 暂不处理：{deny}。"
+
+        logger.info(f"[磐石] 自主还手放行：处置 {target}（本群 {group_id}）")
+        try:
+            self.db.set_defense(self.defense.to_dict())
+        except Exception as e:
+            logger.warning(f"[磐石] 保存自主还手状态失败（限流计数可能丢失）: {e}")
+        # 让调用方知道这次是"还手"，以便按 defense_mode 决定用手轻手重
+        self._last_enforce_was_defense = True
+        return True, ""
+
+    def _defense_config(self):
+        from .core.defense import DefenseConfig
+
+        raw = self.cfg.get("automate", "defense_enable", False)
+        return DefenseConfig(
+            enable=_as_bool(raw),
+            cooldown_seconds=_as_int(
+                self.cfg.get("automate", "defense_cooldown_seconds", 300), 300),
+            daily_limit=_as_int(
+                self.cfg.get("automate", "defense_daily_limit", 5), 5),
+            mode=str(self.cfg.get("automate", "defense_mode", "warn") or "warn"),
+            ban_seconds=_as_int(
+                self.cfg.get("automate", "defense_ban_seconds", 600), 600),
+        )
+
+    @staticmethod
+    def _no_perm_reason(why: str) -> str:
+        """无权限时的说明。
+
+        区分两种情形，避免用户看到"你需要管理员权限"却以为是自己权限出了问题。
+        """
+        if why and ("目标不是当前发消息的人" in why):
+            return ("⛔ 该操作需要「管理员」及以上权限。\n"
+                    "（当前发消息的人没有管理权限，不能借机器人处置其他群友。）")
+        return ("⛔ 该操作需要「管理员」及以上权限。\n"
+                "（若这是机器人被 @ 辱骂后的还手，需先在插件配置里开启"
+                "「自动化 → 自主还手」。）")
 
     @staticmethod
     def _no_perm(level: str = "管理员") -> str:

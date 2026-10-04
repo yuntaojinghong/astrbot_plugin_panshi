@@ -460,6 +460,40 @@
         "description": "定时公告内容",
         "type": "string",
         "default": ""
+      },
+      "defense_enable": {
+        "description": "自主还手（被 @ 辱骂时允许机器人自己处置）",
+        "type": "bool",
+        "default": false,
+        "hint": "默认关闭。开启后：只有当被处置的人就是骂机器人的人、且那条消息 @ 了机器人时，机器人才会绕过「发送者须为管理员」的门槛自己动手。群友想让机器人去打别人（@机器人 把张三禁了）不会被放行。注意机器人需为群管理员或群主，否则协议端仍会拒绝。"
+      },
+      "defense_mode": {
+        "description": "自主还手方式",
+        "type": "string",
+        "default": "warn",
+        "options": [
+          "warn",
+          "ban"
+        ],
+        "hint": "warn = 记一次警告（推荐，警告累计到阈值会自动升级为禁言/踢出）；ban = 直接禁言，时长见下一项。"
+      },
+      "defense_ban_seconds": {
+        "description": "自主还手直接禁言的时长（秒）",
+        "type": "int",
+        "default": 600,
+        "hint": "仅在「自主还手方式」选 ban 时生效。"
+      },
+      "defense_cooldown_seconds": {
+        "description": "两次自主还手之间的最短间隔（秒）",
+        "type": "int",
+        "default": 300,
+        "hint": "防止有人反复挑衅让机器人连续动手。"
+      },
+      "defense_daily_limit": {
+        "description": "每个群每天的自主还手上限（次）",
+        "type": "int",
+        "default": 5,
+        "hint": "超过上限当天不再自主处置，避免机器人变成一把可反复使用的刀。"
       }
     }
   },

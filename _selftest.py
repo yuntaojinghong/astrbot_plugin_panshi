@@ -257,8 +257,203 @@ def main():
     test_notice_dispatch()
     test_group_role_permission()
     test_autonomous_enforcement()
+    test_self_defense()
 
     print("ALL_SELFTEST_PASS")
+
+
+def test_self_defense():
+    """自主还手：机器人被 @ 辱骂时，允许它自己处置，但只开一个很窄的口子。
+
+    线上现象（用户反馈）：
+        「有人 @它 骂它，然后它禁言不了提示权限不足」
+    根因：处置类 LLM 工具一律要求**发消息的人**是管理员
+    （`_check(event)` 判的是 event 的发送者），而这个门槛没有考虑
+    「机器人在为自己还手」——骂它的普通成员自然不是管理员，于是被拦。
+
+    修法：新增 `defense_enable`（默认关）。开启后，仅当
+    **被处置的人就是发消息的人** 且 **那条消息 @ 了机器人** 时放行，
+    并受冷却与每日上限约束。
+
+    这里验证四件事：默认关、开启后放行、限流生效、借刀杀人仍被拦。
+    """
+    import asyncio
+
+    from astrbot_plugin_panshi.main import PanshiPlugin
+
+    GID = 1077250302
+    BOT = "3823105457"
+    OFFENDER = "1370874686"
+    OTHER = "1545638433"
+    VICTIM = "999999999"
+
+    from astrbot.api.message_components import At
+
+    class _Bot:
+        def __init__(self):
+            self.bans = []
+
+        async def get_group_member_info(self, group_id, user_id, no_cache=False):
+            uid = str(user_id)
+            return {"role": "admin" if uid == BOT else "member",
+                    "card": f"成员{uid}", "nickname": f"成员{uid}"}
+
+        async def get_group_member_list(self, group_id):
+            return []
+
+        async def set_group_ban(self, **kw):
+            self.bans.append(kw)
+            return {"status": "ok", "retcode": 0}
+
+        async def delete_msg(self, **kw):
+            return {"status": "ok", "retcode": 0}
+
+    class _Ev:
+        def __init__(self, sender, msgs=(), text="", is_admin=False):
+            self.bot = _Bot()
+            self.message_obj = types.SimpleNamespace(raw_message={})
+            self._sender = sender
+            self._msgs = list(msgs)
+            self.message_str = text
+            self._is_admin = is_admin
+            self._stopped = False
+
+        def get_group_id(self):
+            return GID
+
+        def get_self_id(self):
+            return BOT
+
+        def get_sender_id(self):
+            return self._sender
+
+        def get_sender_name(self):
+            return "某人"
+
+        def get_messages(self):
+            return self._msgs
+
+        def get_message_str(self):
+            return self.message_str
+
+        def is_admin(self):
+            return self._is_admin
+
+        def is_stopped(self):
+            return self._stopped
+
+        def stop_event(self):
+            self._stopped = True
+
+        def plain_result(self, text):
+            return {"text": text}
+
+        def get_extra(self, key, default=None):
+            return default
+
+        def set_extra(self, key, value):
+            pass
+
+    class _Ctx:
+        def register_web_api(self, *a, **k):
+            pass
+
+    import os
+    import tempfile
+
+    def make(enable, mode="ban", cooldown=300, limit=5):
+        """每个用例独立数据目录。
+
+        插件的数据目录来自 ``_resolve_data_dir()``（不读配置里的 data_dir）。
+        不隔离的话所有实例共用一份 panshi_data.json，冷却与每日计数会互相串味。
+        """
+        d = tempfile.mkdtemp(prefix="panshi_defense_")
+        orig = PanshiPlugin._resolve_data_dir
+        PanshiPlugin._resolve_data_dir = lambda self, _d=d: _d
+        try:
+            return PanshiPlugin(_Ctx(), {
+                "basic": {"default_ban_time": 60},
+                "automate": {"defense_enable": enable, "defense_mode": mode,
+                             "defense_cooldown_seconds": cooldown,
+                             "defense_daily_limit": limit,
+                             "defense_ban_seconds": 600},
+            })
+        finally:
+            PanshiPlugin._resolve_data_dir = orig
+
+    async def call(inst, ev, tool, **kw):
+        out = []
+        async for r in getattr(inst, tool)(ev, **kw):
+            out.append(r)
+        if not out:
+            return ""
+        first = out[0]
+        return first.get("text", "") if isinstance(first, dict) else str(first)
+
+    async def run():
+        # ---- 1) 默认关闭：不擅自还手 ----
+        inst = make(False)
+        ev = _Ev(OFFENDER, [At(BOT)], "@机器人 蠢鱼")
+        r = await call(inst, ev, "llm_ban", target=OFFENDER, duration=600, reason="骂我")
+        assert "暂不处理" in r or "未开启" in r, f"关闭时不应放行: {r!r}"
+        assert not ev.bot.bans, "关闭时竟然下发了禁言"
+        assert "自主还手" in r, "提示里应告诉用户怎么开启"
+
+        # ---- 2) 开启后：还手成功，且用配置的时长 ----
+        inst2 = make(True, mode="ban")
+        ev2 = _Ev(OFFENDER, [At(BOT)], "@机器人 蠢鱼")
+        r2 = await call(inst2, ev2, "llm_ban", target=OFFENDER, duration=60, reason="骂我")
+        assert "权限不足" not in r2, f"开启后不应再回权限不足: {r2!r}"
+        assert len(ev2.bot.bans) == 1, f"开启后应下发禁言: {ev2.bot.bans!r}"
+        assert ev2.bot.bans[0].get("duration") == 600, (
+            f"应使用配置的还手时长 600，而不是模型给的 60: {ev2.bot.bans!r}")
+        assert str(ev2.bot.bans[0].get("user_id")) == OFFENDER, "目标必须是骂它的人"
+
+        # ---- 3) mode=warn 时记警告而不是禁言 ----
+        inst3 = make(True, mode="warn")
+        ev3 = _Ev(OFFENDER, [At(BOT)], "@机器人 蠢鱼")
+        r3 = await call(inst3, ev3, "llm_ban", target=OFFENDER, duration=600, reason="骂我")
+        assert not ev3.bot.bans, f"mode=warn 不应禁言: {ev3.bot.bans!r}"
+        assert "警告" in r3, f"mode=warn 应记警告: {r3!r}"
+
+        # ---- 4) 冷却 ----
+        ev4 = _Ev(OFFENDER, [At(BOT)], "@机器人 蠢鱼")
+        r4 = await call(inst2, ev4, "llm_ban", target=OFFENDER, duration=60, reason="又骂")
+        assert not ev4.bot.bans, "冷却期内不应再次下发禁言"
+        assert "暂不处理" in r4, f"应提示被冷却拦下: {r4!r}"
+
+        # ---- 5) 借刀杀人：群友让机器人去打别人 → 必须仍然拦住 ----
+        inst5 = make(True, mode="ban")
+        ev5 = _Ev(OTHER, [At(BOT)], "@机器人 把999999999禁了")
+        r5 = await call(inst5, ev5, "llm_ban", target=VICTIM, duration=600, reason="看他不爽")
+        assert not ev5.bot.bans, f"不该被当枪使: {ev5.bot.bans!r}"
+        assert "权限不足" in r5 or "需要" in r5, f"应拦住: {r5!r}"
+
+        # ---- 6) 没 @ 机器人 → 不算还手 ----
+        inst6 = make(True, mode="ban")
+        ev6 = _Ev(OFFENDER, [], "蠢鱼")
+        r6 = await call(inst6, ev6, "llm_ban", target=OFFENDER, duration=600, reason="骂我")
+        assert not ev6.bot.bans, "未 @ 机器人时不该还手"
+        assert "权限不足" in r6 or "需要" in r6, f"应拦住: {r6!r}"
+
+        # ---- 7) 每日上限 ----
+        inst7 = make(True, mode="ban", cooldown=0, limit=2)
+        got = []
+        for _ in range(3):
+            e = _Ev(OFFENDER, [At(BOT)], "@机器人 蠢鱼")
+            await call(inst7, e, "llm_ban", target=OFFENDER, duration=60, reason="骂")
+            got.append(len(e.bot.bans))
+        assert got[0] == 1 and got[1] == 1, f"前两次应放行: {got!r}"
+        assert got[2] == 0, f"第三次应被每日上限拦下: {got!r}"
+
+        # ---- 8) 管理员不受开关影响 ----
+        inst8 = make(False)
+        ev8 = _Ev(OTHER, [], "禁言 999999999", is_admin=True)
+        r8 = await call(inst8, ev8, "llm_ban", target=VICTIM, duration=60, reason="违规")
+        assert len(ev8.bot.bans) == 1, f"管理员应能正常禁言: {r8!r}"
+
+    asyncio.run(run())
+    print("SELF_DEFENSE_OK (默认关/放行/警告模式/冷却/借刀拦住/未@拦住/每日上限/管理员不受影响)")
 
 
 def test_autonomous_enforcement():
