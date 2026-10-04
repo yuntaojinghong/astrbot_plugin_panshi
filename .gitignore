@@ -31,3 +31,6 @@ plugin_data/
 # 系统
 .DS_Store
 Thumbs.db
+
+# 前端测试用 jsdom，本地会临时链接到 node_modules
+node_modules/
