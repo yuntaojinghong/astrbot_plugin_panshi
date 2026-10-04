@@ -35,7 +35,8 @@ from .core import (
     looks_like_command,
 )
 from .data import GroupInfoCache, Storage
-from .utils import PermLevel, check_permission, parse_duration, parse_target
+from .utils import (PermLevel, check_permission, check_permission_async,
+                   parse_duration, parse_target)
 from .utils.helpers import get_group_id
 
 # 内置事件子类型常量（aiocqhttp / OneBot v11）
@@ -236,9 +237,22 @@ class PanshiPlugin(Star):
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE)
     @filter.platform_adapter_type(filter.PlatformAdapterType.AIOCQHTTP)
     async def on_group_message(self, event: AstrMessageEvent):
-        """处理每条群消息：上下文记录 -> 防护 -> 智能识别。"""
+        """处理每条群消息：通知/申请分流 -> 上下文记录 -> 防护 -> 智能识别。
+
+        通知（入群/退群）与加群申请也走这里。原因见 ``on_notice`` 的说明：
+        AstrBot 没有 ``on_notice`` / ``on_request`` 钩子，
+        通知类事件是以普通消息事件的形式派发出来的。
+        """
         group_id = get_group_id(event)
         if group_id and not self.cfg.group_enabled(group_id):
+            return
+
+        # 0. 通知 / 申请分流。
+        #    这类事件没有聊天正文，必须在这里就地处理掉，
+        #    否则下面会把它当普通群消息去记上下文、跑风控，全是噪声。
+        if self._raw_notice(event):
+            async for result in self.on_notice(event):
+                yield result
             return
 
         message_id = self._message_id(event)
@@ -325,7 +339,10 @@ class PanshiPlugin(Star):
             if intent is not None:
                 # 本地规则命中的都是真实管理动作：先过权限门槛。
                 # 注意这里**不能**对普通闲聊回「权限不足」——那种提示会误伤群友。
-                if not check_permission(event, PermLevel.ADMIN, self._super_admins):
+                # 必须用异步版：群主/管理员的身份只能靠协议端查询拿到，
+                # 同步版会把群主判成普通成员，于是"管理员发指令被拒"。
+                if not await check_permission_async(event, PermLevel.ADMIN,
+                                                    self._super_admins):
                     logger.info(f"[磐石] 本地意图命中但发送者无管理权限，已忽略：{text[:40]}")
                     yield event.plain_result(self._no_perm())
                     self._consume(event)
@@ -342,7 +359,8 @@ class PanshiPlugin(Star):
             if not self.intent.should_trigger(event, text):
                 return
 
-            if not check_permission(event, PermLevel.ADMIN, self._super_admins):
+            if not await check_permission_async(event, PermLevel.ADMIN,
+                                                self._super_admins):
                 # 权限门槛只在「确实像管理指令」时生效。
                 #
                 # 背景：should_trigger 对任何 @机器人 的消息都返回 True，
@@ -403,77 +421,106 @@ class PanshiPlugin(Star):
             logger.error(f"[磐石] 智能识别异常: {e}")
 
     # ========== 入群 / 退群 / 加群申请事件 ==========
-    # 通知事件（入群/退群/加群申请）刻意**不加** event_message_type 过滤。
+    # 由 on_group_message 主动调用，**不加任何装饰器**。
     #
-    # 原因：AstrBot 的 aiocqhttp 适配器在 _convert_handle_notice_event() 里按
-    # 「有没有 group_id」把通知事件标成 GROUP_MESSAGE 或 OTHER_MESSAGE。
-    # 加上 GROUP_MESSAGE 过滤后，被标成 OTHER_MESSAGE 的那部分通知会被静默丢弃，
-    # 表现就是「入群没欢迎」且日志里什么都没有，非常难查。
+    # 曾经这里挂着 @filter.event_message_type / @filter.platform_adapter_type，
+    # 并把它当成框架回调。那是错的：AstrBot 没有 on_notice / on_request 钩子，
+    # 通知事件是以普通消息事件派发的。挂着装饰器只会让它永远不会被调用，
+    # 表现就是「入群没欢迎、加群申请没反应」，而且日志里一个字都没有。
     #
-    # 这里改成：只按平台适配器过滤，然后靠消息体里的 post_type/notice_type 自行判定
-    # （本来就是这么写的）。这样无论适配器把它标成哪种类型都能收到。
-    @filter.platform_adapter_type(filter.PlatformAdapterType.AIOCQHTTP)
+    # 改法与依据详见 on_notice 的 docstring。
     async def on_notice(self, event: AstrMessageEvent):
-        """处理群成员变动与加群申请的通知事件。"""
-        raw = getattr(event, "message_obj", None)
-        if raw is None:
-            return
-        post_type = getattr(raw, "post_type", None)
-        if post_type != "notice":
-            return
+        """处理群成员变动与加群申请的通知事件。
 
-        notice_type = getattr(raw, "notice_type", None)
+        .. important::
+            这个方法是 **on_group_message 主动调用的普通方法**，
+            不是框架回调——所以没有 ``@filter`` 装饰器。
+
+            原因：AstrBot v4 **不存在** ``on_notice`` / ``on_request`` 钩子。
+
+            ``astrbot.api.event.filter`` 提供的钩子是一个固定集合
+            （``on_astrbot_loaded`` / ``on_platform_loaded`` / ``on_llm_request`` /
+            ``on_llm_response`` / ``on_agent_begin`` / ``on_agent_done`` /
+            ``on_decorating_result`` / ``on_after_message_sent`` /
+            ``on_using_llm_tool`` / ``on_llm_tool_respond`` /
+            ``on_waiting_llm_request`` / ``on_plugin_*`` …），里面没有通知类钩子。
+
+            适配器的 ``notice`` / ``request`` 回调最终都走
+            ``EventBus.dispatch -> pipeline_scheduler -> 普通消息管线``，
+            也就是说**通知和申请是以普通消息事件的形式派发出来的**。
+            所以只能挂在 ``on_group_message`` 上，再按 ``post_type`` 分流。
+
+            之前把这两个方法直接挂成 ``on_notice`` / ``on_request``，
+            它们永远不会被调用——这就是「入群欢迎、入群申请一直没有」的根因。
+        """
+        raw = self._raw_notice(event)
+        if not raw:
+            return
+        post_type = raw.get("post_type")
+
         group_id = get_group_id(event)
         if group_id and not self.cfg.group_enabled(group_id):
-            logger.debug(f"[磐石] 群 {group_id} 未启用，跳过通知事件 {notice_type}")
+            logger.debug(f"[磐石] 群 {group_id} 未启用，跳过通知事件 {post_type}")
             return
 
         try:
-            # 成员增加
-            if notice_type == "group_increase":
-                user_id = str(getattr(raw, "user_id", ""))
-                sub_type = getattr(raw, "sub_type", "approve")
-                logger.info(f"[磐石] 收到入群通知：群 {group_id} 用户 {user_id} ({sub_type})")
-                result = await self.welcome.on_member_increase(event, user_id, sub_type)
-                if result:
-                    yield event.plain_result(result)
-                else:
-                    logger.info("[磐石] 入群欢迎未产生内容（可能已关闭欢迎且未启用验证）")
-            # 成员减少
-            elif notice_type == "group_decrease":
-                user_id = str(getattr(raw, "user_id", ""))
-                result = await self.welcome.on_member_decrease(event, user_id)
+            if post_type == "notice":
+                notice_type = raw.get("notice_type")
+                if notice_type == "group_increase":
+                    user_id = str(raw.get("user_id", ""))
+                    sub_type = str(raw.get("sub_type", "approve") or "approve")
+                    logger.info(f"[磐石] 收到入群通知：群 {group_id} 用户 {user_id} ({sub_type})")
+                    result = await self.welcome.on_member_increase(event, user_id, sub_type)
+                    if result:
+                        yield event.plain_result(result)
+                    else:
+                        logger.info("[磐石] 入群欢迎未产生内容（可能已关闭欢迎且未启用验证）")
+                elif notice_type == "group_decrease":
+                    user_id = str(raw.get("user_id", ""))
+                    result = await self.welcome.on_member_decrease(event, user_id)
+                    if result:
+                        yield event.plain_result(result)
+            elif post_type == "request":
+                if raw.get("request_type") != "group":
+                    return
+                flag = str(raw.get("flag", ""))
+                user_id = str(raw.get("user_id", ""))
+                comment = str(raw.get("comment", "") or "")
+                # sub_type 必须透传（add / invite），否则邀请类请求会被协议端拒绝
+                sub_type = str(raw.get("sub_type", "add") or "add")
+                logger.info(f"[磐石] 收到入群申请：群 {group_id} 用户 {user_id} ({sub_type})")
+                result = await self.join.on_request(event, flag, user_id, comment, sub_type)
                 if result:
                     yield event.plain_result(result)
         except Exception as e:
-            logger.warning(f"[磐石] 通知事件处理异常: {e}")
+            logger.warning(f"[磐石] 通知/申请事件处理异常: {e}")
 
-    @filter.event_message_type(filter.EventMessageType.ALL)
-    @filter.platform_adapter_type(filter.PlatformAdapterType.AIOCQHTTP)
-    async def on_request(self, event: AstrMessageEvent):
-        """处理加群申请。"""
-        raw = getattr(event, "message_obj", None)
-        if raw is None or getattr(raw, "post_type", None) != "request":
-            return
-        if getattr(raw, "request_type", None) != "group":
-            return
+    @staticmethod
+    def _raw_notice(event) -> dict:
+        """取出协议端原始通知/申请数据，取不到返回空 dict。
+
+        必须读 ``message_obj.raw_message`` —— **不是** ``message_obj``。
+
+        aiocqhttp 适配器把整包原始事件（含 ``post_type`` / ``notice_type`` /
+        ``request_type`` / ``flag`` / ``user_id`` / ``comment``）原样存进
+        ``raw_message``；而 ``AstrBotMessage`` 本身并没有这些字段。
+        以前读的是 ``message_obj.post_type``，恒为 None，
+        于是第二个方法也一并失效——这与钩子不存在是两个独立的 bug。
+        """
         try:
-            flag = str(getattr(raw, "flag", ""))
-            user_id = str(getattr(raw, "user_id", ""))
-            comment = str(getattr(raw, "comment", "") or "")
-            # sub_type 必须透传（add / invite），否则邀请类请求会被协议端拒绝
-            sub_type = str(getattr(raw, "sub_type", "add") or "add")
-            result = await self.join.on_request(event, flag, user_id, comment, sub_type)
-            if result:
-                yield event.plain_result(result)
-        except Exception as e:
-            logger.warning(f"[磐石] 加群申请处理异常: {e}")
+            obj = getattr(event, "message_obj", None)
+            if obj is None:
+                return {}
+            raw = getattr(obj, "raw_message", None)
+            return raw if isinstance(raw, dict) else {}
+        except Exception:
+            return {}
 
     # ========== 指令：基础管理 ==========
     @filter.command("禁言", alias={"mute"})
     async def cmd_ban(self, event: AstrMessageEvent, arg: str = ""):
         """禁言：/禁言 @某人 10m 或 引用消息 /禁言 10m"""
-        if not self._check(event):
+        if not await self._check(event):
             yield event.plain_result(self._no_perm())
             return
         target, duration_text = self._split_target_duration(event, arg)
@@ -484,7 +531,7 @@ class PanshiPlugin(Star):
     @filter.command("解禁", alias={"unmute"})
     async def cmd_unban(self, event: AstrMessageEvent):
         """解禁：/解禁 @某人"""
-        if not self._check(event):
+        if not await self._check(event):
             yield event.plain_result(self._no_perm())
             return
         target, _ = parse_target(event)
@@ -493,7 +540,7 @@ class PanshiPlugin(Star):
     @filter.command("全禁", alias={"全体禁言"})
     async def cmd_whole_ban(self, event: AstrMessageEvent, arg: str = ""):
         """全体禁言：/全禁 开 或 /全禁 关"""
-        if not self._check(event):
+        if not await self._check(event):
             yield event.plain_result(self._no_perm())
             return
         enable = arg.strip() in ("开", "开启", "on", "true", "1", "")
@@ -502,7 +549,7 @@ class PanshiPlugin(Star):
     @filter.command("踢", alias={"踢了", "kick"})
     async def cmd_kick(self, event: AstrMessageEvent, arg: str = ""):
         """踢人：/踢 @某人 [原因]"""
-        if not self._check(event):
+        if not await self._check(event):
             yield event.plain_result(self._no_perm())
             return
         target, _ = parse_target(event)
@@ -512,7 +559,7 @@ class PanshiPlugin(Star):
     @filter.command("拉黑")
     async def cmd_block(self, event: AstrMessageEvent, arg: str = ""):
         """踢出并拉黑：/拉黑 @某人"""
-        if not self._check(event):
+        if not await self._check(event):
             yield event.plain_result(self._no_perm())
             return
         target, _ = parse_target(event)
@@ -521,7 +568,7 @@ class PanshiPlugin(Star):
     @filter.command("撤回", alias={"recall"})
     async def cmd_recall(self, event: AstrMessageEvent, count: str = ""):
         """撤回：/撤回 或 引用消息 /撤回，或 /撤回 10"""
-        if not self._check(event):
+        if not await self._check(event):
             yield event.plain_result(self._no_perm())
             return
         n = int(count) if count.isdigit() else 1
@@ -530,7 +577,7 @@ class PanshiPlugin(Star):
     @filter.command("净化", alias={"清屏"})
     async def cmd_purge(self, event: AstrMessageEvent, count: str = ""):
         """批量撤回最近消息：/净化 30"""
-        if not self._check(event):
+        if not await self._check(event):
             yield event.plain_result(self._no_perm())
             return
         n = int(count) if count.isdigit() else 30
@@ -540,7 +587,7 @@ class PanshiPlugin(Star):
     @filter.command("改名")
     async def cmd_card(self, event: AstrMessageEvent, arg: str = ""):
         """改群名片：/改名 @某人 新昵称"""
-        if not self._check(event):
+        if not await self._check(event):
             yield event.plain_result(self._no_perm())
             return
         target, _ = parse_target(event)
@@ -550,7 +597,7 @@ class PanshiPlugin(Star):
     @filter.command("头衔")
     async def cmd_title(self, event: AstrMessageEvent, arg: str = ""):
         """设头衔（需群主）：/头衔 @某人 头衔"""
-        if not self._check(event, PermLevel.OWNER):
+        if not await self._check(event, PermLevel.OWNER):
             yield event.plain_result(self._no_perm("群主"))
             return
         target, _ = parse_target(event)
@@ -560,7 +607,7 @@ class PanshiPlugin(Star):
     @filter.command("上管", alias={"设置管理员"})
     async def cmd_set_admin(self, event: AstrMessageEvent):
         """设管理员（需群主）：/上管 @某人"""
-        if not self._check(event, PermLevel.OWNER):
+        if not await self._check(event, PermLevel.OWNER):
             yield event.plain_result(self._no_perm("群主"))
             return
         target, _ = parse_target(event)
@@ -569,7 +616,7 @@ class PanshiPlugin(Star):
     @filter.command("下管", alias={"取消管理员"})
     async def cmd_unset_admin(self, event: AstrMessageEvent):
         """取消管理员（需群主）：/下管 @某人"""
-        if not self._check(event, PermLevel.OWNER):
+        if not await self._check(event, PermLevel.OWNER):
             yield event.plain_result(self._no_perm("群主"))
             return
         target, _ = parse_target(event)
@@ -578,7 +625,7 @@ class PanshiPlugin(Star):
     @filter.command("设精", alias={"设为精华"})
     async def cmd_essence(self, event: AstrMessageEvent):
         """设精华：引用消息 /设精"""
-        if not self._check(event):
+        if not await self._check(event):
             yield event.plain_result(self._no_perm())
             return
         yield event.plain_result(await self.normal.set_essence(event, enable=True))
@@ -586,7 +633,7 @@ class PanshiPlugin(Star):
     @filter.command("移精", alias={"移除精华"})
     async def cmd_unessence(self, event: AstrMessageEvent):
         """移精华：引用消息 /移精"""
-        if not self._check(event):
+        if not await self._check(event):
             yield event.plain_result(self._no_perm())
             return
         yield event.plain_result(await self.normal.set_essence(event, enable=False))
@@ -594,7 +641,7 @@ class PanshiPlugin(Star):
     @filter.command("群名", alias={"设置群名"})
     async def cmd_group_name(self, event: AstrMessageEvent, arg: str = ""):
         """改群名：/群名 新群名"""
-        if not self._check(event):
+        if not await self._check(event):
             yield event.plain_result(self._no_perm())
             return
         yield event.plain_result(await self.normal.set_group_name(event, arg.strip()))
@@ -602,7 +649,7 @@ class PanshiPlugin(Star):
     @filter.command("公告", alias={"发布群公告"})
     async def cmd_notice(self, event: AstrMessageEvent, arg: str = ""):
         """发群公告：/公告 内容"""
-        if not self._check(event):
+        if not await self._check(event):
             yield event.plain_result(self._no_perm())
             return
         yield event.plain_result(await self.normal.send_notice(event, arg.strip()))
@@ -616,7 +663,7 @@ class PanshiPlugin(Star):
     @filter.command("警告", alias={"warn"})
     async def cmd_warn(self, event: AstrMessageEvent, arg: str = ""):
         """警告：/警告 @某人 [原因]"""
-        if not self._check(event):
+        if not await self._check(event):
             yield event.plain_result(self._no_perm())
             return
         target, _ = parse_target(event)
@@ -626,7 +673,7 @@ class PanshiPlugin(Star):
     @filter.command("撤销警告")
     async def cmd_unwarn(self, event: AstrMessageEvent, arg: str = ""):
         """撤销警告：/撤销警告 @某人 [次数]"""
-        if not self._check(event):
+        if not await self._check(event):
             yield event.plain_result(self._no_perm())
             return
         target, _ = parse_target(event)
@@ -636,7 +683,7 @@ class PanshiPlugin(Star):
     @filter.command("违规记录", alias={"查警告"})
     async def cmd_query_warn(self, event: AstrMessageEvent):
         """查违规记录：/违规记录 [@某人]"""
-        if not self._check(event):
+        if not await self._check(event):
             yield event.plain_result(self._no_perm())
             return
         target, _ = parse_target(event)
@@ -716,7 +763,7 @@ class PanshiPlugin(Star):
     @filter.command("宵禁", alias={"夜间禁言"})
     async def cmd_curfew(self, event: AstrMessageEvent, arg: str = ""):
         """宵禁：/宵禁 状态 | /宵禁 开|关 | /宵禁 23:30-07:00"""
-        if not self._check(event):
+        if not await self._check(event):
             yield event.plain_result(self._no_perm())
             return
         yield event.plain_result(await self._handle_curfew(arg.strip()))
@@ -826,7 +873,7 @@ class PanshiPlugin(Star):
             duration(number): 禁言时长（秒），默认 60
             reason(string): 禁言原因
         """
-        if not self._check(event):
+        if not await self._check(event):
             yield event.plain_result(self._no_perm())
             return
         seconds = self.cfg.clamp_ban_time(int(duration or 60))
@@ -839,7 +886,7 @@ class PanshiPlugin(Star):
         Args:
             target(string): 目标 QQ 号
         """
-        if not self._check(event):
+        if not await self._check(event):
             yield event.plain_result(self._no_perm())
             return
         yield event.plain_result(await self.normal.cancel_ban(event, target))
@@ -852,7 +899,7 @@ class PanshiPlugin(Star):
             target(string): 目标 QQ 号
             reason(string): 踢出原因
         """
-        if not self._check(event):
+        if not await self._check(event):
             yield event.plain_result(self._no_perm())
             return
         yield event.plain_result(await self.normal.kick(event, target, reject=False, reason=reason))
@@ -864,7 +911,7 @@ class PanshiPlugin(Star):
         Args:
             count(number): 撤回条数，默认 1
         """
-        if not self._check(event):
+        if not await self._check(event):
             yield event.plain_result(self._no_perm())
             return
         yield event.plain_result(await self.normal.recall(event, count=int(count or 1)))
@@ -876,7 +923,7 @@ class PanshiPlugin(Star):
         Args:
             enable(boolean): true 为开启全体禁言，false 为关闭
         """
-        if not self._check(event):
+        if not await self._check(event):
             yield event.plain_result(self._no_perm())
             return
         yield event.plain_result(await self.normal.whole_ban(event, enable=bool(enable)))
@@ -889,7 +936,7 @@ class PanshiPlugin(Star):
             target(string): 目标 QQ 号
             reason(string): 警告原因
         """
-        if not self._check(event):
+        if not await self._check(event):
             yield event.plain_result(self._no_perm())
             return
         yield event.plain_result(await self.warning.add_warning(event, target, reason))
@@ -901,7 +948,7 @@ class PanshiPlugin(Star):
         Args:
             content(string): 公告内容
         """
-        if not self._check(event):
+        if not await self._check(event):
             yield event.plain_result(self._no_perm())
             return
         yield event.plain_result(await self.normal.send_notice(event, content))
@@ -921,7 +968,7 @@ class PanshiPlugin(Star):
             start(string): 开始时间 HH:MM（如 23:30），留空保持不变
             end(string): 结束时间 HH:MM（如 07:00），留空保持不变
         """
-        if not self._check(event):
+        if not await self._check(event):
             yield event.plain_result(self._no_perm())
             return
         payload = {}
@@ -958,11 +1005,11 @@ class PanshiPlugin(Star):
         except Exception:
             return False
 
-    def _check(self, event, required: PermLevel = PermLevel.ADMIN) -> bool:
+    async def _check(self, event, required: PermLevel = PermLevel.ADMIN) -> bool:
         group_id = get_group_id(event)
         if group_id and not self.cfg.group_enabled(group_id):
             return False
-        return check_permission(event, required, self._super_admins)
+        return await check_permission_async(event, required, self._super_admins)
 
     @staticmethod
     def _no_perm(level: str = "管理员") -> str:

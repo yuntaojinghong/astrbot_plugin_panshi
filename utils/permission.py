@@ -2,8 +2,15 @@
 
 from __future__ import annotations
 
+import time
 from enum import IntEnum
 from functools import wraps
+
+#: 群身份查询结果的缓存：{(group_id, user_id): (role, 时间戳)}
+#: 权限判定在消息处理路径上会被调用多次，逐个查协议端太浪费；角色变动很少，
+#: 缓存 60 秒足够，同时改权限后最多 1 分钟就能生效。
+_ROLE_CACHE: dict[tuple[str, str], tuple[str, float]] = {}
+_ROLE_TTL = 60.0
 
 
 class PermLevel(IntEnum):
@@ -15,37 +22,146 @@ class PermLevel(IntEnum):
     SUPER = 3  # 插件超级管理员
 
 
-def get_user_level(event, super_admins: list[str] | None = None) -> PermLevel:
-    """判断当前消息发送者的权限等级。
+def _safe_sender(event) -> str:
+    try:
+        return str(event.get_sender_id() or "")
+    except Exception:
+        return ""
 
-    Args:
-        event: AstrMessageEvent
-        super_admins: 插件配置的超级管理员 QQ 号列表
+
+def _safe_group(event) -> str:
+    try:
+        return str(event.get_group_id() or "")
+    except Exception:
+        return ""
+
+
+async def get_group_role(event, user_id: str) -> str:
+    """异步查询某成员在本群的角色。
+
+    .. important::
+        必须走协议端查询，**不能**读 ``event.message_obj.sender.role``。
+
+        AstrBot 的 ``MessageMember`` 只定义了 ``user_id`` 与 ``nickname``
+        两个字段，适配器也从不下发 ``role``。所以那种读法恒为空串——
+        于是「群主/管理员发指令」被判成普通成员，直接回「⛔ 权限不足」。
+
+        这正是用户实测反馈的现象：自己明明是管理员，机器人却说他没有权限。
+        协议端查询本模块已有可靠实现（``normal._check_target_role`` 用的就是它），
+        这里复用同一套两层取数逻辑。
 
     Returns:
-        PermLevel
+        ``"owner"`` / ``"admin"`` / ``"member"``；无法确证时返回 ``""``。
     """
-    sender = str(_safe_sender(event))
+    uid = str(user_id or "").strip()
+    gid = _safe_group(event)
+    if not uid or not gid:
+        return ""
+
+    key = (gid, uid)
+    now = time.time()
+    hit = _ROLE_CACHE.get(key)
+    if hit and now - hit[1] < _ROLE_TTL:
+        return hit[0]
+
+    role = ""
+    bot = getattr(event, "bot", None)
+    if bot is not None:
+        # 第一层：单人查询
+        try:
+            info = await bot.get_group_member_info(
+                group_id=int(gid), user_id=int(uid), no_cache=False
+            )
+            if isinstance(info, dict):
+                got = str(info.get("role") or "").strip().lower()
+                if got in ("owner", "admin", "member"):
+                    role = got
+        except Exception:
+            pass
+
+        # 第二层：单人查询拿不到 owner/admin 时，用成员列表交叉验证。
+        # 协议端对 role 的上报并不总是可靠，多一层更稳。
+        if role in ("", "member"):
+            try:
+                members = await bot.get_group_member_list(group_id=int(gid))
+                for m in members or []:
+                    if not isinstance(m, dict):
+                        continue
+                    if str(m.get("user_id") or "") != uid:
+                        continue
+                    got = str(m.get("role") or "").strip().lower()
+                    if got in ("owner", "admin", "member"):
+                        role = got
+                    break
+            except Exception:
+                pass
+
+    if role:
+        _ROLE_CACHE[key] = (role, now)
+    return role
+
+
+async def get_user_level_async(event, super_admins: list[str] | None = None) -> PermLevel:
+    """异步判定权限等级（会查协议端，结果准确）。"""
+    sender = _safe_sender(event)
     super_admins = [str(x) for x in (super_admins or [])]
 
     if sender and sender in super_admins:
         return PermLevel.SUPER
 
-    # AstrBot 提供的 is_admin 判定（一般是全局管理员）
     try:
         if event.is_admin():
             return PermLevel.ADMIN
     except Exception:
         pass
 
-    # 通过群成员信息判断 QQ 群身份
-    role = _get_group_role(event, sender)
+    role = await get_group_role(event, sender)
     if role == "owner":
         return PermLevel.OWNER
     if role == "admin":
         return PermLevel.ADMIN
 
     return PermLevel.MEMBER
+
+
+def get_user_level(event, super_admins: list[str] | None = None) -> PermLevel:
+    """同步判定权限等级（只做零成本的本地判断）。
+
+    .. warning::
+        本函数**拿不到群主/管理员身份**，因为那需要异步查协议端。
+        它只用于「已经确定无群身份信息也无妨」的同步场景
+        （例如风控豁免的快速预判）。
+
+        真正决定「要不要放行管理指令」的地方，必须用
+        :func:`get_user_level_async`，否则会把群管理员误判成普通成员。
+    """
+    sender = _safe_sender(event)
+    super_admins = [str(x) for x in (super_admins or [])]
+
+    if sender and sender in super_admins:
+        return PermLevel.SUPER
+
+    try:
+        if event.is_admin():
+            return PermLevel.ADMIN
+    except Exception:
+        pass
+
+    # 命中了缓存就直接用（可能来自本进程早先的异步查询）
+    hit = _ROLE_CACHE.get((_safe_group(event), sender))
+    if hit and time.time() - hit[1] < _ROLE_TTL:
+        if hit[0] == "owner":
+            return PermLevel.OWNER
+        if hit[0] == "admin":
+            return PermLevel.ADMIN
+
+    return PermLevel.MEMBER
+
+
+async def check_permission_async(event, required: PermLevel,
+                                 super_admins: list[str] | None = None) -> bool:
+    """异步权限校验（推荐用于所有会真正执行动作的地方）。"""
+    return await get_user_level_async(event, super_admins) >= required
 
 
 def check_permission(event, required: PermLevel, super_admins: list[str] | None = None) -> bool:
@@ -70,7 +186,8 @@ def perm_required(required: PermLevel, attr: str = "super_admins"):
         @wraps(func)
         async def wrapper(self, event, *args, **kwargs):
             supers = getattr(self, "_super_admins", []) or []
-            if not check_permission(event, required, supers):
+            # 必须用异步版本：同步版拿不到群主/管理员身份
+            if not await check_permission_async(event, required, supers):
                 level_name = {
                     PermLevel.MEMBER: "成员",
                     PermLevel.ADMIN: "管理员",
@@ -85,24 +202,3 @@ def perm_required(required: PermLevel, attr: str = "super_admins"):
         return wrapper
 
     return decorator
-
-
-def _safe_sender(event) -> str:
-    try:
-        return str(event.get_sender_id())
-    except Exception:
-        return ""
-
-
-def _get_group_role(event, user_id: str) -> str:
-    """同步获取群成员角色。aiocqhttp 事件对象通常带 role 字段。"""
-    try:
-        raw = getattr(event, "message_obj", None)
-        sender = getattr(raw, "sender", None) if raw else None
-        if sender is not None:
-            role = getattr(sender, "role", None)
-            if role:
-                return str(role)
-    except Exception:
-        pass
-    return ""

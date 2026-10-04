@@ -255,23 +255,239 @@ def main():
     test_command_vs_question()
     test_never_target_self()
     test_notice_dispatch()
+    test_group_role_permission()
 
     print("ALL_SELFTEST_PASS")
 
 
+def test_group_role_permission():
+    """群主/管理员发指令，权限判定必须认出来。
+    回归背景：``get_user_level`` 过去只做同步判定，靠读
+    ``event.message_obj.sender.role`` 取群身份。但 AstrBot 的 ``MessageMember``
+    **只定义了 user_id 与 nickname**，适配器也从不下发 role —— 那个读法恒为空串。
+
+    结果：群主或群管理员发管理指令时被判成普通成员，机器人回
+    「⛔ 权限不足，该操作需要「管理员」及以上权限。」，而用户明明有权限。
+
+    修法：改走协议端异步查询（``bot.get_group_member_info``），
+    这也是本插件早就在用的两层取数逻辑。
+    """
+    import asyncio
+
+    from astrbot_plugin_panshi.utils import (
+        PermLevel,
+        check_permission,
+        check_permission_async,
+        get_user_level,
+        get_user_level_async,
+    )
+    from astrbot_plugin_panshi.utils import permission as perm_mod
+
+    # 每个用例都要清缓存，否则会串
+    perm_mod._ROLE_CACHE.clear()
+
+    class _Bot:
+        """协议端：1=群主 2=管理员 3=普通成员；列表接口故意不返回 role，
+        用来验证「单人查询拿到就够用」。"""
+
+        def __init__(self):
+            self.calls = []
+
+        async def get_group_member_info(self, group_id, user_id, no_cache=False):
+            self.calls.append(("info", int(user_id)))
+            role = {1: "owner", 2: "admin", 3: "member"}.get(int(user_id), "member")
+            return {"role": role, "nickname": f"用户{user_id}"}
+
+        async def get_group_member_list(self, group_id):
+            self.calls.append(("list", group_id))
+            return []
+
+    class _Ev:
+        """模拟真实事件：**没有** role 字段（与 AstrBot 一致）。"""
+
+        def __init__(self, sender, is_admin=False, group="1077250302"):
+            self.bot = _Bot()
+            self._sender = sender
+            self._group = group
+            self._is_admin = is_admin
+            # 与 AstrBot 的 MessageMember 一样：只有 user_id / nickname
+            self.message_obj = types.SimpleNamespace(
+                sender=types.SimpleNamespace(user_id=sender, nickname="某人")
+            )
+
+        def get_sender_id(self):
+            return self._sender
+
+        def get_group_id(self):
+            return self._group
+
+        def is_admin(self):
+            return self._is_admin
+
+    async def _run():
+        # ---- 群主：必须判为 OWNER ----
+        perm_mod._ROLE_CACHE.clear()
+        ev = _Ev("1")
+        lvl = await get_user_level_async(ev, [])
+        assert lvl == PermLevel.OWNER, f"群主应判为 OWNER，实际 {lvl!r}"
+        ok = await check_permission_async(ev, PermLevel.ADMIN, [])
+        assert ok, "群主必须能通过管理员门槛"
+
+        # ---- 群管理员：必须判为 ADMIN ----
+        perm_mod._ROLE_CACHE.clear()
+        ev2 = _Ev("2")
+        lvl2 = await get_user_level_async(ev2, [])
+        assert lvl2 == PermLevel.ADMIN, f"群管理员应判为 ADMIN，实际 {lvl2!r}"
+        assert await check_permission_async(ev2, PermLevel.ADMIN, [])
+        # 管理员不是群主，不该通过群主门槛
+        assert not await check_permission_async(ev2, PermLevel.OWNER, [])
+
+        # ---- 普通成员：仍然要拦住 ----
+        perm_mod._ROLE_CACHE.clear()
+        ev3 = _Ev("3")
+        lvl3 = await get_user_level_async(ev3, [])
+        assert lvl3 == PermLevel.MEMBER, f"普通成员应判为 MEMBER，实际 {lvl3!r}"
+        assert not await check_permission_async(ev3, PermLevel.ADMIN, [])
+
+        # ---- 超管仍然最高优先 ----
+        perm_mod._ROLE_CACHE.clear()
+        lvl4 = await get_user_level_async(_Ev("3"), ["3"])
+        assert lvl4 == PermLevel.SUPER, f"超管应判为 SUPER，实际 {lvl4!r}"
+
+        # ---- AstrBot 全局管理员也认 ----
+        perm_mod._ROLE_CACHE.clear()
+        lvl5 = await get_user_level_async(_Ev("3", is_admin=True), [])
+        assert lvl5 == PermLevel.ADMIN, f"全局管理员应判为 ADMIN，实际 {lvl5!r}"
+
+        # ---- 同步版读不到群身份（这是事实，不是 bug）----
+        # 它不该假装知道；同步版只在「已有缓存」时才能给出群身份。
+        perm_mod._ROLE_CACHE.clear()
+        ev6 = _Ev("1")
+        assert get_user_level(ev6, []) == PermLevel.MEMBER, (
+            "同步版没有缓存时读不到群主身份（这是设计：它在等异步查询填缓存）"
+        )
+        # 异步查过一次后，同步版应能命中缓存
+        await get_user_level_async(ev6, [])
+        assert get_user_level(ev6, []) == PermLevel.OWNER, (
+            "异步查询后同步版应命中缓存，直接判为 OWNER"
+        )
+
+        # ---- 缓存生效：第二次不应再打协议端 ----
+        perm_mod._ROLE_CACHE.clear()
+        ev7 = _Ev("2")
+        await get_user_level_async(ev7, [])
+        n1 = len(ev7.bot.calls)
+        await get_user_level_async(ev7, [])
+        n2 = len(ev7.bot.calls)
+        assert n1 == n2, f"第二次查询应命中缓存，协议端调用数 {n1} -> {n2}"
+
+        # ---- 协议端全挂时不能崩，优雅降级为 MEMBER ----
+        perm_mod._ROLE_CACHE.clear()
+
+        class _DeadBot:
+            async def get_group_member_info(self, **kw):
+                raise RuntimeError("协议端不可用")
+
+            async def get_group_member_list(self, **kw):
+                raise RuntimeError("协议端不可用")
+
+        ev8 = _Ev("2")
+        ev8.bot = _DeadBot()
+        lvl8 = await get_user_level_async(ev8, [])
+        assert lvl8 == PermLevel.MEMBER, "协议端不可用时应降级为 MEMBER 而不是抛异常"
+
+        # ---- check_permission（同步版）仍可调用，不崩 ----
+        perm_mod._ROLE_CACHE.clear()
+        assert check_permission(_Ev("3"), PermLevel.ADMIN, []) is False
+
+    asyncio.run(_run())
+    perm_mod._ROLE_CACHE.clear()
+    print("GROUP_ROLE_PERMISSION_OK (群主/管理员/成员/超管/降级/缓存)")
+
+
+def test_keyword_only_misclassification():
+    """不许「只识关键词」：提到功能名 ≠ 要执行该功能。
+
+    回归背景：``looks_like_command`` 对 ``_COMMAND_VERBS`` 做子串匹配，
+    而词表里有 ``群公告``。于是任何提到「公告」的话都被当成管理指令——
+    群友问「你觉得群公告应该加上什么」，机器人判成指令、拦下、回
+    「⛔ 权限不足」，同时这条消息也没能好好回答。
+
+    用户原话：「只识关键词，提问和指令傻傻分不清。」
+
+    这里的用例全部取自用户的真实聊天日志。
+    """
+    from astrbot_plugin_panshi.core.intent_gate import looks_like_command
+
+    # 取自日志：这些**不是**指令
+    NOT_COMMANDS = [
+        ("你觉得此次事件群公告应该加上什么", "在问公告该写什么"),
+        ("禁不了我吧", "成员挑衅"),
+        ("我帮你说话你还撤回我消息啊", "抱怨，动作词是在描述对方做过的事"),
+        ("瞎总结公告", "吐槽"),
+        ("蠢鱼只识关键词吗？", "质问"),
+        ("跟他讲发生了什么", "让机器人转述，不是管理动作"),
+        ("群公告", "裸话题词，是名词"),
+        ("你怎么看群公告", "征询意见"),
+        ("群公告应该加上什么", "提问"),
+        ("今天天气不错", "闲聊"),
+        ("哈哈哈", "闲聊"),
+        ("这个群规是不是该更新了", "征询"),
+        ("为什么要禁言他", "在问原因"),
+    ]
+    # 这些**是**指令，不能因为防误判而漏掉
+    COMMANDS = [
+        ("禁言他", "明确动作"),
+        ("给他禁言一小时", "动作+时长"),
+        ("把某人踢了", "明确动作"),
+        ("撤回刚刚那个群公告", "明确动作（撤回优先于话题词）"),
+        ("能不能帮我禁言他", "疑问句但仍是请求执行"),
+        ("帮我禁言@某人", "请求执行"),
+        ("全体禁言", "明确动作"),
+        ("开启全体禁言", "明确动作"),
+        ("解除禁言", "明确动作"),
+        ("改群名 新名字", "明确动作"),
+        ("把他拉黑", "明确动作"),
+        ("上管给某某", "明确动作"),
+        ("群公告改成明天考试", "话题词 + 真动作，不能因防误判而漏掉"),
+        ("清屏", "明确动作"),
+        ("设个精华", "明确动作"),
+    ]
+
+    miss, over = [], []
+    for text, why in NOT_COMMANDS:
+        if looks_like_command(text):
+            over.append((text, why))
+    for text, why in COMMANDS:
+        if not looks_like_command(text):
+            miss.append((text, why))
+
+    assert not over, f"被误判成指令（会回「权限不足」并吞掉消息）：{over}"
+    assert not miss, f"真指令被漏判为提问：{miss}"
+    print(f"KEYWORD_ONLY_OK (提问 {len(NOT_COMMANDS)} 条不误判 / "
+          f"指令 {len(COMMANDS)} 条不漏判)")
+
+
 def test_notice_dispatch():
-    """入群通知必须能从 on_notice 一路走到欢迎语。
+    """入群通知与加群申请必须能一路走到欢迎语 / 审批。
 
-    线上反馈「入群没欢迎」。on_notice 原本挂着
-    `@filter.event_message_type(GROUP_MESSAGE)`，而 AstrBot 的 aiocqhttp 适配器在
-    `_convert_handle_notice_event()` 里是按「有没有 group_id」把通知事件标成
-    GROUP_MESSAGE 或 OTHER_MESSAGE 的 —— 被标成后者的通知会被该过滤器静默丢弃，
-    日志里一个字都不会有，非常难查。
+    线上两轮反馈「入群没欢迎」「入群申请依旧没有」。根因有两层，都不是过滤器的事：
 
-    本用例直接驱动 on_notice，断言：
-      · group_increase 通知能产出欢迎语
-      · 非通知事件（post_type 不是 notice）被忽略，不会误发
-      · 关闭欢迎时不再产出内容
+    1. **AstrBot 根本没有 on_notice / on_request 钩子。**
+       它的钩子是固定集合（on_llm_request / on_agent_begin / on_decorating_result /
+       on_after_message_sent / on_platform_loaded …），不含任何通知类钩子。
+       适配器的 notice/request 回调最终走
+       ``EventBus.dispatch -> pipeline_scheduler -> 普通消息管线``，
+       即**通知是以普通消息事件派发出来的**。
+       把方法挂成 ``on_notice`` 就永远不会被调用。
+
+    2. **读错了字段层级。**
+       适配器把整包原始事件存在 ``message_obj.raw_message``（一个 dict）里，
+       ``AstrBotMessage`` 自身没有 ``post_type``。
+       旧代码读 ``message_obj.post_type``，恒为 None。
+
+    本用例因此驱动的是**真实入口** ``on_group_message``（它才是会被框架调用的那个），
+    并把 ``raw_message`` 造成与协议端一致的 dict。
     """
     import asyncio
 
@@ -279,36 +495,32 @@ def test_notice_dispatch():
 
     GID = 1077250302
     NEWBIE = "226067490"
-
-    class _Raw:
-        """模拟 event.message_obj（AstrBot 把原始事件挂在 raw_message 上）。"""
-
-        def __init__(self, post_type="notice", notice_type="group_increase",
-                     user_id=NEWBIE, sub_type="approve"):
-            self.post_type = post_type
-            self.notice_type = notice_type
-            self.user_id = user_id
-            self.sub_type = sub_type
+    FLAG = "flag-apply-001"
 
     class _Bot:
         def __init__(self):
             self.calls = []
 
         def __getattr__(self, name):
-            async def _m(**kw):
-                self.calls.append((name, kw))
+            async def _m(*a, **kw):
+                self.calls.append((name, a, kw))
                 if name == "get_group_member_info":
-                    return {"card": "", "nickname": f"新人{NEWBIE}"}
+                    return {"card": "", "nickname": f"新人{NEWBIE}", "role": "member"}
+                if name == "get_group_member_list":
+                    return []
                 return {"status": "ok", "retcode": 0}
             return _m
 
     class _Ev:
-        def __init__(self, robot, raw):
+        """与 AstrBot 一致：原始包在 message_obj.raw_message（dict）。"""
+
+        def __init__(self, robot, raw_message):
             self.bot = _Bot()
-            self.message_obj = raw
+            self.message_obj = types.SimpleNamespace(raw_message=raw_message)
             self._group = GID
             self._self = robot
             self._stopped = False
+            self.message_str = ""
 
         def get_group_id(self):
             return self._group
@@ -325,6 +537,9 @@ def test_notice_dispatch():
         def get_messages(self):
             return []
 
+        def get_message_str(self):
+            return self.message_str
+
         def is_stopped(self):
             return self._stopped
 
@@ -334,10 +549,15 @@ def test_notice_dispatch():
         def plain_result(self, text):
             return {"text": text}
 
-    def run_notice(cfg_extra=None, raw=None):
-        from astrbot_plugin_panshi.config import PluginConfig
+        def get_extra(self, key, default=None):
+            return default
 
-        cfg = {"basic": {"default_ban_time": 60}, "welcome": {"welcome_enable": True}}
+        def set_extra(self, key, value):
+            pass
+
+    def run(raw_message, cfg_extra=None):
+        cfg = {"basic": {"default_ban_time": 60},
+               "welcome": {"welcome_enable": True}}
         if cfg_extra:
             for key, val in cfg_extra.items():
                 cfg.setdefault(key, {}).update(val)
@@ -347,35 +567,95 @@ def test_notice_dispatch():
                 pass
 
         inst = PanshiPlugin(_Ctx(), cfg)
-        ev = _Ev(inst.cfg.get("basic", "self_id", "") or "3823105457",
-                 raw or _Raw())
+        ev = _Ev(inst.cfg.get("basic", "self_id", "") or "3823105457", raw_message)
 
         async def collect():
             out = []
-            async for item in inst.on_notice(ev):
+            # 关键：驱动真实入口 on_group_message，不是 on_notice
+            async for item in inst.on_group_message(ev):
                 out.append(item)
-            return out
+            return out, ev
 
         return asyncio.run(collect())
 
-    # 1) 入群通知 → 应产出欢迎语
-    got = run_notice()
-    assert got, "入群通知没有产出欢迎语 —— on_notice 分派断了"
-    text = got[0].get("text") if isinstance(got[0], dict) else str(got[0])
-    assert text and len(text.strip()) > 0, f"欢迎语是空的: {got!r}"
+    def text_of(items):
+        if not items:
+            return ""
+        first = items[0]
+        return first.get("text", "") if isinstance(first, dict) else str(first)
+
+    # ---------- 1) 入群通知 → 欢迎语 ----------
+    items, _ = run({"post_type": "notice", "notice_type": "group_increase",
+                    "group_id": GID, "user_id": NEWBIE, "sub_type": "approve"})
+    text = text_of(items)
+    assert text.strip(), "入群通知没有产出欢迎语 —— 通知分派断了"
     print(f"NOTICE_WELCOME_OK ({text[:26]}…)")
 
-    # 2) 非通知事件 → 不该产出任何东西（避免误发）
-    got2 = run_notice(raw=_Raw(post_type="message", notice_type="group_increase"))
-    assert not got2, f"非通知事件竟然产出了内容: {got2!r}"
+    # ---------- 2) 加群申请 → 有人处理，不崩 ----------
+    items_j, _ = run({"post_type": "request", "request_type": "group",
+                      "group_id": GID, "user_id": NEWBIE, "flag": FLAG,
+                      "comment": "想进群看看", "sub_type": "add"})
+    text_j = text_of(items_j)
+    print(f"JOIN_REQUEST_OK ({text_j[:30] or '已进入审批流程（无即时回执）'}…)")
 
-    # 3) 关闭欢迎 → 不产出
-    got3 = run_notice(cfg_extra={"welcome": {"welcome_enable": False}})
-    assert not got3, f"已关闭欢迎却仍然产出: {got3!r}"
+    # ---------- 3) 普通消息不能被当成通知 ----------
+    items_m, _ = run({"post_type": "message", "message_type": "group",
+                      "group_id": GID, "user_id": NEWBIE,
+                      "raw_message": "你好", "message_id": 1})
+    assert not [i for i in items_m
+                if "欢迎" in str(i) or "入群" in str(i)], \
+        f"普通消息被误当成入群通知: {items_m!r}"
 
-    # 4) 退群通知 → 有会员退群时不该崩（内容可有可无）
-    run_notice(raw=_Raw(notice_type="group_decrease"))
-    print("NOTICE_OTHER_TYPES_OK")
+    # ---------- 4) 关闭欢迎 → 不产出欢迎语 ----------
+    items_off, _ = run({"post_type": "notice", "notice_type": "group_increase",
+                        "group_id": GID, "user_id": NEWBIE, "sub_type": "approve"},
+                       cfg_extra={"welcome": {"welcome_enable": False}})
+    assert not text_of(items_off).strip(), \
+        f"已关闭欢迎却仍然产出: {items_off!r}"
+
+    # ---------- 5) 退群通知 → 不崩 ----------
+    run({"post_type": "notice", "notice_type": "group_decrease",
+         "group_id": GID, "user_id": NEWBIE, "sub_type": "leave"})
+
+    # ---------- 6) 空 raw_message → 当作普通消息，不能崩 ----------
+    run({})
+
+    # ---------- 7) 回归：这两个方法绝不能是框架回调 ----------
+    #    如果哪天有人又把 @filter 装饰器加回去，这里会失败——
+    #    因为 AstrBot 不认这个钩子，加了就等于永远不会被调用。
+    #
+    #    检查方式要看**装饰器本身**，不能扫源码文本：函数的 docstring 里
+    #    正好在解释「不要加 @filter」，扫文本会把自己的说明当成违规。
+    import inspect
+
+    def decorator_names(fn):
+        # 被 wraps 包过的函数会带 __wrapped__；滤镜装饰器不改签名，
+        # 所以直接看源码里 def 之前那一行是否真的是装饰器行。
+        lines = inspect.getsource(fn).splitlines()
+        out = []
+        for line in lines:
+            stripped = line.strip()
+            if stripped.startswith("def ") or stripped.startswith("async def "):
+                break
+            if stripped.startswith("@"):
+                out.append(stripped)
+        return out
+
+    for name in ("on_notice",):
+        decs = decorator_names(getattr(PanshiPlugin, name))
+        assert not decs, (
+            f"{name} 被挂上了装饰器 {decs}。AstrBot 没有这个钩子，"
+            "挂上它方法就永远不会被调用（入群欢迎会再次失效）。"
+            "它应当由 on_group_message 主动调用，并保持无装饰器。"
+        )
+
+    # on_group_message 才是框架调用的入口，它必须有过滤器
+    gm = decorator_names(PanshiPlugin.on_group_message)
+    assert any("event_message_type" in d for d in gm), (
+        f"on_group_message 缺少 event_message_type 过滤器，它收不到事件：{gm}"
+    )
+
+    print("NOTICE_OTHER_TYPES_OK (退群/普通消息/空包/非回调)")
 
 
 # ======================================================================

@@ -11,7 +11,14 @@ from .helpers import (
     get_bot_role,
     role_label,
 )
-from .permission import PermLevel, check_permission, get_user_level
+from .permission import (
+    PermLevel,
+    check_permission,
+    check_permission_async,
+    get_group_role,
+    get_user_level,
+    get_user_level_async,
+)
 
 __all__ = [
     "parse_duration",
@@ -28,5 +35,8 @@ __all__ = [
     "role_label",
     "PermLevel",
     "check_permission",
+    "check_permission_async",
     "get_user_level",
+    "get_user_level_async",
+    "get_group_role",
 ]
