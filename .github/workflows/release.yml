@@ -25,6 +25,11 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          # 用仓库主人的 PAT 创建 release，发布者即显示为仓库主人本人。
+          # 不传时 action 回落到内置 GITHUB_TOKEN，它属于 github-actions[bot]，
+          # release 页面就会显示成机器人发布的。
+          # secret 缺失时自动回退到 GITHUB_TOKEN，workflow 仍然可用。
+          token: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
           files: |
             dist/astrbot_plugin_panshi.zip
             dist/astrbot_plugin_panshi.tar.gz
