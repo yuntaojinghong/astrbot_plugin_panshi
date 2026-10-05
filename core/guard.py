@@ -209,7 +209,7 @@ class GuardHandle(BaseHandle):
         cfg = self.cfg_for(event)
 
         # 撤回最近一条
-        await self._recall_last(event, user_id)
+        recall = await self._recall_last(event, user_id)
 
         # 记录警告
         expire = int(cfg.warning.get("warn_expire_days", 30))
@@ -231,7 +231,23 @@ class GuardHandle(BaseHandle):
                 duration=ban_time,
             )
             if ok:
-                msg = f"⚠️ {reason}，已撤回并禁言 {format_duration(ban_time)}（累计警告 {warn_count} 次）"
+                recalled = "已撤回并" if recall == "ok" else ""
+                msg = (f"⚠️ {reason}，{recalled}禁言 "
+                       f"{format_duration(ban_time)}（累计警告 {warn_count} 次）")
+            else:
+                # 禁言没成功时**必须说出来**，不能再回「已处理」。
+                #
+                # 回归背景：机器人不是群管理员时 `set_group_ban` 会被协议端拒，
+                # 而这里原先无论成败都回「⚠️ 检测到 X，已处理。」——用户以为
+                # 群友已经被禁言，其实没有，只能靠"他怎么还在说话"才发现。
+                # 群管插件里「静默失效的处罚」最容易被当成配置没生效。
+                #
+                # 所以：把协议端给的原因原样带出来（humanize 已翻成中文），
+                # 并明确「警告照常记、扣分照常扣」，别让人以为整套都没跑。
+                msg = (f"⚠️ {reason}：已记警告（第 {warn_count} 次）"
+                       f"{'，消息已撤回' if recall == 'ok' else ''}"
+                       f"，但禁言未生效——{err or '协议端未返回原因'}"
+                       f"{self.failure_hint('set_group_ban')}")
 
         # 触发警告升级
         try:
@@ -291,20 +307,30 @@ class GuardHandle(BaseHandle):
                     f"{cur} → {new_points}）")
         return f"💎 同时扣除 {actual} 积分（{cur} → {new_points}）"
 
-    async def _recall_last(self, event, user_id) -> None:
-        """撤回该用户最近一条消息（若有缓存）。"""
+    async def _recall_last(self, event, user_id) -> str:
+        """撤回该用户最近一条消息（若有缓存）。
+
+        Returns:
+            ``"ok"``   已成功撤回；
+            ``"none"`` 没有可撤回的缓存消息（不是错误）；
+            ``"fail"`` 尝试撤回但被协议端拒绝（例如机器人不是管理员）。
+
+        之所以返回状态而不是 ``None``：:meth:`_punish` 的回执要说实话——
+        撤回失败时不能再对外声称「已撤回」。
+        """
         group_id = str(event.get_group_id())
         dq = self._recent.get(group_id)
         if not dq:
-            return
+            return "none"
         for item in reversed(dq):
             if str(item["user_id"]) == str(user_id) and item.get("message_id"):
                 mid = safe_int(item["message_id"])
                 if mid is None:
                     # 非数字 message_id（如十六进制 ID），本适配器无法撤回，跳过。
                     break
-                await self.call_api(event, "delete_msg", message_id=mid)
-                break
+                ok, _err = await self.call_api(event, "delete_msg", message_id=mid)
+                return "ok" if ok else "fail"
+        return "none"
 
     # ========== 辅助 ==========
     def _cleanup(self) -> None:

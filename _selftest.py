@@ -377,6 +377,7 @@ def main():
     test_group_cache()
     test_errors()
     test_role_precheck()
+    test_guard_punish_reports_failure()
     test_curfew_intent()
     test_curfew_lift_reporting()
     test_per_group_runtime()
@@ -3378,6 +3379,89 @@ def test_errors():
     assert hint_for("delete_msg")
     assert hint_for("unknown_action") == ""
     print("ERROR_HINT_OK")
+
+
+def test_guard_punish_reports_failure():
+    """风控处罚失败时必须如实报告，不能回「已处理」。
+
+    回归背景：机器人不是群管理员时 `set_group_ban` 与 `delete_msg` 都会被
+    协议端拒绝，而原实现无论成败都回「⚠️ 检测到 X，已处理。」——用户以为
+    群友已被禁言，其实没有，只能靠"他怎么还在说话"才发现。
+    「静默失效的处罚」是群管插件里最难排查的一类问题，必须堵死。
+    """
+    import asyncio
+    import shutil
+    import tempfile
+    from collections import deque
+
+    from astrbot_plugin_panshi.config import PluginConfig
+    from astrbot_plugin_panshi.core.guard import GuardHandle
+    from astrbot_plugin_panshi.data import Storage
+
+    class _BotDenied:
+        """机器人不是管理员：禁言与撤回都被协议端拒绝。"""
+
+        async def set_group_ban(self, **kw):
+            return {"status": "failed", "retcode": 1200,
+                    "message": "not group admin"}
+
+        async def delete_msg(self, **kw):
+            return {"status": "failed", "retcode": 1200,
+                    "message": "no permission"}
+
+    class _BotAllowed(_BotDenied):
+        async def set_group_ban(self, **kw):
+            return {"status": "ok", "retcode": 0}
+
+        async def delete_msg(self, **kw):
+            return {"status": "ok", "retcode": 0}
+
+    class _Ev:
+        def __init__(self, bot):
+            self.bot = bot
+
+        def get_group_id(self):
+            return 100
+
+        def get_sender_id(self):
+            return 3
+
+        def get_self_id(self):
+            return 99
+
+        def get_sender_name(self):
+            return "测试"
+
+    tmp = tempfile.mkdtemp(prefix="panshi_guard_")
+    try:
+        h = GuardHandle(PluginConfig({}), Storage(tmp))
+
+        # 对照组：动作成功 —— 回执要明确「已撤回并禁言」
+        h._recent["100"] = deque([{"user_id": 3, "message_id": 12345}])
+        ok_msg = asyncio.run(h._punish(_Ev(_BotAllowed()), "违禁词", 60))
+        assert "已撤回并禁言" in ok_msg, ok_msg
+        print(f"GUARD_PUNISH_OK_MSG_OK ({ok_msg})")
+
+        # 关键用例：动作全被拒 —— 必须如实报告，不能再出现「已处理」
+        h._recent["100"] = deque([{"user_id": 3, "message_id": 12345}])
+        bad_msg = asyncio.run(h._punish(_Ev(_BotDenied()), "刷屏", 300))
+        assert "已处理" not in bad_msg, \
+            f"禁言和撤回都失败了，回执却还说「已处理」：{bad_msg}"
+        assert "未生效" in bad_msg, f"没说明禁言失败：{bad_msg}"
+        assert ("管理员" in bad_msg or "权限" in bad_msg), \
+            f"没把协议端给的原因/建议带出来：{bad_msg}"
+        assert "已记警告" in bad_msg, f"没说明警告仍然生效：{bad_msg}"
+        print("GUARD_PUNISH_FAILURE_REPORTED_OK "
+              f"({bad_msg.replace(chr(10), ' / ')})")
+
+        # 没有可撤回的消息时，成功回执也不能谎称「已撤回」
+        h._recent["100"] = deque()
+        no_recall = asyncio.run(h._punish(_Ev(_BotAllowed()), "广告", 60))
+        assert "已撤回" not in no_recall, no_recall
+        assert "禁言" in no_recall, no_recall
+        print(f"GUARD_PUNISH_NO_RECALL_HONEST_OK ({no_recall})")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 def test_role_precheck():
