@@ -45,7 +45,19 @@ def should_skip(name: str) -> bool:
         return True
     if name.startswith(".") and name != ".gitignore":
         return True
+    # 下划线开头的是开发期临时文件。
+    #
+    # 这次踩过：我写了个排查脚本 _render_probe.js，顺手提交了，
+    # 结果它进了发布包——用户下载的 zip 里多一个 90 行的调试脚本。
+    # 除白名单里的两个（包必需的 __init__.py 与 _conf_schema.json）之外，
+    # 一律不进包。
+    if name.startswith("_") and name not in KEEP_UNDERSCORE:
+        return True
     return name.endswith(EXCLUDE_SUFFIX)
+
+
+#: 下划线开头但**必须**留在包里的文件
+KEEP_UNDERSCORE = {"__init__.py", "_conf_schema.json"}
 
 
 def collect() -> list[tuple[str, str]]:
