@@ -34,3 +34,8 @@ Thumbs.db
 
 # 前端测试用 jsdom，本地会临时链接到 node_modules
 node_modules/
+
+# 临时排查脚本（下划线开头，不进仓库也不进发布包）
+_*.js
+_*.py
+_*.txt
