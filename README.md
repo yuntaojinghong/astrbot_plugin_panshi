@@ -4,13 +4,13 @@
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0.html)
 [![AstrBot](https://img.shields.io/badge/AstrBot-4.24.2%2B-orange.svg)](https://github.com/AstrBotDevs/AstrBot)
-[![Version](https://img.shields.io/badge/version-v1.11.0-green.svg)](https://github.com/yuntaojinghong/astrbot_plugin_panshi/releases)
+[![Version](https://img.shields.io/badge/version-v1.12.0-green.svg)](https://github.com/yuntaojinghong/astrbot_plugin_panshi/releases)
 
 一个为 [AstrBot](https://github.com/AstrBotDevs/AstrBot) 打造的 QQ 群管理插件，基于 NapCat / OneBot v11（`aiocqhttp`）协议。
 
 **🌐 项目主页：** https://yuntaojinghong.github.io/astrbot_plugin_panshi/
 
-> **当前版本 v1.11.0** · 48 个指令 · 8 个 LLM 工具 · 10 类功能 · 9 组配置
+> **当前版本 v1.12.0** · 48 个指令 · 8 个 LLM 工具 · 10 类功能 · 9 组配置
 
 
 ## ✨ 特色
@@ -132,7 +132,7 @@ git clone https://github.com/yuntaojinghong/astrbot_plugin_panshi.git
 | `/查 <关键词>` | 群内自助查询（违禁词 / 配置 / 状态） |
 | 关键词自动回复 | 命中预设关键词自动答，无需 @机器人 |
 
-### 小游戏（v1.11.0）
+### 小游戏（v1.12.0）
 所有触发词都是**整句精确匹配**，不会抢群里的正常聊天。
 
 | 玩法 | 怎么玩 | 说明 |
@@ -144,6 +144,19 @@ git clone https://github.com/yuntaojinghong/astrbot_plugin_panshi.git
 
 > 猜数字只在**本群正好有一局在进行中**时才会把纯数字消息当成猜——
 > 其它时候纯数字一律放行，所以不会把日常聊天里的数字吃掉。
+
+### 积分怎么赚（v1.12.0）
+| 途径 | 说明 | 默认 |
+|---|---|---|
+| 签到 | 基础分 + 随机奖励 | 开 |
+| **连签加成** | 连续签到每多一天多给一份，**封顶**避免失控；断签重新算 | +2/天，封顶 30 |
+| **早鸟奖** | 当天**第一个**签到的人额外得一份 | +5 |
+| **发言得积分** | 有效发言得分。带最短字数、冷却、每日上限三道闸 | **默认关** |
+| **新人礼包** | 入群后第一次发言一次性奖励 | +20 |
+| **参与互动** | 投票、接龙各得一份分，共用每日上限 | 各 +2，上限 30 |
+
+> 所有数值都能在面板「群积分 / 互动工具」里改。发言得分**默认关闭**，
+> 因为它是最容易被刷的一个——要开请务必保留冷却与每日上限。
 
 ### 面板与自检
 | 指令 | 说明 |
@@ -335,7 +348,23 @@ python _selftest.py
 
 完整历史见 [Releases 页面](https://github.com/yuntaojinghong/astrbot_plugin_panshi/releases)。
 
-### v1.11.0 — 群内小游戏（猜数字 / 摇骰子 / 猜拳 / 可选押注）
+### v1.12.0 — 积分获取途径扩充（连签加成 / 早鸟奖 / 发言得分 / 新人礼包 / 互动得分）
+- **连签加成**：连续签到每多一天多给一份，**封顶**——不封顶的话连签一个月会
+  变成一个谁都没预期的数字；断签从第 1 天重新算。
+- **早鸟奖**：当天第一个签到的额外奖励。名额在**锁内抢占**，两人同时签到
+  不会都拿到。
+- **发言得积分**（**默认关**）：四道闸——开关 / 最短字数 / 冷却 / 每日上限。
+  没有冷却和上限的"发言给分"就是把积分系统交给刷屏脚本。
+- **新人礼包**：入群后第一次发言一次性奖励，每人只发一次。
+- **每日首次发言**额外奖励。
+- **参与互动得分**：投票、接龙各得一份，共用每日上限（互动能重复参与，
+  不封顶就是多一个刷分入口）。
+- 实现细节：每日上限按**积分**夹紧（不是按次数），否则「上限 50、每笔 +20」
+  第三笔就会变成 60，用户看到的数字和配置对不上。
+- 一次性/每日名额走**锁内抢占**的独立账本（不往用户表塞假用户，
+  否则排行榜和人数统计会把它当真人）。
+
+### v1.12.0 — 群内小游戏（猜数字 / 摇骰子 / 猜拳 / 可选押注）
 - 新增配置组 **「小游戏」**，所有触发词都是**整句精确匹配**，不抢正常聊天。
 - **猜数字**：发「猜数字」开局，发数字来猜；猜错给大小提示，猜中得积分。
   有开局冷却与每群每日发奖局数上限——没有这两道闸，它就是台无限发分机。

@@ -382,6 +382,7 @@ def main():
     test_checkin_respects_switch()
     test_points_shared_across_groups()
     test_games()
+    test_points_earning_ways()
     test_curfew_intent()
     test_curfew_lift_reporting()
     test_per_group_runtime()
@@ -3464,6 +3465,141 @@ def test_guard_punish_reports_failure():
         assert "已撤回" not in no_recall, no_recall
         assert "禁言" in no_recall, no_recall
         print(f"GUARD_PUNISH_NO_RECALL_HONEST_OK ({no_recall})")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_points_earning_ways():
+    """积分获取途径：连签加成 / 早鸟奖 / 发言得分 / 新人礼包 / 互动得分。
+
+    重点是**限流**：没有冷却与每日上限，「发言给分」就是把积分系统
+    交给刷屏脚本——一次连发就能把分刷满。
+    """
+    import asyncio
+    import shutil
+    import tempfile
+    import time
+
+    from astrbot_plugin_panshi.config import PluginConfig
+    from astrbot_plugin_panshi.core.activity import ActivityHandle
+    from astrbot_plugin_panshi.core.interact import InteractHandle
+    from astrbot_plugin_panshi.data import Storage
+
+    class _Ev:
+        bot = None
+
+        def __init__(self, uid=7, gid=100):
+            self._uid, self._gid = uid, gid
+
+        def get_group_id(self):
+            return self._gid
+
+        def get_sender_id(self):
+            return self._uid
+
+        def get_self_id(self):
+            return 99
+
+        def get_sender_name(self):
+            return f"用户{self._uid}"
+
+    tmp = tempfile.mkdtemp(prefix="panshi_earn_")
+    try:
+        db = Storage(tmp)
+        yesterday = time.strftime("%Y-%m-%d",
+                                  time.localtime(time.time() - 86400))
+
+        # 连签加成 + 早鸟奖
+        cfg = PluginConfig({"activity": {
+            "checkin_enable": True, "checkin_points": 10,
+            "checkin_random_bonus": 0, "checkin_streak_bonus": 2,
+            "checkin_streak_bonus_cap": 10, "checkin_first_bonus": 5}})
+        h = ActivityHandle(cfg, db)
+        rec = db._user(100, 7)
+        rec["checkin_date"] = yesterday
+        rec["checkin_streak"] = 3
+        db.save()
+        r = asyncio.run(h.checkin(_Ev(7)))
+        # 基础 10 + 连签 min(2*(4-1), 10)=6 + 早鸟 5 = 21
+        assert db.get_points(100, 7) == 21, (r, db.get_points(100, 7))
+        assert "早鸟" in r and "连续签到 4 天" in r, r
+        print(f"CHECKIN_STREAK_FIRST_OK ({r.replace(chr(10), ' / ')})")
+
+        # 同一天第二个人签到：没有早鸟，连签从 1 开始
+        r2 = asyncio.run(h.checkin(_Ev(8)))
+        assert db.get_points(100, 8) == 10, (r2, db.get_points(100, 8))
+        assert "早鸟" not in r2, r2
+        print(f"CHECKIN_EARLY_BIRD_ONCE_OK ({r2.splitlines()[0]})")
+
+        # 连签加成必须封顶
+        tmp2 = tempfile.mkdtemp(prefix="panshi_earn2_")
+        try:
+            db2 = Storage(tmp2)
+            h2 = ActivityHandle(PluginConfig({"activity": {
+                "checkin_enable": True, "checkin_points": 0,
+                "checkin_random_bonus": 0, "checkin_streak_bonus": 100,
+                "checkin_streak_bonus_cap": 10, "checkin_first_bonus": 0}}), db2)
+            rec2 = db2._user(100, 7)
+            rec2["checkin_date"] = yesterday
+            rec2["checkin_streak"] = 99
+            db2.save()
+            asyncio.run(h2.checkin(_Ev(7)))
+            assert db2.get_points(100, 7) == 10, db2.get_points(100, 7)
+            print("CHECKIN_STREAK_CAP_OK (连签加成被封顶)")
+        finally:
+            shutil.rmtree(tmp2, ignore_errors=True)
+
+        # 发言得积分：最短字数 + 每日上限（按**积分**夹紧）
+        chat = PluginConfig({"activity": {
+            "chat_points_enable": True, "chat_points_value": 2,
+            "chat_points_cooldown": 0, "chat_points_daily_cap": 4,
+            "chat_points_min_len": 4, "chat_first_bonus": 0,
+            "newbie_bonus": 0}}).activity
+        hc = ActivityHandle(PluginConfig({}), db)
+        ev = _Ev(20)
+        assert asyncio.run(hc.award_chat_points(ev, "嗯", chat)) == 0, "太短却给分了"
+        assert asyncio.run(hc.award_chat_points(ev, "今天天气不错啊", chat)) == 2
+        assert asyncio.run(hc.award_chat_points(ev, "第二条发言内容", chat)) == 2
+        assert asyncio.run(hc.award_chat_points(ev, "第三条发言内容", chat)) == 0
+        print("CHAT_POINTS_LIMITS_OK (最短字数与每日上限生效)")
+
+        # 冷却
+        cool = PluginConfig({"activity": {
+            "chat_points_enable": True, "chat_points_value": 1,
+            "chat_points_cooldown": 600, "chat_points_daily_cap": 999,
+            "chat_points_min_len": 0}}).activity
+        hc2 = ActivityHandle(PluginConfig({}), db)
+        assert asyncio.run(hc2.award_chat_points(_Ev(30), "一句长一点的话", cool)) == 1
+        assert asyncio.run(hc2.award_chat_points(_Ev(30), "再来一句长话试试", cool)) == 0
+        print("CHAT_POINTS_COOLDOWN_OK (冷却生效)")
+
+        # 新人礼包 + 每日首次发言（各只给一次）
+        nb = PluginConfig({"activity": {
+            "chat_points_enable": True, "chat_points_value": 1,
+            "chat_points_cooldown": 0, "chat_points_daily_cap": 999,
+            "chat_points_min_len": 0, "chat_first_bonus": 3,
+            "newbie_bonus": 20}}).activity
+        hc3 = ActivityHandle(PluginConfig({}), db)
+        first = asyncio.run(hc3.award_chat_points(_Ev(40), "大家好我是新人", nb))
+        second = asyncio.run(hc3.award_chat_points(_Ev(40), "我又说了一句", nb))
+        assert first == 24, first          # 1 + 首次 3 + 新人 20
+        assert second == 1, second         # 只剩基础分
+        print(f"CHAT_FIRST_NEWBIE_OK (首次 +{first}，之后 +{second})")
+
+        # 互动得分（投票/接龙共用每日上限）
+        icfg = PluginConfig({"shop": {"enable": True},
+                             "interact": {"vote_points": 5, "chain_points": 5,
+                                          "interact_points_daily_cap": 5}})
+        hi = InteractHandle(icfg, db)
+        hi._votes["100"] = {"title": "t", "options": ["a", "b"], "votes": {},
+                            "start": time.time(), "closed": False}
+        msg = asyncio.run(hi.cast_vote(_Ev(50), "1"))
+        assert "积分" in msg, msg
+        assert db.get_points(100, 50) == 5, db.get_points(100, 50)
+        hi._votes["100"]["votes"] = {}
+        msg2 = asyncio.run(hi.cast_vote(_Ev(50), "2"))
+        assert "积分" not in msg2, msg2
+        print(f"INTERACT_POINTS_CAP_OK ({msg.splitlines()[-1]})")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 

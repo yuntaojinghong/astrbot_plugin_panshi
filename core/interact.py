@@ -128,7 +128,11 @@ class InteractHandle(BaseHandle):
         uid = str(event.get_sender_id())
         vote["votes"][uid] = idx - 1
         name = await get_nickname(event, uid)
-        return f"✅ {name} 已投票给「{vote['options'][idx - 1]}」"
+        msg = f"✅ {name} 已投票给「{vote['options'][idx - 1]}」"
+        got = self._award_interact(event, "vote")
+        if got:
+            msg += f"\n💎 参与投票 +{got} 积分"
+        return msg
 
     async def vote_result(self, event) -> str:
         """查看/结束投票：/投票结果"""
@@ -176,7 +180,11 @@ class InteractHandle(BaseHandle):
         # 同一人只保留最新一条
         chain["items"] = [it for it in chain["items"] if it["uid"] != uid]
         chain["items"].append({"uid": uid, "text": content})
-        return await self.render_chain(event)
+        rendered = await self.render_chain(event)
+        got = self._award_interact(event, "chain")
+        if got:
+            rendered += f"\n💎 参与接龙 +{got} 积分"
+        return rendered
 
     async def render_chain(self, event) -> str:
         group_id = str(event.get_group_id())
@@ -269,6 +277,37 @@ class InteractHandle(BaseHandle):
                 else:
                     logger.info(f"[磐石] 裸词自定义规则已忽略（动作不识别）: {line!r}")
         return table.get(word)
+
+    # ========== 参与互动得积分 ==========
+    def _award_interact(self, event, scope: str) -> int:
+        """参与投票/接龙发积分，返回加分（0 = 没加）。
+
+        带**每日上限**：互动是能重复参与的，不封顶就等于多了个刷分入口。
+        积分系统关闭时不发（与商城/风控扣分的口径一致）。
+        """
+        try:
+            from .shop_handle import ShopHandle
+
+            if not ShopHandle(self.cfg, self.db).points_enabled(event):
+                return 0
+        except Exception:
+            return 0
+
+        cfg = self.cfg_for(event).interact
+        value = int(cfg.get(f"{scope}_points", 0) or 0)
+        if value <= 0:
+            return 0
+        gid = str(event.get_group_id())
+        uid = str(event.get_sender_id())
+        cap = int(cfg.get("interact_points_daily_cap", 30) or 0)
+        if cap > 0:
+            room = cap - self.db.daily_count(gid, uid, "interact")
+            if room <= 0:
+                return 0
+            value = min(value, room)      # 按积分夹紧，避免溢出上限
+        self.db.bump_daily_count(gid, uid, "interact", value)
+        self.db.add_points(gid, uid, value)
+        return value
 
     # ========== 关键词自动回复 ==========
     def match_auto_reply(self, text: str) -> str | None:

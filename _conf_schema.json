@@ -415,6 +415,107 @@
         "type": "bool",
         "default": false,
         "hint": "开启后所有群共用同一份积分，签到每天只能签一次（多群签到不再重复得分），违规扣分也跨群生效。切换后积分从零重算，历史分保留在各自群里、切回来仍在。"
+      },
+      "checkin_streak_bonus": {
+        "description": "连续签到每天额外积分（连签加成）",
+        "type": "int",
+        "default": 2,
+        "slider": {
+          "min": 0,
+          "max": 100,
+          "step": 1
+        },
+        "hint": "连签第 2 天加 1 份、第 3 天加 2 份，以此类推。断签重新从第 1 天算。设 0 关闭。"
+      },
+      "checkin_streak_bonus_cap": {
+        "description": "连签加成封顶积分",
+        "type": "int",
+        "default": 30,
+        "slider": {
+          "min": 0,
+          "max": 500,
+          "step": 5
+        },
+        "hint": "连签加成最多加到这么多分，避免连签一个月后数额失控。"
+      },
+      "checkin_first_bonus": {
+        "description": "当天第一个签到额外奖励（早鸟奖）",
+        "type": "int",
+        "default": 5,
+        "slider": {
+          "min": 0,
+          "max": 200,
+          "step": 1
+        },
+        "hint": "每天第一个签到的人额外得这么多分，制造「抢」的乐趣。设 0 关闭。"
+      },
+      "chat_points_enable": {
+        "description": "启用发言得积分",
+        "type": "bool",
+        "default": false,
+        "hint": "默认关闭。开启后有效发言可得积分，带冷却与每日上限——没有这两道闸，刷屏脚本就能把分刷满。"
+      },
+      "chat_points_value": {
+        "description": "每条有效发言奖励积分",
+        "type": "int",
+        "default": 1,
+        "slider": {
+          "min": 0,
+          "max": 50,
+          "step": 1
+        }
+      },
+      "chat_points_cooldown": {
+        "description": "发言得分冷却（秒）",
+        "type": "int",
+        "default": 60,
+        "slider": {
+          "min": 0,
+          "max": 600,
+          "step": 10
+        }
+      },
+      "chat_points_daily_cap": {
+        "description": "每人每天发言得分上限",
+        "type": "int",
+        "default": 50,
+        "slider": {
+          "min": 0,
+          "max": 2000,
+          "step": 10
+        }
+      },
+      "chat_points_min_len": {
+        "description": "计入发言的最少字数",
+        "type": "int",
+        "default": 4,
+        "slider": {
+          "min": 0,
+          "max": 50,
+          "step": 1
+        },
+        "hint": "太短的消息（嗯、哈哈）不计分，也顺手过滤了裸词快捷消息。"
+      },
+      "chat_first_bonus": {
+        "description": "每日首次发言额外积分",
+        "type": "int",
+        "default": 3,
+        "slider": {
+          "min": 0,
+          "max": 200,
+          "step": 1
+        }
+      },
+      "newbie_bonus": {
+        "description": "新人礼包（入群后第一次发言）",
+        "type": "int",
+        "default": 20,
+        "slider": {
+          "min": 0,
+          "max": 500,
+          "step": 5
+        },
+        "hint": "每人只发一次，鼓励新人冒泡。设 0 关闭。"
       }
     },
     "hint": "签到与积分规则。积分商城、抽奖、违规扣分在顶栏的「🛒 商品」和「🎰 抽奖」两个页面里配置。"
@@ -608,6 +709,38 @@
         "description": "启用关键词自动回复",
         "type": "bool",
         "default": false
+      },
+      "vote_points": {
+        "description": "参与投票奖励积分",
+        "type": "int",
+        "default": 2,
+        "slider": {
+          "min": 0,
+          "max": 100,
+          "step": 1
+        },
+        "hint": "投一票得这么多分。设 0 关闭。积分系统关闭时不发放。"
+      },
+      "chain_points": {
+        "description": "参与接龙奖励积分",
+        "type": "int",
+        "default": 2,
+        "slider": {
+          "min": 0,
+          "max": 100,
+          "step": 1
+        }
+      },
+      "interact_points_daily_cap": {
+        "description": "互动得分每人每天上限",
+        "type": "int",
+        "default": 30,
+        "slider": {
+          "min": 0,
+          "max": 1000,
+          "step": 5
+        },
+        "hint": "投票与接龙共用这一个上限，避免靠反复参与刷分。"
       },
       "auto_replies_text": {
         "description": "关键词自动回复规则（每行一条：关键词1,关键词2 => 回复内容）",

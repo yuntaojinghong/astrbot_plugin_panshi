@@ -401,10 +401,110 @@ class Storage:
         prefix = f"{self._points_group(group_id)}_"
         rows = []
         for key, u in self._data["users"].items():
-            if key.startswith(prefix):
-                rows.append((key[len(prefix):], int(u.get("points", 0))))
+            if not key.startswith(prefix):
+                continue
+            uid = key[len(prefix):]
+            if uid.startswith("__"):
+                continue          # 内部账本残留（历史假用户），不是人
+            rows.append((uid, int(u.get("points", 0))))
         rows.sort(key=lambda x: x[1], reverse=True)
         return rows[:limit]
+
+    # ---------- 积分获取途径用的小账本 ---------- #
+    #
+    # 连签天数、当日首次名额、当日计数、一次性名额。全部挂在
+    # ``_points_group`` 上，于是**共用模式下它们也自动全局化**：
+    # 「今天第一个签到的」在共用模式里就是全服第一个，语义正确。
+
+    def get_checkin_date(self, group_id, user_id) -> str:
+        """上次签到的日期（可能是很久以前，也可能是空串）。"""
+        return str(
+            self._user(self._points_group(group_id), user_id)
+            .get("checkin_date", "") or "")
+
+    def get_streak(self, group_id, user_id) -> int:
+        """连续签到天数。"""
+        try:
+            return int(
+                self._user(self._points_group(group_id), user_id)
+                .get("checkin_streak", 0) or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    def set_streak(self, group_id, user_id, n: int) -> None:
+        with self._lock:
+            u = self._user(self._points_group(group_id), user_id)
+            u["checkin_streak"] = int(n)
+            self.save()
+
+    def claim_once(self, group_id, scope: str, user_id: str = "") -> bool:
+        """抢占一个「只发生一次」的名额；抢到返回 True。
+
+        用于新人礼包这类一次性发奖。并发下不能"先读再写"，否则两个请求
+        会同时读到"还没发过"，都发一次。
+        """
+        return self._claim_flag(self._points_group(group_id),
+                                f"once:{scope}", user_id, scope_date="")
+
+    def claim_daily(self, group_id, scope: str, user_id: str = "") -> bool:
+        """抢占一个「当天唯一」的名额；抢到返回 True。
+
+        用于「当日第一个签到」「每日首次发言」这类每天只该发生一次的发奖。
+        日期参与比对，跨天自动重新可抢；同样是锁内判断 + 写入。
+        """
+        return self._claim_flag(self._points_group(group_id),
+                                f"daily:{scope}", user_id,
+                                scope_date=time.strftime("%Y-%m-%d"))
+
+    def _claim_flag(self, group_id: str, key: str, user_id: str,
+                    scope_date: str) -> bool:
+        with self._lock:
+            # 用**独立账本**而不是往 users 里塞一个 "__flags__" 假用户：
+            # 假用户会被积分排行、纳管人数、活跃用户这些统计当成真人算进去。
+            flags = self._data.setdefault("flags", {})
+            full = f"{group_id}:{key}:{user_id}" if user_id else f"{group_id}:{key}"
+            rec = flags.get(full)
+            if isinstance(rec, dict):
+                if not scope_date:          # 一次性名额：占过就永远不给
+                    return False
+                if rec.get("date") == scope_date:
+                    return False
+            flags[full] = {"date": scope_date or "once"}
+            self.save()
+            return True
+
+    def daily_count(self, group_id, user_id, scope: str) -> int:
+        """当日计数（跨天自动归零）。"""
+        rec = self._user(self._points_group(group_id), user_id) \
+            .get("counters", {}).get(scope)
+        if isinstance(rec, dict) and rec.get("date") == time.strftime("%Y-%m-%d"):
+            try:
+                return int(rec.get("n", 0) or 0)
+            except (TypeError, ValueError):
+                return 0
+        return 0
+
+    def bump_daily_count(self, group_id, user_id, scope: str, n: int = 1) -> int:
+        """当日计数 +``n`` 并返回新值。
+
+        ``n`` 传的是**实际发放的积分数**而不是"次数"——于是「每人每天
+        最多得 X 分」这类上限可以按分精确卡住，不会出现"上限 50 分、
+        每笔 +20、第三笔还能拿"的溢出。
+        """
+        with self._lock:
+            u = self._user(self._points_group(group_id), user_id)
+            counters = u.setdefault("counters", {})
+            today = time.strftime("%Y-%m-%d")
+            rec = counters.get(scope)
+            cur = 0
+            if isinstance(rec, dict) and rec.get("date") == today:
+                try:
+                    cur = int(rec.get("n", 0) or 0)
+                except (TypeError, ValueError):
+                    cur = 0
+            counters[scope] = {"date": today, "n": cur + int(n)}
+            self.save()
+            return cur + int(n)
 
     # ---------- 警告 ----------
     def add_warning(self, group_id, user_id, reason: str, expire_days: int = 30) -> int:

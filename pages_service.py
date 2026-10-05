@@ -17,7 +17,7 @@ FOLLOW_DEFAULT_KEY = "follow_default"
 PLUGIN_NAME = "astrbot_plugin_panshi"
 
 # 与 metadata.yaml 保持一致的插件版本（读取失败时的兜底值）
-FALLBACK_VERSION = "v1.11.0"
+FALLBACK_VERSION = "v1.12.0"
 
 # 按群可覆盖的配置分组（与 _conf_schema.json 的分组保持一致）
 OVERRIDABLE_GROUPS = [
@@ -46,11 +46,21 @@ OVERRIDABLE_FIELDS = {
     },
     # activity 里也有一个插件级全局开关：`points_shared`（积分跨群共用）。
     # 允许按群覆盖会变成「这个群共用、那个群不共用」——同一份积分两种归属，
-    # 没法解释也没法排查，所以逐字段放行，把它挡在按群覆盖之外。
+    # 没法解释也没法排查，所以逐字段放行：**除了 points_shared，其余都能按群覆盖**。
     "activity": {
         "checkin_enable",
         "checkin_points",
         "checkin_random_bonus",
+        "checkin_streak_bonus",
+        "checkin_streak_bonus_cap",
+        "checkin_first_bonus",
+        "chat_points_enable",
+        "chat_points_value",
+        "chat_points_cooldown",
+        "chat_points_daily_cap",
+        "chat_points_min_len",
+        "chat_first_bonus",
+        "newbie_bonus",
     },
 }
 
