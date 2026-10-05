@@ -188,29 +188,52 @@ class PanshiWebController:
         if not raw_path:
             return ""
         raw_path = raw_path.split("?", 1)[0].strip("/")
+        return self._normalize_endpoint(raw_path)
 
-        # 已知端点里选最长的那个后缀匹配，避免 "items" 之类的短名字误命中
+    def _normalize_endpoint(self, tail: str) -> str:
+        """把一段路径映射成端点名。
+
+        真实 URL 里插件名可能出现 0~2 次，所以不能假定 ``tail`` 就是端点：
+        按**已知端点的最长后缀**匹配来剥离多余前缀。
+        认不出来时原样返回，交给调用方报 404。
+        """
+        tail = str(tail or "").strip("/")
+        if not tail:
+            return ""
+        table = self._endpoint_table()
+        if tail in table:
+            return tail
         best = ""
-        for ep in self._endpoint_table():
-            if raw_path == ep or raw_path.endswith("/" + ep):
-                if len(ep) > len(best):
-                    best = ep
+        for ep in table:
+            if tail.endswith("/" + ep) and len(ep) > len(best):
+                best = ep
         if best:
             return best
-        # 都不认识，返回最后两段，交给调用方报 404
-        parts = raw_path.split("/")
-        return "/".join(parts[-2:]) if len(parts) >= 2 else raw_path
+        # 都不认识，返回最后两段，便于日志里看出请求的是什么
+        parts = tail.split("/")
+        return "/".join(parts[-2:]) if len(parts) >= 2 else tail
 
-    async def api_dispatch(self):
+    async def api_dispatch(self, rest: str = "", **kwargs):
         """通配入口：按 URL 后缀把请求分派到具体处理函数。
 
         为什么这样做：插件 API 的真实 URL 形状在不同调用方下不一致
         （插件名可能出现 0~2 次），写死任何一种注册路径都可能全部失配。
         用通配匹配、按后缀认端点，就与 URL 前缀无关了。
 
+        ``rest`` 是框架从 ``/<path:rest>`` 里解出来的通配内容，会作为
+        **关键字参数**传进来——所以这个签名里必须收它，否则直接
+        ``TypeError: got an unexpected keyword argument 'rest'``。
+        线上就是这么炸的。多收一个 ``**kwargs`` 兜住其它版本可能多传的参数。
+
         方法不符返回 405，端点不认识返回 404，都带可读说明。
         """
-        endpoint = self._tail_of(request)
+        # 优先用框架给的 rest（最可靠），取不到再从请求路径里推断
+        endpoint = str(rest or "").strip("/")
+        if not endpoint:
+            endpoint = self._tail_of(request)
+        else:
+            endpoint = self._normalize_endpoint(endpoint)
+
         req_obj = getattr(request, "_request", None) or request
         method = str(getattr(req_obj, "method", "GET") or "GET").upper()
 

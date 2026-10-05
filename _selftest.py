@@ -261,6 +261,61 @@ def main():
         assert got == want, f"{url} 应当识别为 {want}，实际 {got}"
     print("WEB_TAIL_MATCH_OK (URL 前缀层数不同也能定位到同一端点)")
 
+    # 通配参数是**关键字参数**传给处理函数的，签名必须收得下。
+    #
+    # 回归背景：线上真实报错是
+    #   TypeError: PanshiWebController.api_dispatch() got an unexpected
+    #              keyword argument 'rest'
+    # 因为 AstrBot 用 /<path:rest> 注册时，会以 kwarg 形式把解出的通配内容
+    # 传给处理函数。这个调用约定本地看不到，只能靠签名兜住。
+    import inspect as _inspect
+
+    sig = _inspect.signature(inst.web.api_dispatch)
+    params = sig.parameters
+    accepts_kwargs = any(p.kind is _inspect.Parameter.VAR_KEYWORD
+                         for p in params.values())
+    assert "rest" in params or accepts_kwargs, (
+        f"api_dispatch 必须收得下通配参数（rest），当前签名 {sig}")
+    print("WEB_DISPATCH_SIGNATURE_OK (能接住框架传来的通配参数)")
+
+    # 真的按框架的方式调一次：只传关键字参数
+    async def _call_dispatch_as_framework_does():
+        controller = inst.web
+        # 用一个最小的假请求，避免依赖真实 HTTP 环境
+        class _Req:
+            path = "/api/v1/plugins/extensions/" \
+                   "astrbot_plugin_panshi/astrbot_plugin_panshi/shop/items"
+            method = "GET"
+            path_params = {}
+            _request = None
+
+            async def json(self, default=None):
+                return {}
+
+            def get(self, key, default=None):
+                return default
+
+        import astrbot_plugin_panshi.pages_api as _pa
+        saved = _pa.request
+        _pa.request = _Req()          # type: ignore[assignment]
+        try:
+            # 关键：rest 只以**关键字**传，和框架行为一致
+            return await controller.api_dispatch(
+                rest="astrbot_plugin_panshi/shop/items")
+        finally:
+            _pa.request = saved       # type: ignore[assignment]
+
+    import asyncio as _asyncio
+    try:
+        res = _asyncio.run(_call_dispatch_as_framework_does())
+        # 只要不是「未知接口」就说明后缀被正确识别成 shop/items
+        assert not (isinstance(res, dict) and res.get("status") == "error"), res
+        print("WEB_DISPATCH_KWARG_OK (按框架的方式用关键字传参能正常分派)")
+    except TypeError as e:
+        raise AssertionError(
+            f"按框架的调用方式会失败：{e}\n"
+            f"说明 api_dispatch 的签名接不住通配参数——线上就是这个报错。")
+
     for route, _h, methods, _d in ctx.routes:
         print("   ", ",".join(methods).ljust(4), route)
 
