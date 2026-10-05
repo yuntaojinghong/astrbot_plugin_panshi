@@ -230,7 +230,17 @@ def main():
         assert path.startswith("/"), f"路由应以 / 开头: {path}"
     wildcard = [p for p in raw_paths if "<path:" in p]
     assert wildcard, f"应当注册通配路由，实际 {raw_paths}"
-    print(f"WEB_ROUTES_OK ({len(raw_paths)} 条通配路由，按后缀识别端点)")
+    # 回归：通配路由**必须带自己的插件名前缀**。
+    #
+    # 线上事故（v1.16.0 之前）：注册的是裸的 `/<path:rest>`，于是
+    #   [磐石] 面板请求了未知端点: 'astrbot_plugin_proactive_care/config'
+    # ——「微光」插件的请求被磐石截胡，磐石认不出就回 404，
+    # 真正该响应的处理器根本没机会执行，表现为微光面板「未知接口」。
+    # 根因：`<path:rest>` 的 `.*` 匹配**任何** plugin_path。
+    for p in wildcard:
+        assert p.startswith("/astrbot_plugin_panshi/"), (
+            f"通配路由必须带插件名前缀，否则会抢别的插件的接口：{p}")
+    print(f"WEB_ROUTES_OK ({len(raw_paths)} 条带前缀的通配路由，按后缀识别端点)")
 
     # 端点表与真实处理函数必须对得上——写错名字会在运行时才炸
     from astrbot_plugin_panshi.pages_api import PanshiWebController
@@ -394,6 +404,7 @@ def main():
     test_issue_regressions(inst)
     test_banword_and_backup(inst)
     test_page_service(inst)
+    test_route_not_hijack_others()
     test_local_intent()
     test_interact_layer()
     test_panel_layer()
@@ -5550,6 +5561,124 @@ def test_banword_and_backup(inst):
     # 清理测试群覆盖
     inst.db.reset_group("777888")
     print("BACKUP_VALIDATION_OK")
+
+
+def test_route_not_hijack_others():
+    """磐石的通配路由**不许抢别的插件的接口**。
+
+    线上事故：注册的是裸的 `/<path:rest>`，于是「微光」插件的
+    ``astrbot_plugin_proactive_care/config`` 请求被磐石先截胡，
+    磐石认不出就回 404 —— 真正该响应的处理器根本没机会执行，
+    表现为微光面板整片「未知接口，请更新插件」。
+
+    这里从两层锁住：
+      1. 注册路径带自己的插件名前缀（路由层根本匹配不到别人）；
+      2. 万一路由层被绕过，``api_dispatch`` 还有一道语义防线主动让开。
+    """
+    import asyncio
+
+    from astrbot_plugin_panshi.pages_api import PLUGIN_NAME, PanshiWebController
+
+    # 1) 识别别的插件名
+    ctl = PanshiWebController.__new__(PanshiWebController)   # 不跑 __init__
+    assert ctl._looks_like_other_plugin(
+        "astrbot_plugin_proactive_care/config") == "astrbot_plugin_proactive_care"
+    assert ctl._looks_like_other_plugin(
+        f"{PLUGIN_NAME}/{PLUGIN_NAME}/shop/items") == "", "自己的请求不该被当成别人的"
+    assert ctl._looks_like_other_plugin("shop/items") == ""
+    assert ctl._looks_like_other_plugin("groups") == ""
+    print("ROUTE_GUARD_DETECT_OK (能认出别的插件名，且不误伤自己的)")
+
+    # 2) 真的派发一次，确认它返回 404 且**明确说不是磐石的接口**，
+    #    而不是含糊的「未知端点」——后者会让人以为是自己的插件坏了。
+    import astrbot_plugin_panshi.pages_api as api_mod
+
+    class _Resp:
+        def __init__(self, payload):
+            self.payload = payload
+
+    captured = {}
+
+    def _fake_err(msg, status_code=400):
+        captured["msg"] = msg
+        captured["code"] = status_code
+        return _Resp(("err", msg, status_code))
+
+    old_err = api_mod._err
+    api_mod._err = _fake_err
+    try:
+        out = asyncio.run(ctl.api_dispatch(
+            rest="astrbot_plugin_proactive_care/config"))
+    finally:
+        api_mod._err = old_err
+    assert out is not None, "应返回一个响应对象"
+    assert captured.get("code") == 404, captured
+    assert "proactive_care" in captured.get("msg", ""), captured
+    assert "未知端点" not in captured.get("msg", ""), \
+        f"别再报「未知端点」了，那会误导用户去更新错误的插件：{captured}"
+    print("ROUTE_GUARD_DEFEND_OK (别的插件的请求被明确让开)")
+
+    # 3) 端到端：注册路径必须既能命中自己的 URL、又**匹配不到**别人的。
+    #    复刻 AstrBot 的路由匹配规则（把 <path:x> 换成 (?P<x>.*)，整条 fullmatch）。
+    import re as _re
+
+    def _pattern(route: str) -> "re.Pattern":
+        """把 `/astrbot_plugin_panshi/<path:rest>` 编译成匹配用的正则。
+
+        用 ``finditer`` 逐个替换占位符——不要用 ``search``/``match`` 循环：
+        ``search`` 每次都从开头找，会重复匹配同一个占位符导致死循环；
+        ``match(pos)`` 又会漏掉前面的字面量前缀（`<path:x>` 前面有字面量时
+        第一轮就匹配不上）。``finditer`` 天然从左到右扫且不重叠。
+        """
+        angle = _re.compile(r"<(?:path:)?([A-Za-z_][A-Za-z0-9_]*)>")
+        chunks, pos = [], 0
+        for m in angle.finditer(route):
+            chunks.append(_re.escape(route[pos:m.start()]))
+            chunks.append(f"(?P<{m.group(1)}>.*)")
+            pos = m.end()
+        chunks.append(_re.escape(route[pos:]))
+        return _re.compile("^(?:" + "".join(chunks) + ")$")
+
+    # 自己起一个最小 context 跑注册，拿到真实的注册路径。
+    # （不要 import astrbot_plugin_panshi.main —— selftest 已 stub 过 astrbot
+    #  模块，再 import 会重跑一遍模块级代码并卡住。）
+    class _Ctx:
+        def __init__(self):
+            self.routes = []
+
+        def register_web_api(self, path, handler, methods=None, desc=None):
+            self.routes.append((path, handler))
+
+    ctl2 = _Ctx()
+    from astrbot_plugin_panshi.pages_service import PageService
+
+    web = PanshiWebController(ctl2, PageService(None, None, None))
+    web.register_routes()
+    routes = [p for p, _h in ctl2.routes if "<path:" in p]
+    assert routes, f"应当注册带通配的路由，实际 {ctl2.routes}"
+    pats = [_pattern(r) for r in routes]
+
+    def _matches(plugin_path: str) -> bool:
+        return any(p.match("/" + plugin_path.lstrip("/")) for p in pats)
+
+    # 自己的：插件名出现 0~2 次都要命中
+    for pp in (
+        f"{PLUGIN_NAME}/shop/items",
+        f"{PLUGIN_NAME}/{PLUGIN_NAME}/shop/items",
+        f"{PLUGIN_NAME}/{PLUGIN_NAME}/{PLUGIN_NAME}/shop/items",
+        f"{PLUGIN_NAME}/global",
+        f"{PLUGIN_NAME}/groups/refresh",
+    ):
+        assert _matches(pp), f"自己的请求没匹配上注册路由：{pp}"
+    # 别人的：一个都不能命中
+    for pp in (
+        "astrbot_plugin_proactive_care/config",
+        f"astrbot_plugin_proactive_care/{PLUGIN_NAME}/shop/items",
+        "astrbot_plugin_other/pages/index",
+        "some_random_plugin/status",
+    ):
+        assert not _matches(pp), f"磐石抢了别人的路由：{pp}"
+    print("ROUTE_PREFIX_ISOLATION_OK (认自己的、不碰别人的)")
 
 
 def test_page_service(inst):

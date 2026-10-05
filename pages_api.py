@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any, Callable
 
 from astrbot.api import logger
@@ -102,25 +103,32 @@ class PanshiWebController:
 
         # 注册路径形式。
         #
-        # 这一处我来回错过三次，每次都是面板全部接口失效（「未找到该路由」），
-        # 所以不再赌某一种写法，改成**只按后缀识别端点**。
+        # 这一处我来回错过几次，最初的版本写成裸的 `/<path:rest>`，结果
+        # **抢了别的插件的接口**（线上日志实证）：
         #
-        # 真实 URL（用户实测）：
-        #   /api/v1/plugins/extensions/astrbot_plugin_panshi/astrbot_plugin_panshi/shop/items
-        #                            └────────── plugin_path 参数（整条） ──────────┘
+        #   [磐石] 面板请求了未知端点: 'astrbot_plugin_proactive_care/config'
         #
-        # 路由声明是 /plugins/extensions/{plugin_path:path}，plugin_path 取整条剩余路径；
-        # _match_registered_web_api 再拿它去 fullmatch 注册路径。
-        # 这条 URL 里插件名出现了两次——外部 SDK 补了一层，调用方又拼了一层。
-        # 与其去赌到底补几层，不如用通配匹配、靠后缀认端点：
+        # 原因：`/<path:rest>` 里的 `.*` 能匹配**任何** plugin_path，于是
+        # 「微光」插件的请求也被磐石先截胡，磐石认不出就回 404，
+        # 真正该响应的插件处理器根本没机会执行。
         #
-        #   /<path:rest>          匹配任何深度，rest 就是整条 plugin_path
+        # 现在带上**自己的插件名前缀**再通配：
         #
-        # 这样无论 URL 里插件名出现 0 次、1 次还是 2 次，都能命中。
+        #   /astrbot_plugin_panshi/<path:rest>
+        #
+        # 这样只匹配属于自己的请求，别人的请求原样落到对方处理器。
+        # 同时**仍然容忍插件名重复出现**——真实 URL 里插件名会出现 0~2 次
+        # （外部 SDK 补一层、调用方再拼一层）：
+        #
+        #   astrbot_plugin_panshi/shop/items                      → rest = shop/items
+        #   astrbot_plugin_panshi/astrbot_plugin_panshi/shop/items → rest = astrbot_plugin_panshi/shop/items
+        #
+        # 后一种多出来的前缀由 `_normalize_endpoint()` 按「已知端点后缀」剥掉。
+        prefix = f"/{PLUGIN_NAME}"
         rest_routes: list[tuple[str, Callable, list[str], str]] = [
-            ("/<path:rest>", self.api_dispatch, ["GET"], "磐石面板接口（GET）"),
-            ("/<path:rest>", self.api_dispatch, ["POST"], "磐石面板接口（POST）"),
-            ("/<path:rest>", self.api_dispatch, ["DELETE"], "磐石面板接口（DELETE）"),
+            (f"{prefix}/<path:rest>", self.api_dispatch, ["GET"], "磐石面板接口（GET）"),
+            (f"{prefix}/<path:rest>", self.api_dispatch, ["POST"], "磐石面板接口（POST）"),
+            (f"{prefix}/<path:rest>", self.api_dispatch, ["DELETE"], "磐石面板接口（DELETE）"),
         ]
 
         ok_count = 0
@@ -230,12 +238,31 @@ class PanshiWebController:
         parts = tail.split("/")
         return "/".join(parts[-2:]) if len(parts) >= 2 else tail
 
+    #: 明显属于**别的插件**的请求前缀。
+    #:
+    #: 路由已经带了自己的插件名（见 :meth:`register_routes`），正常情况下
+    #: 别人的请求根本不会进到这里。但历史上出过一件事：注册的是裸的
+    #: ``/<path:rest>``，于是「微光」插件的 ``config`` 请求被磐石截胡，
+    #: 磐石认不出就回 404，真正该响应的处理器没机会执行。
+    #:
+    #: 所以这里再加一道**语义防线**：URL 里若出现 ``astrbot_plugin_`` 开头的
+    #: 其它插件名，就明确说「这不是磐石的接口」，而不是含糊地报「未知端点」。
+    _OTHER_PLUGIN_RE = re.compile(r"(astrbot_plugin_[A-Za-z0-9_]+)")
+
+    def _looks_like_other_plugin(self, endpoint: str) -> str:
+        """endpoint 里若含别的插件名，返回那个名字；否则返回空串。"""
+        for name in self._OTHER_PLUGIN_RE.findall(str(endpoint or "")):
+            if name != PLUGIN_NAME:
+                return name
+        return ""
+
     async def api_dispatch(self, rest: str = "", **kwargs):
         """通配入口：按 URL 后缀把请求分派到具体处理函数。
 
         为什么这样做：插件 API 的真实 URL 形状在不同调用方下不一致
         （插件名可能出现 0~2 次），写死任何一种注册路径都可能全部失配。
-        用通配匹配、按后缀认端点，就与 URL 前缀无关了。
+        用带插件名前缀的通配匹配 + 按后缀认端点，就既与 URL 前缀无关，
+        又不会抢别的插件的请求。
 
         ``rest`` 是框架从 ``/<path:rest>`` 里解出来的通配内容，会作为
         **关键字参数**传进来——所以这个签名里必须收它，否则直接
@@ -245,11 +272,22 @@ class PanshiWebController:
         方法不符返回 405，端点不认识返回 404，都带可读说明。
         """
         # 优先用框架给的 rest（最可靠），取不到再从请求路径里推断
-        endpoint = str(rest or "").strip("/")
+        raw_endpoint = str(rest or "").strip("/")
+        endpoint = raw_endpoint
         if not endpoint:
             endpoint = self._tail_of(request)
         else:
             endpoint = self._normalize_endpoint(endpoint)
+
+        # 不是磐石的请求 → 明确让开，别抢答。
+        # 抢答的后果不是"多一条日志"，而是**对方的插件彻底不能用**：
+        # 它收到的响应是磐石的 404，看起来就像它自己坏了。
+        other = self._looks_like_other_plugin(raw_endpoint or endpoint)
+        if other:
+            logger.warning(
+                f"[磐石] 收到属于 {other!r} 的请求，已让开（不拦截其他插件的接口）")
+            return _err(
+                f"这是 {other} 的接口，不是磐石的。请检查请求地址是否正确。", 404)
 
         req_obj = getattr(request, "_request", None) or request
         method = str(getattr(req_obj, "method", "GET") or "GET").upper()

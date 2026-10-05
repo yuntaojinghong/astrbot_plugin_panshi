@@ -4,13 +4,13 @@
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0.html)
 [![AstrBot](https://img.shields.io/badge/AstrBot-4.24.2%2B-orange.svg)](https://github.com/AstrBotDevs/AstrBot)
-[![Version](https://img.shields.io/badge/version-v1.16.0-green.svg)](https://github.com/yuntaojinghong/astrbot_plugin_panshi/releases)
+[![Version](https://img.shields.io/badge/version-v1.16.1-green.svg)](https://github.com/yuntaojinghong/astrbot_plugin_panshi/releases)
 
 一个为 [AstrBot](https://github.com/AstrBotDevs/AstrBot) 打造的 QQ 群管理插件，基于 NapCat / OneBot v11（`aiocqhttp`）协议。
 
 **🌐 项目主页：** https://yuntaojinghong.github.io/astrbot_plugin_panshi/
 
-> **当前版本 v1.16.0** · 56 个指令 · 8 个 LLM 工具 · 11 类功能 · 10 组配置
+> **当前版本 v1.16.1** · 56 个指令 · 8 个 LLM 工具 · 11 类功能 · 10 组配置
 
 
 ## ✨ 特色
@@ -402,6 +402,33 @@ python _selftest.py
 ## 📝 更新日志
 
 完整历史见 [Releases 页面](https://github.com/yuntaojinghong/astrbot_plugin_panshi/releases)。
+
+### v1.16.1 — 修：磐石抢了别的插件的接口
+
+**现象**：同时装了「磐石」和「微光·主动关怀」时，微光面板整片报
+「未知接口 `astrbot_plugin_proactive_care/config`，请更新插件」，
+日志里出现：
+
+```
+[磐石] 面板请求了未知端点: 'astrbot_plugin_proactive_care/config'
+```
+
+**根因**：磐石注册的是**裸的**通配路由 `/<path:rest>`。其中 `.*` 能匹配
+**任何** plugin_path，于是微光的请求也被磐石先截胡；磐石认不出这个端点，
+就回了一句 404 —— 而**真正该响应的微光处理器根本没机会执行**。
+表现出来就是"微光坏了"，但错在磐石。
+
+**修法**（两道）：
+
+1. 路由改成**带自己的插件名前缀**再通配：`/astrbot_plugin_panshi/<path:rest>`。
+   这样只匹配属于自己的请求，别人的请求原样落到对方处理器；
+   同时**仍然容忍插件名重复出现**（真实 URL 里插件名会出现 0~2 次）。
+2. `api_dispatch` 加一道语义防线：URL 里若出现别的 `astrbot_plugin_*`
+   名字，明确回「这是 XX 的接口，不是磐石的」，而不是含糊的「未知端点」——
+   后者会让人去更新错误的插件。
+
+> 如果你也在用其它带面板的插件，遇到类似「A 插件报 B 插件的接口未知」，
+> 基本都是这个原因：**通配路由必须带插件名前缀**。
 
 ### v1.16.0 — 三公五、卖身契、扣分扣到 -100 踢群
 
