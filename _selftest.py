@@ -386,6 +386,7 @@ def main():
     test_points_earning_ways()
     test_points_natural_language()
     test_plugin_hint_fallback()
+    test_manual_fulfill_orders()
     test_curfew_intent()
     test_curfew_lift_reporting()
     test_per_group_runtime()
@@ -788,8 +789,10 @@ def test_shop_editing():
     sh2 = ShopHandle(cfg2, db2)
 
     got = sh2.editable_settings()
+    # order_* 是人工发放订单的开关：没配过就给默认值（开单 + 私聊超管）
     assert got == {"enable": False, "lottery_enable": False, "lottery_cost": 10,
-                   "lottery_daily_limit": 3, "lottery_pity": 10}, got
+                   "lottery_daily_limit": 3, "lottery_pity": 10,
+                   "order_enable": True, "order_notify": "private"}, got
     print("SHOP_SETTINGS_DEFAULT_OK (未改时用配置里的值)")
 
     r = sh2.save_settings({"enable": True, "lottery_enable": True,
@@ -798,7 +801,8 @@ def test_shop_editing():
     assert r["ok"], r
     assert sh2.editable_settings() == {
         "enable": True, "lottery_enable": True, "lottery_cost": 25,
-        "lottery_daily_limit": 5, "lottery_pity": 20}, sh2.editable_settings()
+        "lottery_daily_limit": 5, "lottery_pity": 20,
+        "order_enable": True, "order_notify": "private"}, sh2.editable_settings()
     # 换一个实例读同一份数据，确认落盘了
     sh3 = ShopHandle(cfg2, Storage(os.path.join(tmp2, "d.json")))
     assert sh3.editable_settings()["lottery_cost"] == 25, sh3.editable_settings()
@@ -3567,6 +3571,282 @@ def test_plugin_hint_fallback():
     assert not is_plugin_query("帮我总结一下大家对积分的看法和意见",
                               addressed=True), "长句提问被抢走了"
     print("PLUGIN_QUERY_NO_HIJACK_OK (普通聊天与长句提问都不会被抢)")
+
+
+def test_manual_fulfill_orders():
+    """人工发放：开单 → 通知管理员 → 查询 → 核销，外加发放方式与预设。
+
+    回归背景（用户原话）：「如果机器人是管理员，它无法自动设头衔，
+    不如有人中奖需要人工发放就通知 bot 管理员，附带订单号，可以查」。
+
+    这里锁住三件最容易悄悄坏掉的事：
+      1. 人工发放的成交**必须**产生一张带单号的订单（不能只说一句「已记录」）
+      2. 通知失败（没配超管 / 平台不支持私聊）**不能影响下单**
+      3. 非管理员不能核销别人的单
+    """
+    import asyncio
+    import shutil
+    import tempfile
+
+    from astrbot_plugin_panshi.config import PluginConfig
+    from astrbot_plugin_panshi.core.shop_handle import (
+        LOTTERY_PRESET, SHOP_PRESET, ShopHandle, norm_reward, reward_label,
+    )
+    from astrbot_plugin_panshi.data import Storage
+
+    class _Bot:
+        """记录私聊内容；可以模拟「平台不支持私聊」。"""
+
+        def __init__(self, ok=True):
+            self.sent = []
+            self.ok = ok
+
+        async def send_private_msg(self, user_id=None, message=None, **kw):
+            self.sent.append((user_id, message))
+            if not self.ok:
+                raise RuntimeError("该平台不支持私聊")
+            return {"status": "ok"}
+
+        async def get_group_member_info(self, group_id=None, user_id=None,
+                                        no_cache=False, **kw):
+            return {"card": "奶茶哥"}
+
+    class _Ev:
+        def __init__(self, uid=7, gid=100, bot=None):
+            self._uid, self._gid = uid, gid
+            self.bot = bot if bot is not None else _Bot()
+
+        def get_group_id(self):
+            return self._gid
+
+        def get_sender_id(self):
+            return self._uid
+
+        def get_self_id(self):
+            return 99
+
+        def get_sender_name(self):
+            return f"用户{self._uid}"
+
+    def _new(**cfg_extra):
+        tmp = tempfile.mkdtemp(prefix="panshi_order_")
+        cfg = PluginConfig({"basic": {"super_admins": ["999"]},
+                            "shop": {"enable": True}, **cfg_extra})
+        return tmp, ShopHandle(cfg, Storage(tmp))
+
+    # ---------- 1. 人工发放的商品 → 开单 + 私聊通知 ----------
+    tmp, shop = _new()
+    try:
+        assert shop.save_items([{"name": "一杯奶茶", "cost": 100, "stock": 5,
+                                 "reward": "manual", "value": ""}])["ok"]
+        assert shop.save_settings({"enable": True, "order_enable": True,
+                                   "order_notify": "private"})["ok"]
+        ev = _Ev()
+        shop.db.add_points(100, 7, 1000)
+        r = asyncio.run(shop.buy(ev, "一杯奶茶"))
+        assert "订单号 #1" in r, f"没开单：{r}"
+        assert "已私聊通知管理员" in r, r
+
+        order = shop.db.get_order(1)
+        assert order and order["status"] == "pending", order
+        assert order["item"] == "一杯奶茶" and order["cost"] == 100, order
+        assert order["user_id"] == "7" and order["user_name"] == "奶茶哥", order
+        assert order["deliver"] == "manual", order
+        # 积分照扣不误，货也照扣
+        assert shop.db.get_points(100, 7) == 900, shop.db.get_points(100, 7)
+        # 超管真的收到了私聊，且消息里有单号
+        assert len(ev.bot.sent) == 1, ev.bot.sent
+        uid, text = ev.bot.sent[0]
+        assert str(uid) == "999", uid
+        assert "#1" in text and "一杯奶茶" in text, text
+        assert "QQ 7" in text and "群 100" in text, text
+        print("ORDER_CREATED_AND_NOTIFIED_OK (购买奶茶 -> #1，已私聊超管)")
+
+        # ---------- 2. 查询：管理员看本群待发放，群友只看自己的 ----------
+        admin_view = asyncio.run(shop.order_query(ev, "", is_admin=True))
+        assert "本群待发放订单" in admin_view and "#1" in admin_view, admin_view
+        member_ev = _Ev(uid=8)
+        other = asyncio.run(shop.order_query(member_ev, "1", is_admin=False))
+        assert "只能查自己的订单" in other, other
+        mine = asyncio.run(shop.order_query(_Ev(uid=7), "我的", is_admin=False))
+        assert "#1" in mine and "本群待发放" not in mine, mine
+        print("ORDER_QUERY_SCOPE_OK (管理员看本单，旁人查不到)")
+
+        # ---------- 3. 核销：非管理员不行，管理员可以，且不能重复核销 ----------
+        denied = asyncio.run(shop.order_close(_Ev(uid=7), "1", is_admin=False))
+        assert "只有管理员" in denied, denied
+        done = asyncio.run(shop.order_close(ev, "1", is_admin=True))
+        assert "已核销" in done and "一杯奶茶" in done, done
+        assert shop.db.get_order(1)["status"] == "done"
+        again = asyncio.run(shop.order_close(ev, "1", is_admin=True))
+        assert "已经是" in again, again
+        cancel = asyncio.run(shop.order_close(ev, "1", is_admin=True,
+                                              status="cancel"))
+        assert "已经是" in cancel, cancel
+        print("ORDER_CLOSE_ONCE_OK (核销一次就锁定，不可重复/改判)")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+    # ---------- 4. 没配超级管理员：照样开单，只是没私聊 ----------
+    tmp = tempfile.mkdtemp(prefix="panshi_order2_")
+    try:
+        shop = ShopHandle(PluginConfig({"shop": {"enable": True}}),
+                          Storage(tmp))
+        shop.save_items([{"name": "奶茶", "cost": 10, "stock": None,
+                          "reward": "manual"}])
+        ev = _Ev()
+        shop.db.add_points(100, 7, 100)
+        r = asyncio.run(shop.buy(ev, "奶茶"))
+        assert "订单号 #1" in r, r
+        assert "没配置超级管理员" in r, r
+        assert not ev.bot.sent, "没配超管却发出去了私聊"
+        assert shop.db.get_order(1) is not None
+        print("ORDER_WITHOUT_ADMIN_OK (没人可通知也不丢单)")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+    # ---------- 5. 平台不支持私聊：不能因此把单丢掉 ----------
+    tmp = tempfile.mkdtemp(prefix="panshi_order3_")
+    try:
+        shop = ShopHandle(PluginConfig({"basic": {"super_admins": ["999"]},
+                                        "shop": {"enable": True}}),
+                          Storage(tmp))
+        shop.save_items([{"name": "奶茶", "cost": 10, "stock": None,
+                          "reward": "manual"}])
+        ev = _Ev(bot=_Bot(ok=False))
+        shop.db.add_points(100, 7, 100)
+        r = asyncio.run(shop.buy(ev, "奶茶"))
+        assert "订单号 #1" in r, r
+        assert "订单已记录" in r, r
+        print("ORDER_NOTIFY_FAIL_SAFE_OK (私聊失败仍留单)")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+    # ---------- 6. 自动发放的不能开单（否则管理员白忙） ----------
+    tmp = tempfile.mkdtemp(prefix="panshi_order4_")
+    try:
+        shop = ShopHandle(PluginConfig({"shop": {"enable": True}}),
+                          Storage(tmp))
+        shop.save_items([{"name": "积分包", "cost": 10, "stock": None,
+                          "reward": "points", "value": "50"}])
+        ev = _Ev()
+        shop.db.add_points(100, 7, 100)
+        r = asyncio.run(shop.buy(ev, "积分包"))
+        assert "获得 50 积分" in r, r
+        assert "订单号" not in r, f"自动发放不该开单：{r}"
+        assert shop.db.list_orders(group_id="100") == [], "自动发放也开了单"
+        # 头衔发不出去（机器人不是管理员）→ 退回人工发放并开单
+        shop.save_items([{"name": "头衔", "cost": 20, "stock": None,
+                          "reward": "title", "value": "大佬"}])
+        shop.db.add_points(100, 7, 100)
+
+        class _NoAdmin(_Bot):
+            async def set_group_special_title(self, **kw):
+                return {"status": "failed", "retcode": 100,
+                        "message": "bot is not admin"}
+
+        r2 = asyncio.run(shop.buy(_Ev(bot=_NoAdmin()), "头衔"))
+        assert "订单号 #1" in r2, f"头衔发不出去却没开单：{r2}"
+        assert "大佬" in shop.db.get_order(1)["value"], shop.db.get_order(1)
+        print("ORDER_ONLY_WHEN_NEEDED_OK (自动发放不开单，头衔失败才开)")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+    # ---------- 7. 抽奖中奖同样走订单 ----------
+    tmp = tempfile.mkdtemp(prefix="panshi_order5_")
+    try:
+        shop = ShopHandle(PluginConfig({"basic": {"super_admins": ["999"]},
+                                        "shop": {"enable": True,
+                                                 "lottery": {"enable": True,
+                                                             "cost": 5}}}),
+                          Storage(tmp))
+        shop.save_prizes([{"name": "一杯奶茶", "chance": 1.0, "reward": "manual",
+                           "value": ""}])
+        ev = _Ev()
+        shop.db.add_points(100, 7, 100)
+        r = asyncio.run(shop.draw(ev))
+        assert "订单号 #1" in r, r
+        o = shop.db.get_order(1)
+        assert o["kind"] == "lottery" and o["item"] == "一杯奶茶", o
+        print("ORDER_ON_DRAW_OK (中奖也开单)")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+    # ---------- 8. 订单功能关闭时退回旧行为，且不留单 ----------
+    tmp = tempfile.mkdtemp(prefix="panshi_order6_")
+    try:
+        shop = ShopHandle(PluginConfig({"shop": {"enable": True}}),
+                          Storage(tmp))
+        shop.save_items([{"name": "奶茶", "cost": 10, "stock": None,
+                          "reward": "manual"}])
+        shop.save_settings({"order_enable": False})
+        ev = _Ev()
+        shop.db.add_points(100, 7, 100)
+        r = asyncio.run(shop.buy(ev, "奶茶"))
+        assert "已记录" in r and "订单号" not in r, r
+        assert shop.db.list_orders(group_id="100") == []
+        print("ORDER_SWITCH_OK (关掉开单后不再产生订单)")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+    # ---------- 9. 发放方式归一 + 预设自洽 ----------
+    assert norm_reward("积分") == "points" and norm_reward("头衔") == "title"
+    assert norm_reward("人工") == "manual" and norm_reward("谢谢参与") == "none"
+    assert norm_reward("胡说八道") == "manual", "认不出来必须退回人工"
+    assert norm_reward("none", allowed=("points", "title", "manual")) == "manual", \
+        "商品不该有「谢谢参与」"
+    assert reward_label("title") == "自动设头衔"
+
+    tmp = tempfile.mkdtemp(prefix="panshi_preset_")
+    try:
+        shop = ShopHandle(PluginConfig({"shop": {"enable": True}}),
+                          Storage(tmp))
+        res = shop.apply_preset("prizes")
+        assert res["ok"], res
+        total = sum(p["chance"] for p in shop.editable_prizes()
+                    if p["enabled"] is not False)
+        assert abs(total - 1.0) < 1e-6, f"推荐奖池概率合计 {total}，应为 1"
+        names = {p["name"] for p in shop.editable_prizes()}
+        for want in ("谢谢参与", "一杯奶茶", "Steam 喜加一", "群头衔"):
+            assert any(want in n for n in names), f"推荐奖池缺少「{want}」：{names}"
+        res2 = shop.apply_preset("items")
+        assert res2["ok"] and res2["count"] == len(SHOP_PRESET), res2
+        inames = {i["name"] for i in shop.editable_items()}
+        for want in ("一杯奶茶", "Steam 喜加一", "专属头衔", "疯狂星期四"):
+            assert want in inames, f"推荐商品缺少「{want}」：{inames}"
+        # 预设里的发放方式要能对上：奶茶是人工（会开单），头衔是自动设
+        by_name = {i["name"]: i for i in shop.editable_items()}
+        assert by_name["一杯奶茶"]["reward"] == "manual", by_name["一杯奶茶"]
+        assert by_name["专属头衔"]["reward"] == "title", by_name["专属头衔"]
+        assert len(LOTTERY_PRESET) == 7, len(LOTTERY_PRESET)
+        print("REWARD_PRESET_OK (推荐商品/奖池发放方式自洽，概率合计 100%)")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+    # ---------- 10. 预设从指令走：/奖池 支持中文发放方式 ----------
+    tmp = tempfile.mkdtemp(prefix="panshi_cmd_")
+    try:
+        shop = ShopHandle(PluginConfig({"shop": {"enable": True}}),
+                          Storage(tmp))
+        r = asyncio.run(shop.add_prize_from_text("限定头衔 0.01 1 头衔 限定款"))
+        assert "自动设头衔（限定款）" in r, r
+        p = shop.editable_prizes()[0]
+        assert p["reward"] == "title" and p["value"] == "限定款", p
+        r2 = asyncio.run(shop.add_item_from_text("奶茶 50 10 人工 到店自取"))
+        assert "人工发放" in r2 and "到店自取" in r2, r2
+        it = shop.editable_items()[0]
+        assert it["reward"] == "manual" and it["value"] == "到店自取", it
+        # 明确写发放方式 / 只写名字让插件猜，两条路都要能落到「发积分」
+        asyncio.run(shop.add_prize_from_text("加积分 0.2 积分 20"))
+        asyncio.run(shop.add_prize_from_text("送积分 0.3"))
+        prizes = {p["name"]: p for p in shop.editable_prizes()}
+        assert prizes["加积分"]["reward"] == "points", prizes["加积分"]
+        assert prizes["加积分"]["value"] == "20", prizes["加积分"]
+        assert prizes["送积分"]["reward"] == "points", prizes["送积分"]
+        assert prizes["送积分"]["value"] == "10", prizes["送积分"]
+        print("REWARD_FROM_COMMAND_OK (/奖池 /上架 可写中文发放方式)")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 def test_points_natural_language():

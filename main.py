@@ -1029,6 +1029,37 @@ class PanshiPlugin(Star):
         """查看积分消费与抽奖记录：/消费记录"""
         yield event.plain_result(await self.shop.my_records(event))
 
+    # ---- 人工发放订单 ----
+    #
+    # 机器人不是管理员时设不了头衔，奶茶 / Steam 喜加一这类也只能线下给。
+    # 这些成交会开一张带单号的订单：私聊通知超管、/订单 可查、/核销 结单。
+    @filter.command("订单", alias={"发放订单", "我的订单", "待发放"})
+    async def cmd_order(self, event: AstrMessageEvent, arg: str = ""):
+        """查人工发放订单：/订单 [单号|我的|待发放|全部]"""
+        is_admin = await self._check(event)
+        yield event.plain_result(
+            await self.shop.order_query(event, arg, is_admin=is_admin))
+
+    @filter.command("核销", alias={"完成订单", "发放完成"})
+    async def cmd_order_done(self, event: AstrMessageEvent, arg: str = ""):
+        """核销订单：/核销 <单号>"""
+        is_admin = await self._check(event)
+        if not is_admin:
+            yield event.plain_result(self._no_perm())
+            return
+        yield event.plain_result(
+            await self.shop.order_close(event, arg, is_admin=True))
+
+    @filter.command("取消订单", alias={"作废订单"})
+    async def cmd_order_cancel(self, event: AstrMessageEvent, arg: str = ""):
+        """作废订单：/取消订单 <单号>（积分不会自动退回）"""
+        if not await self._check(event):
+            yield event.plain_result(self._no_perm())
+            return
+        yield event.plain_result(
+            await self.shop.order_close(event, arg, is_admin=True,
+                                        status="cancel"))
+
     # ---- 上架/下架：不想开面板时也能加商品与奖品 ----
     #
     #   /上架 奶茶 50 10          商品：名字 价格 库存（库存可省 = 不限量）
@@ -1652,6 +1683,12 @@ HELP_TEXT = """🪨 磐石 · 智能群管
 /加分 @某人 <数量> [理由]  — 加积分
 /扣分 @某人 <数量> [理由]  — 扣积分
    （给自己操作就写「我」：/加分 我 10、/扣分 我 5）
+📮 需要人工发放的（头衔、奶茶、Steam 喜加一…）会自动开**订单**：
+   /订单             — 管理员看本群待发放；群友看自己的单
+   /订单 <单号>       — 查某一单
+   /核销 <单号>       — 发完了结单（管理员）
+   /取消订单 <单号>   — 作废（管理员，积分不自动退回）
+   开单时会私聊通知超级管理员，单号全程可查。
 💡 不打斜杠也能用：直接发「积分」「签到」「积分排行」「积分商城」「抽奖」
    等词即可（整句精确匹配，不会抢群里的正常聊天）。
    想关掉或自定义，见「互动工具 → 裸词快捷触发」。

@@ -177,6 +177,11 @@ class PanshiWebController:
             "shop/save-items": {"POST": "api_shop_save_items"},
             "shop/save-prizes": {"POST": "api_shop_save_prizes"},
             "shop/save-settings": {"POST": "api_shop_save_settings"},
+            # 发放方式预设（面板「一键填入」）
+            "shop/preset": {"POST": "api_shop_preset"},
+            # 人工发放订单：看待办 / 结单
+            "shop/orders": {"GET": "api_shop_orders"},
+            "shop/close-order": {"POST": "api_shop_close_order"},
             # 诊断：把后端此刻的状态原样给前端看，便于定位「保存成功但界面为空」
             "shop/debug": {"GET": "api_shop_debug"},
         }
@@ -464,6 +469,72 @@ class PanshiWebController:
         if shop is None:
             return _err("商城模块不可用", 503)
         return _ok(shop.editable_settings())
+
+    async def api_shop_preset(self):
+        """一键填入推荐的商品/奖池（发放方式已配好）。
+
+        **会覆盖**现有条目，所以前端必须先弹确认框。
+        """
+        shop = self._shop()
+        if shop is None:
+            return _err("商城模块不可用", 503)
+        payload = await _json_body()
+        kind = str(payload.get("kind") or "items").strip().lower()
+        if kind not in ("items", "prizes"):
+            return _err("kind 只能是 items 或 prizes", 400)
+        result = shop.apply_preset(kind)
+        if not result.get("ok"):
+            return _err("；".join(result.get("problems") or ["填入失败"]), 400)
+        if kind == "prizes":
+            return _ok({"prizes": shop.editable_prizes(),
+                        "count": result.get("count", 0),
+                        "total_chance": result.get("total_chance", 0),
+                        "message": f"已填入 {result.get('count', 0)} 个推荐奖品"})
+        return _ok({"items": shop.editable_items(),
+                    "count": result.get("count", 0),
+                    "message": f"已填入 {result.get('count', 0)} 件推荐商品"})
+
+    async def api_shop_orders(self):
+        """人工发放订单列表（默认只看待发放）。
+
+        面板顶栏的「📮 订单」用它：管理员一眼看到谁在等发货，
+        点「核销」结单，群里那条通知不用再翻聊天记录。
+        """
+        shop = self._shop()
+        if shop is None:
+            return _err("商城模块不可用", 503)
+        status = str(_query_str("status", "") or "").strip().lower()
+        if status not in ("pending", "done", "cancel", ""):
+            return _err("status 只能是 pending / done / cancel", 400)
+        group_id = _query_str("group_id", "").strip()
+        orders = shop.orders_view(group_id=group_id or None, limit=50)
+        if status:
+            orders = [o for o in orders if str(o.get("status")) == status]
+        pending = [o for o in orders if str(o.get("status")) == "pending"]
+        return _ok({
+            "orders": orders,
+            "pending_count": len(pending),
+            "settings": shop.order_settings(),
+        })
+
+    async def api_shop_close_order(self):
+        """核销 / 取消订单。"""
+        shop = self._shop()
+        if shop is None:
+            return _err("商城模块不可用", 503)
+        payload = await _json_body()
+        no = payload.get("no")
+        if no in (None, ""):
+            return _err("缺少参数 no（单号）", 400)
+        status = str(payload.get("status") or "done").strip().lower()
+        if status not in ("done", "cancel"):
+            return _err("status 只能是 done 或 cancel", 400)
+        order = shop.db.close_order(no, by="panel", note=str(payload.get("note") or ""),
+                                    status=status)
+        if order is None:
+            return _err(f"没有找到订单 #{no}", 404)
+        return _ok({"order": order, "message":
+                    f"订单 #{no} 已{'核销' if status == 'done' else '取消'}"})
 
     async def api_shop_save_settings(self):
         """保存开关与参数（启用商城/抽奖、消耗、每日次数、保底）。

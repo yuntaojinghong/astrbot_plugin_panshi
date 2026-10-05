@@ -338,6 +338,95 @@ class Storage:
         recs = self._user(group_id, user_id).get("draws") or []
         return [r for r in recs if isinstance(r, dict)][-max(1, int(limit)):][::-1]
 
+    # ---------- 人工发放订单 ---------- #
+    #
+    # 「需要管理员人工发放」的成交（买奶茶、抽到 Steam…）以前只在对话里说一句
+    # 「已记录」，管理员一不看消息就丢了。这里落成一张**有单号的订单**：
+    # 能通知、能查、能核销，事后可追溯。
+    #
+    # 只保留最近 MAX_ORDERS 条，避免长期运行无限增长。
+
+    MAX_ORDERS = 500
+
+    def new_order(self, *, group_id, user_id, user_name, kind: str,
+                  item: str, cost: int, value: str = "",
+                  deliver: str = "") -> dict:
+        """开一张待人工发放的订单，返回订单 dict（含递增单号 ``no``）。"""
+        with self._lock:
+            seq = int(self._data.get("order_seq", 0) or 0) + 1
+            self._data["order_seq"] = seq
+            order = {
+                "no": seq,
+                "group_id": str(group_id),
+                "user_id": str(user_id),
+                "user_name": str(user_name or ""),
+                "kind": str(kind or ""),          # shop / lottery
+                "item": str(item or ""),
+                "cost": int(cost or 0),
+                "value": str(value or ""),        # 发放内容（头衔名/积分数…）
+                "deliver": str(deliver or ""),    # 发放方式：points/title/manual/action
+                "status": "pending",              # pending / done / cancel
+                "created": int(time.time()),
+                "done_at": 0,
+                "done_by": "",
+                "note": "",
+            }
+            orders = self._data.setdefault("orders", [])
+            orders.append(order)
+            if len(orders) > self.MAX_ORDERS:
+                del orders[: len(orders) - self.MAX_ORDERS]
+            self.save()
+            return dict(order)
+
+    def get_order(self, no) -> dict | None:
+        try:
+            target = int(no)
+        except (TypeError, ValueError):
+            return None
+        for o in self._data.get("orders", []):
+            if isinstance(o, dict) and int(o.get("no", 0) or 0) == target:
+                return dict(o)
+        return None
+
+    def list_orders(self, *, group_id=None, status: str = "",
+                    user_id=None, limit: int = 20) -> list[dict]:
+        """按条件列订单，最新的在前。"""
+        out = []
+        for o in self._data.get("orders", []):
+            if not isinstance(o, dict):
+                continue
+            if group_id not in (None, "") and str(o.get("group_id")) != str(group_id):
+                continue
+            if user_id not in (None, "") and str(o.get("user_id")) != str(user_id):
+                continue
+            if status and str(o.get("status")) != status:
+                continue
+            out.append(dict(o))
+        out.reverse()
+        return out[: max(1, int(limit))]
+
+    def close_order(self, no, *, by: str = "", note: str = "",
+                    status: str = "done") -> dict | None:
+        """把订单标记为已完成（或已取消）；返回更新后的订单（不存在则 None）。"""
+        try:
+            target = int(no)
+        except (TypeError, ValueError):
+            return None
+        want = str(status or "done").strip().lower()
+        if want not in ("done", "cancel"):
+            want = "done"
+        with self._lock:
+            for o in self._data.get("orders", []):
+                if not isinstance(o, dict) or int(o.get("no", 0) or 0) != target:
+                    continue
+                o["status"] = want
+                o["done_at"] = int(time.time())
+                o["done_by"] = str(by or "")
+                o["note"] = str(note or "")
+                self.save()
+                return dict(o)
+        return None
+
     # ---------- 积分 / 签到 ----------
     #
     # 积分支持「跨群共用」：打开后所有群的积分（含签到日期）都落到

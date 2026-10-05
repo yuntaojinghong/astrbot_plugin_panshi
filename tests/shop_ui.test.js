@@ -45,6 +45,18 @@ const SEED_PRIZES = () => [
 let items = SEED_ITEMS();
 let prizes = SEED_PRIZES();
 
+/** 假订单数据：一单待发放、一单已核销。 */
+let orders = [
+  { no: 2, group_id: "100", user_id: "8", user_name: "夜猫子", kind: "lottery",
+    item: "Steam 喜加一", cost: 300, value: "", deliver: "manual",
+    status: "pending", time_text: "10-05 21:30",
+    deliver_label: "人工发放", status_label: "待发放" },
+  { no: 1, group_id: "100", user_id: "7", user_name: "奶茶哥", kind: "shop",
+    item: "一杯奶茶", cost: 120, value: "到店自取", deliver: "manual",
+    status: "done", time_text: "10-04 19:02",
+    deliver_label: "人工发放", status_label: "已核销" },
+];
+
 /**
  * 重置假后端数据。
  *
@@ -75,6 +87,18 @@ window.AstrBotPluginPage = {
     if (ep.endsWith("shop/items")) return { items: JSON.parse(JSON.stringify(items)) };
     if (ep.endsWith("shop/prizes")) return { prizes: JSON.parse(JSON.stringify(prizes)) };
     if (ep.endsWith("shop/settings")) return JSON.parse(JSON.stringify(settings));
+    if (ep.endsWith("shop/orders")) {
+      const want = new URLSearchParams(String(endpoint).split("?")[1] || "")
+        .get("status") || "";
+      const list = want
+        ? orders.filter((o) => o.status === want)
+        : orders.slice();
+      return {
+        orders: JSON.parse(JSON.stringify(list)),
+        pending_count: orders.filter((o) => o.status === "pending").length,
+        settings: { order_enable: true, order_notify: "private" },
+      };
+    }
     if (ep.endsWith("shop/debug")) {
       return {
         settings: JSON.parse(JSON.stringify(settings)),
@@ -108,6 +132,29 @@ window.AstrBotPluginPage = {
     if (ep.endsWith("shop/save-settings")) {
       settings = { ...settings, ...body.settings };
       return settings;
+    }
+    if (ep.endsWith("shop/close-order")) {
+      const hit = orders.find((o) => String(o.no) === String(body.no));
+      if (!hit) throw new Error(`没有找到订单 #${body.no}`);
+      hit.status = body.status === "cancel" ? "cancel" : "done";
+      hit.status_label = body.status === "cancel" ? "已取消" : "已核销";
+      return { order: hit, message: `订单 #${body.no} 已核销` };
+    }
+    if (ep.endsWith("shop/preset")) {
+      if (body.kind === "prizes") {
+        prizes = [
+          { id: "t", name: "谢谢参与", chance: 0.5, stock: null, won: 0,
+            rare: false, reward: "none", value: "", enabled: true },
+        ];
+        return { prizes, count: prizes.length, total_chance: 0.5,
+                 message: "已填入 1 个推荐奖品" };
+      }
+      items = [
+        { id: "m", name: "一杯奶茶", cost: 120, stock: 20, sold: 0, left: 20,
+          reward: "manual", value: "", description: "", limit_per_user: 0,
+          limit_per_day: 1, enabled: true },
+      ];
+      return { items, count: 1, message: "已填入 1 件推荐商品" };
     }
     return {};
   },
@@ -214,8 +261,16 @@ async function renderBoth() {
 
     const inputs = [...rows[rows.length - 1].querySelectorAll("input")];
     const texts = inputs.filter((i) => i.type === "text" || i.type === "number");
-    check("新行是三个框（商品名 / 价格 / 库存）", texts.length === 3,
+    // 现在是四个框：商品名 / 价格 / 库存 / 发放内容
+    // （发放方式是下拉，不在 input 里）
+    check("新行是四个框（商品名 / 价格 / 库存 / 发放内容）", texts.length === 4,
           inputs.map((i) => i.type));
+    const sel = rows[rows.length - 1].querySelector("select");
+    check("商品行有「发放方式」下拉", !!sel);
+    check("下拉含「人工发放」选项",
+          !!sel && [...sel.options].some((o) => o.value === "manual"),
+          sel ? [...sel.options].map((o) => o.value) : null);
+    check("新行默认人工发放（会开订单）", !!sel && sel.value === "manual", sel && sel.value);
 
     texts[0].value = "表情包";
     texts[1].value = "30";
@@ -503,6 +558,113 @@ async function renderBoth() {
   const sw2 = reopened2.querySelector(".shop-switch-box");
   check("重新打开商品页后，启用开关仍是开的（没有复位）",
         !!sw2 && sw2.checked === true, sw2 ? sw2.checked : null);
+
+  /* ---------- 12. 一键填入推荐配置 ---------- */
+  resetFixtures();
+  {
+    const host = doc.createElement("div");
+    $("#content").innerHTML = "";
+    $("#content").append(host);
+    await window.PanshiShop.renderItemsView(host, () => {});
+    await settle();
+    const preset = btn(host, "⚡ 一键填入推荐商品");
+    check("商品页有「一键填入推荐商品」", !!preset,
+          [...host.querySelectorAll("button")].map((b) => b.textContent.trim()));
+    if (preset) {
+      click(preset);
+      await settle();
+      check("先弹确认框（不会直接覆盖）",
+            !!host.ownerDocument.querySelector(".modal-overlay"));
+      const okBtn = [...host.ownerDocument.querySelectorAll(".modal-overlay button")]
+        .find((b) => b.textContent.trim() === "填入");
+      if (okBtn) click(okBtn);
+      await settle();
+      const post = calls.filter((c) =>
+        c[0] === "POST" && String(c[1]).includes("shop/preset")).pop();
+      check("确认后 POST shop/preset（kind=items）",
+            !!post && post[2].kind === "items", post ? post[2] : null);
+    }
+  }
+
+  /* ---------- 13. 待发放订单视图 ---------- */
+  resetFixtures();
+  {
+    const host = doc.createElement("div");
+    $("#content").innerHTML = "";
+    $("#content").append(host);
+    await window.PanshiShop.renderOrdersView(host, () => {});
+    await settle();
+
+    const get = calls.filter((c) =>
+      c[0] === "GET" && String(c[1]).includes("shop/orders")).pop();
+    check("订单页读 shop/orders（默认看待发放）",
+          !!get && String(get[1]).includes("status=pending"),
+          get ? get[1] : null);
+    check("提示有 1 单等着发放",
+          (host.textContent || "").includes("有 1 单等着人工发放"),
+          (host.textContent || "").slice(0, 120));
+    check("列出待发放那一单（#2 Steam 喜加一）",
+          (host.textContent || "").includes("#2")
+          && (host.textContent || "").includes("Steam 喜加一"));
+    check("默认不显示已核销的单", !(host.textContent || "").includes("奶茶哥"));
+    check("待发放的行有「核销」按钮", !!btn(host, "核销"));
+
+    // 切到「全部」：两单都在
+    const allTab = btn(host, "全部");
+    check("有筛选 tab", !!allTab);
+    if (allTab) { click(allTab); await settle(); }
+    check("切到「全部」后已核销的单也出现",
+          (host.textContent || "").includes("奶茶哥"));
+
+    // 核销：先确认框，再 POST
+    const doneBtn = btn(host, "核销");
+    if (doneBtn) {
+      click(doneBtn);
+      await settle();
+      const okBtn = [...host.ownerDocument.querySelectorAll(".modal-overlay button")]
+        .find((b) => b.textContent.trim() === "核销");
+      check("核销前有确认框", !!okBtn);
+      if (okBtn) click(okBtn);
+      await settle();
+      const post = calls.filter((c) =>
+        c[0] === "POST" && String(c[1]).includes("shop/close-order")).pop();
+      check("确认后 POST shop/close-order（no=2, done）",
+            !!post && post[2].no === 2 && post[2].status === "done",
+            post ? post[2] : null);
+    }
+  }
+
+  /* ---------- 14. 订单设置卡（两个页面各一份） ---------- */
+  resetFixtures();
+  {
+    const v = await renderBoth();
+    await settle();
+    for (const [name, root] of [["商品页", v.a], ["抽奖页", v.b]]) {
+      check(`${name}有「📮 人工发放订单」卡片`,
+            (root.textContent || "").includes("人工发放订单"));
+      check(`${name}订单卡有「保存订单设置」`, !!btn(root, "保存订单设置"));
+      check(`${name}订单卡有通知方式下拉`,
+            !!root.querySelector("select"));
+    }
+    // 通知方式能存下去。
+    // 注意：页面里还有商品行自己的「发放方式」下拉，所以要按 .shop-setting 精确定位，
+    // 否则会改到表格里那一列去（改完看不出来，但断言会莫名其妙地失败）。
+    const modeSel = v.a.querySelector(".shop-setting select");
+    check("订单卡的通知方式是独立的下拉", !!modeSel);
+    if (modeSel) {
+      modeSel.value = "both";
+      const save = btn(v.a, "保存订单设置");
+      click(save);
+      await settle();
+      const post = calls.filter((c) =>
+        c[0] === "POST" && String(c[1]).includes("shop/save-settings")).pop();
+      check("订单设置提交 order_enable/order_notify",
+            !!post && post[2].settings
+              && post[2].settings.order_notify === "both"
+              && post[2].settings.order_enable === true,
+            post ? post[2] : null);
+    }
+  }
 
   console.log(out.join("\n"));
   console.log(`\n结果: ${pass} 通过, ${fail} 失败`);

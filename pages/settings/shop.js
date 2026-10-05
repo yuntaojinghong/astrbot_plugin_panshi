@@ -206,6 +206,69 @@ function buildTable({ columns, rows, makeRow, kind = "条目", emptyHint }) {
   return { table, read, addBlank, tbody };
 }
 
+/* ------------------------------------------------------------------ *
+ *  发放方式（怎么把奖品给到人）
+ * ------------------------------------------------------------------ *
+ * 机器人不一定是管理员，「设头衔」经常发不出去；奶茶、Steam 喜加一
+ * 这类更是只能线下给。所以「怎么发」必须是一项显式配置：
+ *   自动发积分 / 自动设头衔 / 自定义动作 —— 机器人当场发
+ *   人工发放                        —— 开一张带单号的订单，通知管理员
+ */
+
+const REWARD_OPTIONS = {
+  item: [
+    ["manual", "人工发放（开订单）"],
+    ["points", "自动发积分"],
+    ["title", "自动设头衔"],
+    ["action", "自定义动作"],
+  ],
+  prize: [
+    ["manual", "人工发放（开订单）"],
+    ["points", "自动发积分"],
+    ["title", "自动设头衔"],
+    ["action", "自定义动作"],
+    ["none", "谢谢参与"],
+  ],
+};
+
+const VALUE_HINT = {
+  points: "积分数，如 50",
+  title: "头衔文字，如 幸运星",
+  manual: "给管理员的备注，可留空",
+  action: "要做什么，如 私聊发兑换码",
+  none: "不用填",
+};
+
+/** 发放方式下拉 + 内容输入。返回 {cell, read}。 */
+function rewardCell(kind, current) {
+  const opts = REWARD_OPTIONS[kind] || REWARD_OPTIONS.item;
+  const sel = el("select", { class: "shop-input" });
+  for (const [v, t] of opts) sel.append(el("option", { value: v, text: t }));
+  // 奖品沿用旧默认 points，商品沿用 manual —— 与后端一致，不擅自改变老配置
+  const fallback = kind === "prize" ? "points" : "manual";
+  const picked = opts.some(([v]) => v === current) ? current : fallback;
+  sel.value = picked;
+
+  const val = el("input", {
+    class: "shop-input", type: "text",
+    value: kind === "prize" && picked === "points" ? (current || "10") : (current || ""),
+    placeholder: VALUE_HINT[picked] || "",
+    title: VALUE_HINT[picked] || "",
+  });
+  sel.addEventListener("change", () => {
+    const hint = VALUE_HINT[sel.value] || "";
+    val.placeholder = hint;
+    val.title = hint;
+    // 换方式时把上一个方式留下的占位值（空 / 0）清掉，
+    // 否则会出现「人工发放，备注 0」这种看不懂的组合
+    if (val.value === "" || val.value === "0") val.value = "";
+    if (sel.value === "points" && !val.value) val.value = "10";
+  });
+
+  const cell = el("div", { class: "shop-reward" }, [sel, val]);
+  return { cell, read: () => ({ reward: sel.value, value: val.value.trim() }) };
+}
+
 function itemRow(it, onRemove) {
   const name = el("input", {
     class: "shop-input grow-2", type: "text", value: it.name || "",
@@ -220,10 +283,12 @@ function itemRow(it, onRemove) {
     value: it.stock === null || it.stock === undefined ? "" : it.stock,
     placeholder: "不限",
   });
+  const rw = rewardCell("item", it.reward);
   const row = el("tr", { class: "shop-row" }, [
     el("td", {}, [name]),
     el("td", {}, [cost]),
     el("td", {}, [stock]),
+    el("td", {}, [rw.cell]),
     el("td", { class: "shop-meta" }, [
       el("span", { class: "muted", text: it.sold ? `已售 ${it.sold}` : "" }),
     ]),
@@ -238,8 +303,7 @@ function itemRow(it, onRemove) {
     id: it.id, name: name.value.trim(),
     cost: Number(cost.value || 0),
     stock: stock.value === "" ? null : Number(stock.value),
-    // 保留原有字段，改名字/价格时不要把发放方式丢掉
-    reward: it.reward || "manual", value: it.value || "",
+    ...rw.read(),
     description: it.description || "",
     limit_per_user: it.limit_per_user || 0,
     limit_per_day: it.limit_per_day || 0,
@@ -265,6 +329,7 @@ function prizeRow(p, onRemove) {
   const rare = el("input", {
     type: "checkbox", checked: !!p.rare, title: "标记为稀有，供保底使用",
   });
+  const rw = rewardCell("prize", p.reward);
 
   const pct = el("span", { class: "shop-pct" });
   const paint = () => {
@@ -280,6 +345,7 @@ function prizeRow(p, onRemove) {
     el("td", { class: "shop-num-cell" }, [chance, pct]),
     el("td", {}, [stock]),
     el("td", { class: "shop-center" }, [rare]),
+    el("td", {}, [rw.cell]),
     el("td", { class: "shop-meta" }, [
       el("span", { class: "muted", text: p.won ? `已中 ${p.won}` : "" }),
     ]),
@@ -295,7 +361,7 @@ function prizeRow(p, onRemove) {
     chance: Number(chance.value || 0),
     stock: stock.value === "" ? null : Number(stock.value),
     rare: rare.checked,
-    reward: p.reward || "points", value: p.value || "0",
+    ...rw.read(),
     enabled: p.enabled !== false,
   });
   return row;
@@ -439,6 +505,89 @@ function settingsSection(kind, settings, onSaved) {
   return { section, read };
 }
 
+/**
+ * 人工发放订单设置。
+ *
+ * 独立一张卡（不放进商城/抽奖设置里）：它管的是**两种成交共用的**兜底流程，
+ * 在商品页和抽奖页都能改，改的是同一份后端设置。
+ */
+function orderSection(settings, onSaved) {
+  const s = settings || {};
+  const enable = toggleInput(s.order_enable !== false);
+  const mode = el("select", { class: "shop-input" });
+  for (const [v, t] of [
+    ["private", "私聊通知超级管理员"],
+    ["both", "私聊 + 群里提示"],
+    ["off", "不通知（只记单）"],
+  ]) mode.append(el("option", { value: v, text: t }));
+  mode.value = ["private", "both", "off"].includes(s.order_notify) ? s.order_notify : "private";
+
+  const read = () => ({
+    order_enable: enable.box.checked,
+    order_notify: mode.value,
+  });
+
+  return el("section", { class: "shop-card" }, [
+    el("div", { class: "shop-card-head" }, [
+      el("strong", { text: "📮 人工发放订单" }),
+      el("span", { class: "muted", text: "头衔、奶茶、Steam 喜加一这类怎么给" }),
+    ]),
+    el("div", { class: "shop-settings" }, [
+      settingRow(
+        "需要人工发放时开订单",
+        enable.el,
+        "「发放方式＝人工发放」的商品/奖品成交后，会生成一个带单号的订单；" +
+        "群里发 /订单 可查，管理员 /核销 <单号> 结单。关掉则只留一句「已记录」。",
+      ),
+      settingRow(
+        "通知方式",
+        mode,
+        "开单后私聊「基础设置 → 超级管理员」，消息里带单号、商品、买家 QQ 与群号。",
+      ),
+    ]),
+    el("div", { class: "shop-actions" }, [
+      el("button", {
+        class: "btn primary", type: "button", text: "保存订单设置",
+        onClick: async () => {
+          try {
+            await apiPost("shop/save-settings", { settings: read() });
+            toast("订单设置已保存");
+            if (onSaved) await onSaved();
+          } catch (e) {
+            showError(String(e.message || e));
+          }
+        },
+      }),
+      el("span", { class: "muted", text: "机器人没设成头衔、或奖品要线下给时，就靠它兜底" }),
+    ]),
+  ]);
+}
+
+/** 「一键填入推荐配置」按钮：按常见奖品配好价格、库存与发放方式。 */
+function presetButton(kind, label, onDone) {
+  return el("button", {
+    class: "btn tiny", type: "button", text: `⚡ ${label}`,
+    title: "填入一份常用配置（会覆盖当前列表里的内容）",
+    onClick: async () => {
+      const ok = await askConfirm({
+        title: "一键填入推荐配置",
+        message: kind === "items"
+          ? "会用一份常用商品清单替换当前商品列表，确定吗？"
+          : "会用一份常用奖池替换当前奖池（概率合计正好 100%），确定吗？",
+        confirmText: "填入", danger: true,
+      });
+      if (!ok) return;
+      try {
+        const r = await apiPost("shop/preset", { kind });
+        toast(r && r.message ? r.message : "已填入");
+        await onDone();
+      } catch (e) {
+        showError(String(e.message || e));
+      }
+    },
+  });
+}
+
 /** 商品管理（含商城设置）。 */
 async function renderItemsView(host, onBack) {
   host.innerHTML = "";
@@ -489,6 +638,7 @@ async function renderItemsView(host, onBack) {
       { label: "商品名", cls: "grow-2" },
       { label: "价格", cls: "num" },
       { label: "库存", cls: "num" },
+      { label: "发放方式", cls: "grow-2" },
       { label: "统计", cls: "shop-meta" },
       { label: "", cls: "shop-ops" },
     ],
@@ -517,11 +667,15 @@ async function renderItemsView(host, onBack) {
   wrap.append(settingsSection("shop", settings,
     () => renderItemsView(host, onBack)).section);
 
+  // 人工发放订单设置：商品名旁的「发放方式」选了「人工发放」，靠它兜底
+  wrap.append(orderSection(settings, () => renderItemsView(host, onBack)));
+
   wrap.append(el("section", { class: "shop-card" }, [
     el("div", { class: "shop-card-head" }, [
       el("strong", { text: "商品列表" }),
       el("span", { class: "muted", text: "群友用 /购买 <商品名> 下单" }),
       el("span", { class: "spacer" }),
+      presetButton("items", "一键填入推荐商品", () => renderItemsView(host, onBack)),
       el("button", {
         class: "btn tiny", type: "button", text: "＋ 添加商品",
         onClick: () => items.addBlank({ cost: 50, stock: null, reward: "manual" }),
@@ -591,6 +745,7 @@ async function renderPrizesView(host, onBack) {
       { label: "概率（0~1）", cls: "num" },
       { label: "可中次数", cls: "num" },
       { label: "稀有", cls: "shop-center" },
+      { label: "发放方式", cls: "grow-2" },
       { label: "统计", cls: "shop-meta" },
       { label: "", cls: "shop-ops" },
     ],
@@ -640,11 +795,15 @@ async function renderPrizesView(host, onBack) {
   wrap.append(settingsSection("lottery", settings,
     () => renderPrizesView(host, onBack)).section);
 
+  // 奖品同样可能只能人工发（奶茶、Steam 喜加一），复用同一张订单设置卡
+  wrap.append(orderSection(settings, () => renderPrizesView(host, onBack)));
+
   wrap.append(el("section", { class: "shop-card" }, [
     el("div", { class: "shop-card-head" }, [
       el("strong", { text: "奖池" }),
       el("span", { class: "muted", text: "群友用 /抽奖 抽" }),
       el("span", { class: "spacer" }),
+      presetButton("prizes", "一键填入推荐奖池", () => renderPrizesView(host, onBack)),
       el("button", {
         class: "btn tiny", type: "button", text: "＋ 添加奖品",
         onClick: () => { prizes.addBlank({ chance: 0.1, stock: null }); paintTotal(); },
@@ -673,7 +832,146 @@ async function renderPrizesView(host, onBack) {
   host.append(wrap);
 }
 
+/* ------------------------------------------------------------------ *
+ *  待发放订单
+ * ------------------------------------------------------------------ */
+
+/**
+ * 订单视图：谁在等发货、发了没。
+ *
+ * 这一页是「机器人不是管理员、奖品要人工给」的后端闭环——
+ * 群里开单会私聊通知超管，这里能直接结单，不必翻聊天记录。
+ */
+async function renderOrdersView(host, onBack) {
+  host.innerHTML = "";
+  const wrap = el("div", { class: "shop-wrap" });
+  const body = el("div", {});
+  let status = "pending";
+
+  const tabs = el("div", { class: "shop-tabs" });
+  const mkTab = (key, label) => {
+    const b = el("button", {
+      class: "btn tiny", type: "button", text: label,
+      onClick: async () => {
+        status = key;
+        for (const t of tabs.children) t.classList.remove("active");
+        b.classList.add("active");
+        await load();
+      },
+    });
+    if (key === status) b.classList.add("active");
+    return b;
+  };
+  for (const [k, t] of [["pending", "待发放"], ["done", "已核销"],
+                        ["cancel", "已取消"], ["", "全部"]]) {
+    tabs.append(mkTab(k, t));
+  }
+
+  const load = async () => {
+    body.innerHTML = "";
+    body.append(el("div", { class: "muted", text: "读取中…" }));
+    let data = null;
+    try {
+      data = await apiGet("shop/orders", { status });
+    } catch (e) {
+      body.innerHTML = "";
+      body.append(el("div", {
+        class: "alert error",
+        text: `读取订单失败：${e.message || e}。若提示「未找到该路由」，` +
+          `请在插件管理里重载磐石。`,
+      }));
+      return;
+    }
+    const orders = (data && Array.isArray(data.orders)) ? data.orders : [];
+    const pending = (data && data.pending_count) || 0;
+    body.innerHTML = "";
+
+    body.append(el("div", {
+      class: pending ? "alert warn" : "alert ok",
+      text: pending
+        ? `⏳ 有 ${pending} 单等着人工发放。核销后这里会移到「已核销」。`
+        : "✅ 没有待发放的订单。",
+    }));
+
+    if (!orders.length) {
+      body.append(el("div", { class: "shop-empty", text: "（这个筛选下没有订单）" }));
+      return;
+    }
+
+    const list = el("div", { class: "shop-orders" });
+    for (const o of orders) {
+      const mark = { pending: "⏳", done: "✅", cancel: "🚫" }[o.status] || "·";
+      const kind = o.kind === "shop" ? "购买" : "中奖";
+      const act = el("div", { class: "shop-order-ops" });
+      if (o.status === "pending") {
+        const close = async (st, label) => {
+          const ok = await askConfirm({
+            title: label,
+            message: st === "done"
+              ? `确认已经把「${o.item}」发给 ${o.user_name || o.user_id} 了？`
+              : `作废订单 #${o.no}？积分不会自动退回，需要退款请手动加分。`,
+            confirmText: label, danger: st !== "done",
+          });
+          if (!ok) return;
+          try {
+            await apiPost("shop/close-order", { no: o.no, status: st });
+            toast(`订单 #${o.no} 已${st === "done" ? "核销" : "作废"}`);
+            await load();
+          } catch (e) {
+            showError(String(e.message || e));
+          }
+        };
+        act.append(
+          el("button", {
+            class: "btn tiny primary", type: "button", text: "核销",
+            title: "已经发到货了", onClick: () => close("done", "核销"),
+          }),
+          el("button", {
+            class: "btn tiny ghost", type: "button", text: "作废",
+            title: "这一单不做了", onClick: () => close("cancel", "作废"),
+          }),
+        );
+      }
+      list.append(el("div", { class: `shop-order st-${o.status}` }, [
+        el("div", { class: "shop-order-head" }, [
+          el("strong", { text: `${mark} #${o.no}` }),
+          el("span", { text: `${kind}「${o.item}」` }),
+          el("span", { class: "tag", text: o.deliver_label || "" }),
+          el("span", { class: "muted", text: o.status_label || "" }),
+          el("span", { class: "spacer" }),
+          act,
+        ]),
+        el("div", { class: "shop-order-meta muted", text:
+          `👤 ${o.user_name || "群友"}（QQ ${o.user_id}） · 🏠 群 ${o.group_id}`
+          + ` · 💎 ${o.cost} 积分 · 🕒 ${o.time_text || ""}`
+          + (o.value ? ` · 📝 ${o.value}` : "") }),
+      ]));
+    }
+    body.append(list);
+    body.append(el("div", { class: "shop-raw-hint", text:
+      "群里也能查：/订单（本群待发放）、/订单 <单号>、/核销 <单号>。" }));
+  };
+
+  wrap.append(viewHead("📮 人工发放订单",
+    "购买或中奖时需要人工给的，都会在这里留下一条带单号的记录。", onBack, null));
+  wrap.append(el("section", { class: "shop-card" }, [
+    el("div", { class: "shop-card-head" }, [
+      el("strong", { text: "订单" }),
+      el("span", { class: "spacer" }),
+      el("button", {
+        class: "btn tiny", type: "button", text: "⟳ 刷新",
+        onClick: load,
+      }),
+    ]),
+    tabs,
+    body,
+  ]));
+
+  host.append(wrap);
+  await load();
+}
+
 /* 挂到 window 上供 app.js 调用。
  * 不用 ES module：面板其余脚本都是普通 <script>，
  * 混用模块与非模块容易出现加载顺序问题。 */
-window.PanshiShop = { renderItemsView, renderPrizesView };
+window.PanshiShop = { renderItemsView, renderPrizesView, renderOrdersView };

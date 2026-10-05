@@ -17,7 +17,7 @@ FOLLOW_DEFAULT_KEY = "follow_default"
 PLUGIN_NAME = "astrbot_plugin_panshi"
 
 # 与 metadata.yaml 保持一致的插件版本（读取失败时的兜底值）
-FALLBACK_VERSION = "v1.14.1"
+FALLBACK_VERSION = "v1.15.0"
 
 # 按群可覆盖的配置分组（与 _conf_schema.json 的分组保持一致）
 OVERRIDABLE_GROUPS = [
@@ -450,12 +450,20 @@ class PageService:
             if isinstance(lst, list):
                 blocked += len(lst)
 
+        # 待人工发放的订单：面板顶栏据此提示管理员有货要发
+        orders = data.get("orders") or [] if isinstance(data, dict) else []
+        pending_orders = sum(
+            1 for o in orders
+            if isinstance(o, dict) and str(o.get("status")) == "pending"
+        )
+
         return {
             "tracked_groups": len(group_ids),
             "tracked_users": len(users),
             "active_users": active_users,
             "total_warnings": warn_total,
             "blocked_users": blocked,
+            "pending_orders": pending_orders,
             "quick_status": self._quick_status(),
         }
 

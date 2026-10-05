@@ -5,6 +5,9 @@
 
 from __future__ import annotations
 
+import re
+import time
+
 from astrbot.api import logger
 
 from ..utils import get_nickname
@@ -36,7 +39,6 @@ def _int(value, default: int = 0) -> int:
 
 def _slug(name: str) -> str:
     """把名字转成可用作 id 的短串（保留中英文数字）。"""
-    import re
     s = re.sub(r"[^\w\u4e00-\u9fff]+", "_", str(name or "").strip())
     return s.strip("_")[:24] or "item"
 
@@ -70,6 +72,123 @@ def _parse_switch(arg: str) -> bool | None:
     if t in ("off", "关", "关闭", "停用", "false", "0", "no", "否"):
         return False
     return None
+
+
+def _numeric_or_text(value):
+    """OneBot 的 user_id 要数字；非数字平台就原样传，不硬转。"""
+    s = str(value or "").strip()
+    try:
+        return int(s)
+    except (TypeError, ValueError):
+        return s
+
+
+def _fmt_time(ts) -> str:
+    """时间戳 -> ``10-05 21:30``。解析不了就给个 ``-``，别抛异常。"""
+    try:
+        ts = int(ts)
+    except (TypeError, ValueError):
+        return "-"
+    if ts <= 0:
+        return "-"
+    return time.strftime("%m-%d %H:%M", time.localtime(ts))
+
+
+# ---------------------------------------------------------------------- #
+#  发放方式（商品 / 奖品拿到之后怎么给到人）
+# ---------------------------------------------------------------------- #
+#
+# 机器人**不一定是管理员**，所以「设头衔」这类自动发放经常失败；
+# 奶茶、Steam 喜加一这类线下奖品更是只能人工发。
+# 与其假装自动发成功、然后丢在群里没人管，不如把「怎么发」做成
+# 一项显式配置：能自动的自动，不能自动的开一张**有单号的订单**，
+# 通知管理员、可查询、可核销。
+
+#: 发放方式取值 -> 面板上显示的人话
+REWARD_LABELS = {
+    "points": "自动发积分",
+    "title": "自动设头衔",
+    "manual": "人工发放",
+    "action": "自定义动作",
+    "none": "谢谢参与",
+}
+
+#: 每种发放方式下「内容」该填什么（面板提示词 / 指令校验用）
+REWARD_VALUE_HINT = {
+    "points": "积分数，如 50",
+    "title": "头衔文字，如 幸运星",
+    "manual": "给管理员看的备注，可留空",
+    "action": "要做什么，如 私聊发兑换码",
+    "none": "不用填",
+}
+
+#: 商品可选的发放方式
+ITEM_REWARDS = ("points", "title", "manual", "action")
+#: 奖品可选的发放方式（比商品多一个「谢谢参与」）
+PRIZE_REWARDS = ("points", "title", "manual", "action", "none")
+
+#: 指令里可以直接打中文，不用记英文
+_REWARD_ALIASES = {
+    "points": "points", "point": "points", "积分": "points", "加积分": "points",
+    "title": "title", "头衔": "title", "群头衔": "title", "设头衔": "title",
+    "manual": "manual", "人工": "manual", "人工发放": "manual", "手动": "manual",
+    "action": "action", "动作": "action", "自定义": "action",
+    "自定义动作": "action",
+    "none": "none", "无": "none", "谢谢参与": "none", "未中奖": "none",
+}
+
+
+def norm_reward(word, default: str = "manual", allowed=()) -> str:
+    """把「积分 / 头衔 / 人工 / 动作 / 谢谢参与」归一成内部取值。
+
+    认不出来就用默认值——宁可按人工发放走订单流程，也不要猜错把
+    积分直接发出去（那是不可逆的）。
+    """
+    got = _REWARD_ALIASES.get(str(word or "").strip().lower(), "")
+    if not got:
+        return default
+    if allowed and got not in allowed:
+        return default
+    return got
+
+#: 一份能直接用的商品清单（面板「一键填入」用）
+SHOP_PRESET: list[dict] = [
+    {"name": "一杯奶茶", "cost": 120, "stock": 20, "limit_per_day": 1,
+     "reward": "manual", "value": "", "description": "凭订单号找管理员领"},
+    {"name": "疯狂星期四", "cost": 500, "stock": 3, "limit_per_day": 1,
+     "reward": "manual", "value": "", "description": "周四兑现，限 3 份"},
+    {"name": "Steam 喜加一", "cost": 300, "stock": 5, "limit_per_user": 1,
+     "reward": "manual", "value": "", "description": "管理员私发激活码"},
+    {"name": "专属头衔", "cost": 200, "stock": 10, "limit_per_user": 1,
+     "reward": "title", "value": "大佬", "description": "机器人需是管理员"},
+    {"name": "改名卡", "cost": 80, "stock": None, "limit_per_day": 1,
+     "reward": "manual", "value": "", "description": "让管理员帮你改群名片"},
+    {"name": "免禁言卡", "cost": 150, "stock": None, "limit_per_user": 3,
+     "reward": "manual", "value": "", "description": "被误伤时找管理员抵消一次"},
+]
+
+#: 一份能直接用的奖池（概率合计正好 1，剩下的靠库存限量）
+LOTTERY_PRESET: list[dict] = [
+    {"name": "谢谢参与", "chance": 0.50, "stock": None,
+     "reward": "none", "value": ""},
+    {"name": "20 积分", "chance": 0.25, "stock": None,
+     "reward": "points", "value": "20"},
+    {"name": "50 积分", "chance": 0.10, "stock": None,
+     "reward": "points", "value": "50"},
+    {"name": "群头衔·幸运星", "chance": 0.05, "stock": 5, "rare": True,
+     "reward": "title", "value": "幸运星"},
+    {"name": "一杯奶茶", "chance": 0.05, "stock": 2, "rare": True,
+     "reward": "manual", "value": ""},
+    {"name": "Steam 喜加一", "chance": 0.03, "stock": 1, "rare": True,
+     "reward": "manual", "value": ""},
+    {"name": "疯狂星期四", "chance": 0.02, "stock": 1, "rare": True,
+     "reward": "manual", "value": ""},
+]
+
+
+def reward_label(kind: str) -> str:
+    """发放方式 -> 人话。认不出来就原样返回，别假装认识。"""
+    return REWARD_LABELS.get(str(kind or "").strip().lower(), str(kind or ""))
 
 
 class ShopHandle(BaseHandle):
@@ -227,25 +346,50 @@ class ShopHandle(BaseHandle):
         )
         return cfg
 
+    #: 人工发放订单的两个开关默认开：不开的话「已记录」就还是一句空话
+    _ORDER_DEFAULTS = {"order_enable": True, "order_notify": "private"}
+    #: 通知方式：只私聊超管 / 私聊+群内提示 / 不通知
+    _ORDER_NOTIFY_MODES = ("private", "both", "off")
+
+    def order_settings(self) -> dict:
+        """人工发放订单的开关（存在商城设置里，和积分开关一处）。"""
+        stored = self.db.get_shop_settings() or {}
+        out = dict(self._ORDER_DEFAULTS)
+        for key in self._ORDER_DEFAULTS:
+            if key in stored:
+                out[key] = stored[key]
+        return out
+
     def editable_settings(self) -> dict:
         """给面板用的商城/抽奖参数（当前实际生效的值）。"""
         cfg = self._config()
-        return {
+        out = {
             "enable": bool(cfg.enable),
             "lottery_enable": bool(cfg.lottery.enable),
             "lottery_cost": int(cfg.lottery.cost),
             "lottery_daily_limit": int(cfg.lottery.daily_limit),
             "lottery_pity": int(cfg.lottery.pity),
         }
+        out.update(self.order_settings())
+        return out
 
     def save_settings(self, values: dict) -> dict:
         """保存商城/抽奖参数。返回 ``{ok, problems, settings}``。"""
         clean: dict = {}
         problems: list[str] = []
 
-        for key in ("enable", "lottery_enable"):
+        for key in ("enable", "lottery_enable", "order_enable"):
             if key in values:
                 clean[key] = bool(values[key])
+
+        if "order_notify" in values:
+            mode = str(values.get("order_notify") or "").strip().lower()
+            if mode not in self._ORDER_NOTIFY_MODES:
+                problems.append(
+                    f"订单通知方式要在 {'/'.join(self._ORDER_NOTIFY_MODES)} 之间"
+                    f"（当前 {mode or '空'}）")
+            else:
+                clean["order_notify"] = mode
 
         limits = {
             "lottery_cost": (0, 100000, "每次抽奖消耗积分"),
@@ -367,7 +511,10 @@ class ShopHandle(BaseHandle):
                 "stock": stock,
                 "limit_per_user": _int(raw.get("limit_per_user"), 0),
                 "limit_per_day": _int(raw.get("limit_per_day"), 0),
-                "reward": str(raw.get("reward") or "manual"),
+                # 认不出的发放方式按「人工发放」处理：宁可开订单让管理员发，
+                # 也不要误判成发积分把分发出去。
+                "reward": norm_reward(raw.get("reward"), default="manual",
+                                      allowed=ITEM_REWARDS),
                 "value": str(raw.get("value") or ""),
                 "enabled": bool(raw.get("enabled", True)),
             })
@@ -413,7 +560,8 @@ class ShopHandle(BaseHandle):
             clean.append({
                 "id": prize_id, "name": name, "weight": chance,
                 "rare": bool(raw.get("rare", False)),
-                "reward": str(raw.get("reward") or "points"),
+                "reward": norm_reward(raw.get("reward"), default="points",
+                                      allowed=PRIZE_REWARDS),
                 "value": str(raw.get("value") or "0"),
                 "enabled": enabled,
             })
@@ -448,6 +596,20 @@ class ShopHandle(BaseHandle):
 
         return {"ok": True, "problems": [], "prizes": clean,
                 "total_chance": total}
+
+    def apply_preset(self, kind: str) -> dict:
+        """一键填入推荐的商品/奖池（面板「一键填入」按钮）。
+
+        会**覆盖**现有条目——所以调用方（面板）必须先让用户确认。
+        返回保存结果，额外带 ``count`` 便于提示填了几条。
+        """
+        if kind == "prizes":
+            result = self.save_prizes([dict(x) for x in LOTTERY_PRESET])
+            result["count"] = len(result.get("prizes") or [])
+            return result
+        result = self.save_items([dict(x) for x in SHOP_PRESET])
+        result["count"] = len(result.get("items") or [])
+        return result
 
     def reset_shop_data(self) -> None:
         """清空面板编辑过的商品、奖池与设置，回到配置默认值。
@@ -490,9 +652,8 @@ class ShopHandle(BaseHandle):
             except ValueError:
                 pass          # 不是数字就当作发放方式
 
-        reward = parts[idx].lower() if len(parts) > idx else "manual"
-        if reward not in ("points", "title", "manual", "action"):
-            reward = "manual"
+        reward = norm_reward(parts[idx] if len(parts) > idx else "",
+                             default="manual", allowed=ITEM_REWARDS)
         value = " ".join(parts[idx + 1:]) if len(parts) > idx + 1 else ""
 
         items = self.editable_items()
@@ -502,7 +663,9 @@ class ShopHandle(BaseHandle):
         if not result.get("ok"):
             return "❌ 上架失败：" + "；".join(result.get("problems") or [])
         stock_txt = "不限量" if stock is None else f"库存 {stock}"
-        return f"✅ 已上架「{name}」：{cost} 积分 · {stock_txt}"
+        return (f"✅ 已上架「{name}」：{cost} 积分 · {stock_txt}"
+                f" · {reward_label(reward)}"
+                + (f"（{value}）" if value else ""))
 
     async def remove_item_by_name(self, name: str) -> str:
         key = str(name or "").strip()
@@ -520,14 +683,17 @@ class ShopHandle(BaseHandle):
         return f"✅ 已下架「{hit[0]['name']}」"
 
     async def add_prize_from_text(self, text: str) -> str:
-        """``/奖池 名字 概率 [库存]``。"""
+        """``/奖池 名字 概率 [库存] [发放方式] [内容]``。"""
         parts = str(text or "").split()
         if len(parts) < 2:
-            return ("❓ 用法：/奖池 <奖品名> <概率> [库存]\n"
+            return ("❓ 用法：/奖池 <奖品名> <概率> [库存] [发放方式] [内容]\n"
                     "例如：/奖池 谢谢参与 0.3\n"
-                    "      /奖池 限定头衔 0.01 1\n"
+                    "      /奖池 限定头衔 0.01 1 头衔 限定款\n"
+                    "      /奖池 一杯奶茶 0.05 2 人工 到店自取\n"
                     "概率是 0~1 的小数；所有奖品概率之和不能超过 1。\n"
-                    "库存省略表示不限量（可以无限次被抽中）。")
+                    "库存省略表示不限量（可以无限次被抽中）。\n"
+                    "发放方式：积分 / 头衔 / 人工 / 动作 / 谢谢参与"
+                    "（省略时按奖品名猜）")
 
         name = parts[0]
         try:
@@ -538,29 +704,46 @@ class ShopHandle(BaseHandle):
             return "❓ 概率要在 0~1 之间（0.3 表示 30%）。"
 
         stock = None
+        idx = 3                                     # 发放方式从第 4 个词开始
         if len(parts) > 2:
             try:
                 v = int(parts[2])
                 stock = v if v > 0 else None
             except ValueError:
-                return f"❓ 库存「{parts[2]}」不是数字。"
+                idx = 2                             # 不是数字 -> 那是发放方式
+
+        # 省略发放方式时按名字猜，猜不出就按人工发放（会开订单，不会错发）
+        guess, guess_value = "manual", ""
+        if "谢谢" in name or "未中奖" in name:
+            guess = "none"
+        elif "头衔" in name:
+            guess = "title"
+            guess_value = name.replace("头衔", "").strip() or "幸运星"
+        elif "积分" in name:
+            m = re.search(r"\d+", name)
+            guess, guess_value = "points", (m.group(0) if m else "10")
+
+        reward = norm_reward(parts[idx] if len(parts) > idx else "",
+                             default=guess, allowed=PRIZE_REWARDS)
+        # 只有明确给了内容才用；否则用猜出来的（猜错也比留空强）
+        if len(parts) > idx + 1:
+            value = " ".join(parts[idx + 1:])
+        else:
+            value = "" if reward != guess else guess_value
+            if reward == "points" and not value:
+                value = "10"
 
         prizes = self.editable_prizes()
-        # 新奖品的发放方式：名字里带"积分"就给积分，否则按人工处理
-        reward, value = "manual", ""
-        if "积分" in name:
-            import re
-            m = re.search(r"\d+", name)
-            reward, value = "points", (m.group(0) if m else "10")
-
         prizes.append({"name": name, "chance": chance, "stock": stock,
                        "reward": reward, "value": value, "enabled": True})
         result = self.save_prizes(prizes)
         if not result.get("ok"):
             return "❌ 加奖品失败：" + "；".join(result.get("problems") or [])
         total = result.get("total_chance", 0)
+        deliver_txt = reward_label(reward) + (f"（{value}）" if value else "")
         return (f"✅ 已加奖品「{name}」：{chance * 100:.2f}%"
                 + ("（不限量）" if stock is None else f"（限 {stock} 次）")
+                + f" · {deliver_txt}"
                 + f"\n🎰 当前中奖概率合计 {total * 100:.2f}%，"
                 f"未中奖 {(1 - total) * 100:.2f}%")
 
@@ -682,7 +865,14 @@ class ShopHandle(BaseHandle):
         if reward_note:
             lines.append(f"🎁 {reward_note}")
         if not delivered:
-            lines.append("📮 该商品需要管理员人工发放，已记录。")
+            order = await self._open_order(
+                event, kind="shop", item=item.name, cost=item.cost,
+                reward=item.reward, value=item.value,
+                user_id=user_id, nickname=name)
+            if order is None:
+                lines.append("📮 该商品需要管理员人工发放，已记录。")
+            else:
+                lines.append(self._order_hint(order))
         return "\n".join(lines)
 
     # ------------------------------------------------------------------ #
@@ -750,7 +940,14 @@ class ShopHandle(BaseHandle):
         if reward_note:
             lines.append(f"🎁 {reward_note}")
         if not delivered:
-            lines.append("📮 需要管理员人工发放，已记录。")
+            order = await self._open_order(
+                event, kind="lottery", item=prize.name, cost=lot.cost,
+                reward=prize.reward, value=prize.value,
+                user_id=user_id, nickname=name)
+            if order is None:
+                lines.append("📮 需要管理员人工发放，已记录。")
+            else:
+                lines.append(self._order_hint(order))
         lines.append(f"消耗 {lot.cost} 积分，剩余 {left}")
         return "\n".join(lines)
 
@@ -848,3 +1045,199 @@ class ShopHandle(BaseHandle):
             return f"待执行：{text}", False
 
         return text, False
+
+    # ------------------------------------------------------------------ #
+    #  人工发放订单
+    # ------------------------------------------------------------------ #
+    #
+    # 机器人**不一定是管理员**，所以「设头衔」常常发不出去；奶茶、Steam 喜加一
+    # 这类线下奖品更是只能人工发。以前只在群里说一句「已记录」，管理员没看到
+    # 就石沉大海。这里落成一张**带单号的订单**：通知管理员、能查、能核销，
+    # 事后还能翻出来对账。
+
+    def _order_notify_mode(self) -> str:
+        mode = str(self.order_settings().get("order_notify", "private") or "").strip().lower()
+        return mode if mode in self._ORDER_NOTIFY_MODES else "private"
+
+    async def _open_order(self, event, *, kind: str, item: str,
+                          cost: int, reward: str, value: str,
+                          user_id, nickname: str) -> dict | None:
+        """开一张待人工发放订单并通知管理员。
+
+        Returns:
+            订单 dict；订单功能关闭时返回 ``None``（调用方按「只记一句」处理）。
+        """
+        if not bool(self.order_settings().get("order_enable", True)):
+            return None
+        order = self.db.new_order(
+            group_id=self.group_id(event), user_id=user_id,
+            user_name=nickname, kind=kind, item=item, cost=cost,
+            value=value, deliver=reward,
+        )
+        order["_notify"] = await self._notify_order(event, order)
+        return order
+
+    @staticmethod
+    def _order_hint(order: dict) -> str:
+        """给用户看的那一句：告诉他把单号记好、管理员那边是什么情况。"""
+        no = order.get("no")
+        notice = str(order.get("_notify") or "")
+        if notice == "sent":
+            return f"📮 需人工发放，订单号 #{no}，已私聊通知管理员"
+        if notice == "no-admin":
+            return (f"📮 需人工发放，订单号 #{no}。"
+                    f"没配置超级管理员，管理员可用「/订单」查看")
+        if notice == "off":
+            return f"📮 需人工发放，订单号 #{no}"
+        # 私聊没发出去也要把单号给到用户：订单已落库，管理员 /订单 查得到
+        return (f"📮 需人工发放，订单号 #{no}"
+                f"（私聊管理员没发出去，订单已记录，可用「/订单」查）")
+
+    async def _notify_order(self, event, order: dict) -> str:
+        """把订单私聊给插件超管。返回送达情况（写日志 / 群内提示用）。
+
+        私聊发不出去（不是好友、平台不支持）**不影响下单**——订单已经落库，
+        管理员随时能用「/订单」查到，不会因此丢单。
+        """
+        mode = self._order_notify_mode()
+        if mode == "off":
+            return "off"
+        admins = [str(x).strip() for x in (self.cfg.super_admins or []) if str(x).strip()]
+        if not admins:
+            logger.warning(
+                "[磐石] 订单 #%s 无人可通知：未配置超级管理员（basic.super_admins）",
+                order.get("no"))
+            return "no-admin"
+        text = self.order_text(order)
+        sent, last_err = 0, ""
+        for uid in admins:
+            ok, err = await self.call_api(
+                event, "send_private_msg",
+                user_id=_numeric_or_text(uid), message=text)
+            if ok:
+                sent += 1
+            else:
+                last_err = str(err)
+        if sent:
+            return "sent"
+        logger.warning(f"[磐石] 订单 #{order.get('no')} 私聊管理员失败: {last_err}")
+        return f"failed:{last_err}"
+
+    @staticmethod
+    def order_text(order: dict) -> str:
+        """订单详情（通知与查询共用一段渲染，避免两处写法不一致）。"""
+        kind = "购买" if str(order.get("kind")) == "shop" else "中奖"
+        value = str(order.get("value") or "").strip()
+        lines = [
+            f"📮 待发放订单 #{order.get('no')}（{kind}）",
+            f"🎁 {order.get('item')} · {reward_label(order.get('deliver'))}",
+        ]
+        if value:
+            lines.append(f"📝 内容：{value}")
+        lines += [
+            f"👤 {order.get('user_name') or '群友'}（QQ {order.get('user_id')}）",
+            f"🏠 群 {order.get('group_id')}",
+            f"💎 消耗 {order.get('cost')} 积分",
+            f"🕒 {_fmt_time(order.get('created'))}",
+        ]
+        status = str(order.get("status") or "pending")
+        if status == "done":
+            lines.append(f"✅ 已由 {order.get('done_by') or '管理员'} 在 "
+                         f"{_fmt_time(order.get('done_at'))} 核销")
+        elif status == "cancel":
+            lines.append("🚫 已取消")
+        else:
+            lines.append("👉 发完后在群里说：/核销 " + str(order.get("no")))
+        return "\n".join(lines)
+
+    async def order_query(self, event, arg: str = "", *, is_admin: bool = False) -> str:
+        """查订单：``/订单 [单号|我的|待发放|全部]``。"""
+        group_id = str(self.group_id(event))
+        user_id = str(self.sender_id(event))
+        key = str(arg or "").strip()
+
+        if re.fullmatch(r"\d+", key):
+            order = self.db.get_order(int(key))
+            if order is None:
+                return f"❓ 没有找到订单 #{key}。"
+            # 普通群友只能查自己的单；管理员可以查任何单
+            if not is_admin and str(order.get("user_id")) != user_id:
+                return f"❓ 没有找到订单 #{key}。（只能查自己的订单）"
+            if not is_admin and str(order.get("group_id")) != group_id:
+                return f"❓ 没有找到订单 #{key}。"
+            return self.order_text(order)
+
+        if key in ("我的", "我", "mine"):
+            orders = self.db.list_orders(group_id=group_id, user_id=user_id, limit=10)
+            return self._render_orders("📮 我的订单", orders)
+
+        if not is_admin:
+            orders = self.db.list_orders(group_id=group_id, user_id=user_id, limit=10)
+            return self._render_orders("📮 我的订单", orders)
+
+        if key in ("全部", "所有", "all"):
+            orders = self.db.list_orders(group_id=group_id, limit=20)
+            return self._render_orders("📮 本群订单（最近 20 条）", orders)
+
+        orders = self.db.list_orders(group_id=group_id, status="pending", limit=20)
+        return self._render_orders("📮 本群待发放订单", orders, hint="核销：/核销 <单号>")
+
+    def _render_orders(self, title: str, orders: list[dict], hint: str = "") -> str:
+        if not orders:
+            return f"{title}\n（暂无）"
+        lines = [title]
+        for o in orders:
+            mark = {"done": "✅", "cancel": "🚫"}.get(str(o.get("status")), "⏳")
+            kind = "买" if str(o.get("kind")) == "shop" else "中"
+            lines.append(
+                f"· {mark} #{o.get('no')} [{kind}] {o.get('item')}"
+                f" · {o.get('user_name') or '群友'}({o.get('user_id')})"
+                f" · {o.get('cost')}分 · {_fmt_time(o.get('created'))}")
+        if hint:
+            lines.append(hint)
+        return "\n".join(lines)
+
+    async def order_close(self, event, arg: str = "", *,
+                          is_admin: bool = False, status: str = "done") -> str:
+        """核销（或取消）订单：``/核销 <单号>``。"""
+        if not is_admin:
+            return "🚫 只有管理员可以核销订单。"
+        key = str(arg or "").strip()
+        if not re.fullmatch(r"\d+", key):
+            return ("❓ 用法：/核销 <单号>（单号在「/订单」里可以看到）\n"
+                    "要作废一单：/取消订单 <单号>")
+        order = self.db.get_order(int(key))
+        if order is None:
+            return f"❓ 没有找到订单 #{key}。"
+        if str(order.get("group_id")) != str(self.group_id(event)):
+            return f"❓ 订单 #{key} 不在本群。请到对应群里核销。"
+        if str(order.get("status")) != "pending":
+            return (f"ℹ️ 订单 #{key} 已经是"
+                    f"{'已完成' if str(order.get('status')) == 'done' else '已取消'}状态。")
+        who = str(self.sender_id(event))
+        done = self.db.close_order(int(key), by=who, status=status)
+        if done is None:
+            return f"❓ 没有找到订单 #{key}。"
+        if status == "cancel":
+            return (f"🚫 已取消订单 #{key}（{done.get('item')}）\n"
+                    f"积分不会自动退回，需要退款请管理员手动加分。")
+        return (f"✅ 订单 #{key} 已核销：{done.get('item')}"
+                f" · {done.get('user_name') or '群友'}({done.get('user_id')})")
+
+    def pending_orders(self, group_id=None, limit: int = 20) -> list[dict]:
+        """面板用：待发放订单列表（最新在前）。"""
+        return self.db.list_orders(group_id=group_id, status="pending",
+                                   limit=limit)
+
+    def orders_view(self, group_id=None, limit: int = 30) -> list[dict]:
+        """面板用：订单列表，附人话状态，前端直接渲染。"""
+        out = []
+        for o in self.db.list_orders(group_id=group_id, limit=limit):
+            item = dict(o)
+            item["deliver_label"] = reward_label(o.get("deliver"))
+            item["status_label"] = {"pending": "待发放", "done": "已核销",
+                                    "cancel": "已取消"}.get(
+                                        str(o.get("status")), str(o.get("status")))
+            item["time_text"] = _fmt_time(o.get("created"))
+            out.append(item)
+        return out

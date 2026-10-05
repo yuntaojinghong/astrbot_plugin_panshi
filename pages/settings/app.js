@@ -681,19 +681,32 @@ function renderOverview() {
     { label: "累计警告", value: state.overview.total_warnings, icon: "⚠️", tone: "tone-warn", cls: "warn" },
     { label: "黑名单", value: state.overview.blocked_users, icon: "🚫", tone: "tone-danger", cls: "danger" },
   ];
+  // 待人工发放的订单：有就单独占一张卡，点它直接进订单页
+  const pendingOrders = Number(state.overview.pending_orders || 0);
+  if (pendingOrders > 0) {
+    items.push({
+      label: "待发放订单", value: pendingOrders, icon: "📮",
+      tone: "tone-warn", cls: "warn", go: "orders",
+    });
+  }
   for (const it of items) {
-    box.appendChild(
-      el("div", { class: `stat-card ${it.tone || ""}`.trim() }, [
-        el("span", { class: "stat-top" }, [
-          el("span", { class: "stat-icon", text: it.icon }),
-          el("span", { class: "stat-label", text: it.label }),
-        ]),
-        el("span", {
-          class: "stat-value" + (it.cls ? " " + it.cls : ""),
-          text: String(it.value ?? 0),
-        }),
-      ])
-    );
+    const card = el("div", {
+      class: `stat-card ${it.tone || ""}`.trim() + (it.go ? " clickable" : ""),
+      title: it.go ? "点开处理待发放的订单" : "",
+    }, [
+      el("span", { class: "stat-top" }, [
+        el("span", { class: "stat-icon", text: it.icon }),
+        el("span", { class: "stat-label", text: it.label }),
+      ]),
+      el("span", {
+        class: "stat-value" + (it.cls ? " " + it.cls : ""),
+        text: String(it.value ?? 0),
+      }),
+    ]);
+    if (it.go && typeof state.onGoView === "function") {
+      card.addEventListener("click", () => state.onGoView(it.go));
+    }
+    box.appendChild(card);
   }
 
   // 快捷开关状态条
@@ -1338,6 +1351,7 @@ async function main() {
     const back = () => loadAll(true);
     try {
       if (which === "items") await shop.renderItemsView(content, back);
+      else if (which === "orders") await shop.renderOrdersView(content, back);
       else await shop.renderPrizesView(content, back);
     } catch (e) {
       showError(String(e.message || e));
@@ -1347,6 +1361,10 @@ async function main() {
   if (btnShop) btnShop.addEventListener("click", openShopView("items"));
   const btnLottery = $("#btnLottery");
   if (btnLottery) btnLottery.addEventListener("click", openShopView("prizes"));
+  const btnOrders = $("#btnOrders");
+  if (btnOrders) btnOrders.addEventListener("click", openShopView("orders"));
+  // 概览里的「待发放订单」卡片：点一下直接进订单页
+  state.onGoView = (which) => openShopView(which)();
   $("#statusPill").addEventListener("click", () => {
     state.connExpanded = !state.connExpanded;
     if (state.connExpanded) checkConnection();
