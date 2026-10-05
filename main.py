@@ -37,6 +37,7 @@ from .core import (
     is_self_defense,
     looks_like_command,
 )
+from .core.at_chain import at_chain
 from .core.intent_executor import _as_bool, _as_int
 from .data import GroupInfoCache, Storage
 from .utils import (PermLevel, check_permission, check_permission_async,
@@ -482,10 +483,19 @@ class PanshiPlugin(Star):
                 if notice_type == "group_increase":
                     user_id = str(raw.get("user_id", ""))
                     sub_type = str(raw.get("sub_type", "approve") or "approve")
+                    # 机器人自己被拉进群时也会收到 group_increase，
+                    # 那时 user_id 就是它自己。不拦的话它会「欢迎自己」——
+                    # 线上截图里正是这样：被邀请入群后它 @ 自己发欢迎语。
+                    me = str(safe_int(self.normal.safe_self_id(event)) or "")
+                    if me and user_id == me:
+                        logger.info(
+                            f"[磐石] 机器人自己被拉入群 {group_id}，跳过入群欢迎")
+                        return
                     logger.info(f"[磐石] 收到入群通知：群 {group_id} 用户 {user_id} ({sub_type})")
                     result = await self.welcome.on_member_increase(event, user_id, sub_type)
                     if result:
-                        yield event.plain_result(result)
+                        chain = at_chain(result)
+                        yield event.chain_result(chain) if chain else event.plain_result(result)
                     else:
                         logger.info("[磐石] 入群欢迎未产生内容（可能已关闭欢迎且未启用验证）")
                 elif notice_type == "group_decrease":

@@ -258,8 +258,161 @@ def main():
     test_group_role_permission()
     test_autonomous_enforcement()
     test_self_defense()
+    test_welcome_self_and_at()
 
     print("ALL_SELFTEST_PASS")
+
+
+def test_welcome_self_and_at():
+    """入群欢迎的两个问题：不许欢迎自己；@ 必须是真 at 而不是 CQ 字面量。
+
+    线上截图（用户提供）：机器人被邀请入群后，自己发了一条
+        @deepseek-v4.1-flash
+        [CQ:at,qq=3823105457] 你好呀，欢迎来到「机器人调试群」，有问题随时提问～
+    两个毛病叠在一起：
+      1. 被拉进群的是机器人自己，它却「欢迎自己」。
+      2. ``{at}`` 被替换成 CQ 码字符串后整段用 plain_result 发出，
+         协议端不解释纯文本里的 CQ 码，于是用户看到字面量。
+    """
+    import asyncio
+
+    from astrbot_plugin_panshi.core.at_chain import at_chain
+    from astrbot_plugin_panshi.main import PanshiPlugin
+
+    # ---------------- 1. CQ 码 → 真正的组件 ----------------
+    def chain_text(parts):
+        """把组件链渲染成纯文本。
+
+        链里可能是组件对象（取 .text），也可能是纯字符串
+        （环境没有 Plain 组件时 at_chain 会退化成字符串），两种都要认。
+        """
+        buf = []
+        for p in parts or []:
+            if isinstance(p, str):
+                buf.append(p)
+            else:
+                buf.append(str(getattr(p, "text", "") or ""))
+        return "".join(buf)
+
+    parts = at_chain("欢迎 [CQ:at,qq=12345] 加入本群！")
+    assert parts, "带 at 的文本应当被转成组件链"
+    kinds = [type(p).__name__ for p in parts]
+    assert "At" in kinds, f"没有生成 At 组件: {kinds}"
+    at_obj = [p for p in parts if type(p).__name__ == "At"][0]
+    assert str(getattr(at_obj, "qq", "")) == "12345", f"at 目标不对: {at_obj}"
+    joined = chain_text(parts)
+    assert "[CQ:" not in joined, f"CQ 字面量残留: {joined!r}"
+    assert "欢迎" in joined and "加入本群" in joined, f"文字丢了: {joined!r}"
+
+    assert at_chain("欢迎新人") is None, "没有 CQ 码时应返回 None"
+    assert at_chain("") is None
+    assert at_chain("[CQ:at,qq=all]") is None, "@全体 不应被当成普通 at"
+    odd = at_chain("[CQ:unknown,foo=1] 文本 [CQ:at,qq=1]")
+    assert odd, "含已知 at 时仍应转换"
+    odd_text = chain_text(odd)
+    assert "[CQ:unknown,foo=1]" in odd_text, f"未知类型应原样保留: {odd_text!r}"
+
+    print("AT_CHAIN_OK (at 转组件 / 纯文本不转 / @全体跳过 / 未知类型保留)")
+
+    # ---------------- 2. 机器人自己被拉进群时不欢迎 ----------------
+    GID = 1077250302
+    BOT = "3823105457"
+
+    class _Bot:
+        def __init__(self):
+            self.calls = []
+
+        def __getattr__(self, name):
+            async def _m(*a, **kw):
+                self.calls.append((name, kw))
+                if name == "get_group_member_info":
+                    return {"card": "", "nickname": "某人", "role": "member"}
+                if name == "get_group_member_list":
+                    return []
+                return {"status": "ok", "retcode": 0}
+            return _m
+
+    class _Ev:
+        def __init__(self, raw_message):
+            self.bot = _Bot()
+            self.message_obj = types.SimpleNamespace(raw_message=raw_message)
+            self.message_str = ""
+            self._stopped = False
+
+        def get_group_id(self):
+            return GID
+
+        def get_self_id(self):
+            return BOT
+
+        def get_sender_id(self):
+            return BOT
+
+        def get_sender_name(self):
+            return "机器人"
+
+        def get_messages(self):
+            return []
+
+        def get_message_str(self):
+            return ""
+
+        def is_stopped(self):
+            return self._stopped
+
+        def stop_event(self):
+            self._stopped = True
+
+        def plain_result(self, text):
+            return {"kind": "plain", "text": text}
+
+        def chain_result(self, chain):
+            return {"kind": "chain", "chain": chain}
+
+        def get_extra(self, key, default=None):
+            return default
+
+        def set_extra(self, key, value):
+            pass
+
+    class _Ctx:
+        def register_web_api(self, *a, **k):
+            pass
+
+    def run(raw):
+        inst = PanshiPlugin(_Ctx(), {
+            "basic": {"default_ban_time": 60},
+            "welcome": {"welcome_enable": True},
+        })
+        ev = _Ev(raw)
+
+        async def collect():
+            out = []
+            async for item in inst.on_group_message(ev):
+                out.append(item)
+            return out
+
+        return asyncio.run(collect())
+
+    got_self = run({"post_type": "notice", "notice_type": "group_increase",
+                    "group_id": GID, "user_id": BOT, "sub_type": "invite"})
+    assert not got_self, f"机器人竟然欢迎了自己: {got_self!r}"
+    print("WELCOME_SKIP_SELF_OK")
+
+    got_human = run({"post_type": "notice", "notice_type": "group_increase",
+                     "group_id": GID, "user_id": "226067490", "sub_type": "approve"})
+    assert got_human, "真人入群应当仍然欢迎"
+    first = got_human[0]
+    if isinstance(first, dict) and first.get("kind") == "chain":
+        names = [type(p).__name__ for p in first["chain"]]
+        assert "At" in names, f"欢迎语里应有 At 组件: {names}"
+        text = chain_text(first["chain"])
+        assert "[CQ:" not in text, f"不应残留 CQ 字面量: {text!r}"
+        print("WELCOME_AT_COMPONENT_OK")
+    else:
+        text = first.get("text", "") if isinstance(first, dict) else str(first)
+        assert "[CQ:" not in str(text), f"残留 CQ 字面量: {text!r}"
+        print("WELCOME_PLAIN_OK（未使用 at 组件）")
 
 
 def test_self_defense():
@@ -861,6 +1014,9 @@ def test_notice_dispatch():
         def plain_result(self, text):
             return {"text": text}
 
+        def chain_result(self, chain):
+            return {"kind": "chain", "chain": chain}
+
         def get_extra(self, key, default=None):
             return default
 
@@ -891,16 +1047,34 @@ def test_notice_dispatch():
         return asyncio.run(collect())
 
     def text_of(items):
+        """把结果渲染成可断言的纯文本。
+
+        欢迎语现在可能走 chain_result（@ 要用真 At 组件）。
+        链里既可能是组件对象（取 .text），也可能是纯字符串
+        （环境里没有 Plain 组件时会退化成字符串），两种都要认。
+        """
         if not items:
             return ""
         first = items[0]
-        return first.get("text", "") if isinstance(first, dict) else str(first)
+        if not isinstance(first, dict):
+            return str(first)
+        if first.get("kind") == "chain" or "chain" in first:
+            buf = []
+            for p in (first.get("chain") or []):
+                if isinstance(p, str):
+                    buf.append(p)
+                else:
+                    buf.append(str(getattr(p, "text", "") or ""))
+            return "".join(buf)
+        return first.get("text", "")
 
     # ---------- 1) 入群通知 → 欢迎语 ----------
     items, _ = run({"post_type": "notice", "notice_type": "group_increase",
                     "group_id": GID, "user_id": NEWBIE, "sub_type": "approve"})
     text = text_of(items)
-    assert text.strip(), "入群通知没有产出欢迎语 —— 通知分派断了"
+    assert text.strip(), (
+        f"入群通知没有产出欢迎语 —— 通知分派断了。实际产出: {items!r}"
+    )
     print(f"NOTICE_WELCOME_OK ({text[:26]}…)")
 
     # ---------- 2) 加群申请 → 有人处理，不崩 ----------

@@ -1,6 +1,7 @@
 """核心功能模块。"""
 
 from .base_handle import BaseHandle
+from .at_chain import at_chain
 from .defense import DefenseConfig, DefenseState, allow, is_self_defense
 from .normal import NormalHandle
 from .guard import GuardHandle
@@ -19,6 +20,7 @@ from .intent_executor import IntentExecutor
 
 __all__ = [
     "BaseHandle",
+    "at_chain",
     "DefenseConfig",
     "DefenseState",
     "is_self_defense",
