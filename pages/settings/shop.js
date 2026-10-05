@@ -562,8 +562,21 @@ async function renderPrizesView(host, onBack) {
       apiGet("shop/prizes", {}),
       apiGet("shop/settings", {}).catch(() => ({})),
     ]);
-    data = prizeRes;
-    settings = { ...settings, ...setRes };
+    // 和商品页保持一致：不假定返回形状。
+    // 商品页用 pickList 兜住了「bridge 把响应包一层」的情况，抽奖页以前
+    // 直接 `data = prizeRes` —— 一旦被包一层，这里就读到 undefined，
+    // 表现为「奖池明明是满的，界面却一件奖品都没有」，而且不报错。
+    data = { prizes: pickList(prizeRes, "prizes") || [] };
+    settings = { ...settings, ...(setRes && typeof setRes === "object" ? setRes : {}) };
+    if ((data.prizes || []).length === 0 &&
+        prizeRes && typeof prizeRes === "object" &&
+        !Array.isArray(prizeRes.prizes)) {
+      wrap.append(el("div", {
+        class: "alert error",
+        text: `奖池数据没有解析出来。后端返回：${shapeOf(prizeRes)}。` +
+          `请把这一行截图发给作者。`,
+      }));
+    }
   } catch (e) {
     wrap.append(el("div", {
       class: "alert error",
