@@ -17,7 +17,7 @@ FOLLOW_DEFAULT_KEY = "follow_default"
 PLUGIN_NAME = "astrbot_plugin_panshi"
 
 # 与 metadata.yaml 保持一致的插件版本（读取失败时的兜底值）
-FALLBACK_VERSION = "v1.9.10"
+FALLBACK_VERSION = "v1.9.11"
 
 # 按群可覆盖的配置分组（与 _conf_schema.json 的分组保持一致）
 OVERRIDABLE_GROUPS = [
@@ -184,26 +184,58 @@ class PageService:
         return status
 
     def plugin_version(self) -> str:
-        """从 metadata.yaml 读取插件版本号，失败时用兜底值。"""
-        version = getattr(self, "_version", None)
-        if version:
-            return version
-        version = FALLBACK_VERSION
+        """面板上显示的版本号。
+
+        **来源是正在运行的代码，不是磁盘上的文件。**
+
+        之前这里读 `metadata.yaml`，线上出现过「装的 1.9.9、面板显示 1.9.5」。
+        读文件的问题是：文件可能是旧的、可能不在预期位置、也可能被别的东西
+        覆盖——显示出来的数字和你实际跑的那份代码没有任何必然关系，
+        排查问题时先被它带偏。
+
+        现在改成从包里 `__init__.py` 的 `__version__` 取——那是随模块一起
+        被导入的代码常量，跑的是哪份代码就显示哪个版本，改不了假。
+
+        仍然保留读 metadata.yaml 的能力，但只在「代码里的版本号读不到」时
+        才用它兜底；两个值不一致时在日志里说明，便于发现打包问题。
+        """
+        cached = getattr(self, "_version", None)
+        if cached:
+            return cached
+
+        from . import __version__ as code_version  # 正在运行的那份代码
+
+        meta_version = self._version_from_metadata()
+        version = code_version or FALLBACK_VERSION
+
+        if meta_version and meta_version.lstrip("v") != str(version).lstrip("v"):
+            logger.warning(
+                "[磐石] 版本号不一致：代码里是 %s，metadata.yaml 是 %s。"
+                "面板显示的是代码版本（%s）——说明装的包有问题，"
+                "可能解压时只覆盖了部分文件。",
+                version, meta_version, version,
+            )
+        self._version = str(version)
+        return self._version
+
+    def _version_from_metadata(self) -> str:
+        """从 metadata.yaml 读版本号；读不到返回空串。
+
+        只用它做交叉核对——面板显示的版本号来自代码（见
+        :meth:`plugin_version`）。这里读不到不算错误，返回空串即可。
+        """
         try:
-            base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            # metadata.yaml 与本文件同级（都在插件根目录）
+            base = os.path.dirname(os.path.abspath(__file__))
             path = os.path.join(base, "metadata.yaml")
             if os.path.exists(path):
                 with open(path, encoding="utf-8") as f:
                     for line in f:
                         if line.strip().startswith("version:"):
-                            raw = line.split(":", 1)[1].strip().strip("'\"")
-                            if raw:
-                                version = raw
-                            break
+                            return line.split(":", 1)[1].strip().strip("'\"")
         except Exception:
             pass
-        self._version = version
-        return version
+        return ""
 
     # ==================================================================
     #  群列表

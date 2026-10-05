@@ -3074,6 +3074,32 @@ def test_config_layer():
         f"三处版本号必须一致，改一处就要全改：{_versions}")
     print(f"VERSION_CONSISTENT_OK (三处都是 v{_versions['metadata.yaml']})")
 
+    # 面板显示的版本号必须来自**正在运行的代码**，不是磁盘上的文件。
+    #
+    # 回归背景：线上装的 1.9.9，面板一直显示 1.9.5。原因就是
+    # plugin_version() 读 metadata.yaml —— 文件旧了、或不在预期位置，
+    # 显示出来的数字和你实际跑的那份代码没有任何必然关系。
+    # 现在读包里 __init__.py 的 __version__，跑哪份代码就显示哪个版本。
+    from astrbot_plugin_panshi.pages_service import PageService
+    import astrbot_plugin_panshi as _pkg
+
+    _svc = PageService.__new__(PageService)
+    _shown = _svc.plugin_version()
+    assert str(_shown).lstrip("v") == str(_pkg.__version__).lstrip("v") == \
+        _versions["__init__.py"], (
+            f"面板显示的版本号（{_shown}）必须等于运行中代码的 __version__"
+            f"（{_pkg.__version__}）")
+    print(f"VERSION_FROM_CODE_OK (面板显示 {_shown}，来自运行中的代码)")
+
+    # metadata.yaml 的路径解析也要对（之前多找了一级，永远读不到）
+    _svc2 = PageService.__new__(PageService)
+    _meta_v = _svc2._version_from_metadata()
+    assert _meta_v, (
+        "_version_from_metadata() 读不到 metadata.yaml —— 路径算错了。"
+        "它用于交叉核对打包是否完整，读不到就失去意义。")
+    assert _meta_v.lstrip("v") == _versions["metadata.yaml"], _meta_v
+    print("VERSION_METADATA_PATH_OK (metadata.yaml 路径解析正确)")
+
     # 意图闸门的两个新配置项必须存在（v1.6.0）
     smart_fields = {
         f["key"] if isinstance(f, dict) else f

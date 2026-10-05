@@ -145,7 +145,16 @@ class PanshiPlugin(Star):
 
     # ========== 生命周期 ==========
     async def initialize(self):
-        logger.info("[磐石] 插件初始化完成")
+        # 把版本号和代码位置打出来。线上出现过「装的 1.9.9、面板显示 1.9.5」，
+        # 有这一行就能立刻分清是版本号显示的问题，还是加载的真是旧文件。
+        try:
+            from . import __version__ as _code_version
+            logger.info(
+                "[磐石] 插件初始化完成，代码版本 %s，位置 %s",
+                _code_version, os.path.dirname(os.path.abspath(__file__)),
+            )
+        except Exception:
+            logger.info("[磐石] 插件初始化完成")
         try:
             await self._refresh_groups()
             self.automate.bind_sender(self._send_whole_ban, self._enabled_groups)
