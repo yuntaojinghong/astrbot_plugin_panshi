@@ -1290,6 +1290,23 @@ async function main() {
 
   $("#btnReload").addEventListener("click", () => loadAll(true));
   $("#btnSync").addEventListener("click", refreshGroups);
+
+  // 商城管理：切到可视化增删商品/奖池的界面（shop.js 挂在 window 上）
+  const btnShop = $("#btnShop");
+  if (btnShop) {
+    btnShop.addEventListener("click", async () => {
+      const shop = window.PanshiShop;
+      if (!shop) {
+        showError("商城管理脚本未加载。请刷新页面；若仍然不行，说明插件文件不完整。");
+        return;
+      }
+      try {
+        await shop.renderShopView($("#content"));
+      } catch (e) {
+        showError(String(e.message || e));
+      }
+    });
+  }
   $("#statusPill").addEventListener("click", () => {
     state.connExpanded = !state.connExpanded;
     if (state.connExpanded) checkConnection();

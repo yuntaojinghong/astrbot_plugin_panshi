@@ -169,6 +169,44 @@ class Storage:
             t["sold"][key] = int(t["sold"].get(key, 0) or 0) + n
             self.save()
 
+    # ---------- 商城 / 奖池的可编辑数据 ---------- #
+    #
+    # 商品与奖池本来只存在 _conf_schema.json 里，用户要在配置页手写一大段
+    # JSON 数组，很容易写错、也很难改。所以改成：
+    #
+    #   * 配置里的 items / prizes 作为**初始默认值**（首次或清空后使用）
+    #   * 一旦用户在面板里改过，就以这里的数据为准
+    #
+    # 这样既有出厂默认，又能用图形界面自由增删。
+
+    def get_shop_items(self) -> list | None:
+        """用户在面板里编辑过的商品列表。``None`` = 从未编辑，用配置默认值。"""
+        v = self._shop_table().get("items")
+        return list(v) if isinstance(v, list) else None
+
+    def set_shop_items(self, items: list) -> None:
+        with self._lock:
+            self._shop_table()["items"] = list(items or [])
+            self.save()
+
+    def get_prizes(self) -> list | None:
+        """用户在面板里编辑过的奖池。``None`` = 从未编辑，用配置默认值。"""
+        v = self._shop_table().get("prizes")
+        return list(v) if isinstance(v, list) else None
+
+    def set_prizes(self, prizes: list) -> None:
+        with self._lock:
+            self._shop_table()["prizes"] = list(prizes or [])
+            self.save()
+
+    def reset_shop_data(self) -> None:
+        """清空面板编辑过的商品/奖池，回到配置默认值。"""
+        with self._lock:
+            t = self._shop_table()
+            t.pop("items", None)
+            t.pop("prizes", None)
+            self.save()
+
     # ---- 每人限购 / 每人每日抽奖次数 ---- #
 
     def _purchase_count(self, group_id, user_id, item_id: str,

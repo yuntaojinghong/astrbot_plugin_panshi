@@ -213,10 +213,25 @@ def main():
 
     # 校验 WebUI 面板路由注册
     assert inst.web is not None, "面板控制器未创建"
-    assert len(ctx.routes) == 12, f"路由数量不对: {len(ctx.routes)}"
+    # 断言"必需路由都在"而不是写死数量——每加一个接口都要改测试的话，
+    # 这条断言迟早会被随手改成一个更大的数字，失去意义。
+    paths = [r[0] for r in ctx.routes]
+    required_routes = [
+        "/astrbot_plugin_panshi/bootstrap",
+        "/astrbot_plugin_panshi/overview",
+        "/astrbot_plugin_panshi/global",
+        "/astrbot_plugin_panshi/group",
+        "/astrbot_plugin_panshi/group/reset",
+        "/astrbot_plugin_panshi/shop/items",
+        "/astrbot_plugin_panshi/shop/prizes",
+        "/astrbot_plugin_panshi/shop/reset",
+    ]
+    missing = [r for r in required_routes if r not in paths]
+    assert not missing, f"缺少路由 {missing}，实际 {paths}"
+    assert len(ctx.routes) >= len(required_routes), len(ctx.routes)
     for route, _h, _m, _d in ctx.routes:
         assert route.startswith("/astrbot_plugin_panshi/"), route
-    print(f"WEB_ROUTES_OK ({len(ctx.routes)})")
+    print(f"WEB_ROUTES_OK ({len(ctx.routes)} 个，必需路由齐全)")
     for route, _h, methods, _d in ctx.routes:
         print("   ", ",".join(methods).ljust(4), route)
 
@@ -264,8 +279,184 @@ def main():
     test_points_switch()
     test_simple_points_commands()
     test_schema_loadable()
+    test_shop_editing()
 
     print("ALL_SELFTEST_PASS")
+
+
+def test_shop_editing():
+    """面板里可视化增删商品/奖品（对应「加号 + 三个框」那套界面）。
+
+    验证三件事：
+      1. 编辑后**以编辑结果为准**（不是被配置里的默认值覆盖回去）
+      2. 保存时的校验（名字必填、概率总和不得超 1）
+      3. 奖品设了「可中次数」后，抽完就不再出
+    """
+    import asyncio
+    import os
+    import tempfile
+
+    from astrbot_plugin_panshi.config import PluginConfig
+    from astrbot_plugin_panshi.core.shop_handle import ShopHandle
+    from astrbot_plugin_panshi.data import Storage
+
+    GID, UID = "1077250302", "2226175932"
+
+    class _Ev:
+        def __init__(self):
+            self.message_obj = types.SimpleNamespace(raw_message={})
+            self.message_str = ""
+
+        def get_group_id(self):
+            return GID
+
+        def get_sender_id(self):
+            return UID
+
+        def get_self_id(self):
+            return "3823105457"
+
+        def get_sender_name(self):
+            return "小明"
+
+        def get_messages(self):
+            return []
+
+        def is_message_str(self):
+            return ""
+
+    tmp = tempfile.mkdtemp(prefix="panshi_edit_")
+    cfg = PluginConfig({
+        "basic": {"default_ban_time": 60},
+        "shop": {
+            "enable": True,
+            "items": [{"id": "a", "name": "配置里的商品", "cost": 10}],
+            "lottery": {
+                "enable": True, "cost": 0, "daily_limit": 0, "pity": 0,
+                "prizes": [{"id": "p1", "name": "配置里的奖品", "weight": 0.5,
+                            "reward": "points", "value": "1"}],
+            },
+        },
+    })
+    db = Storage(os.path.join(tmp, "d.json"))
+    shop = ShopHandle(cfg, db)
+    ev = _Ev()
+
+    # ---------- 1. 默认来自配置 ----------
+    names = [i["name"] for i in shop.editable_items()]
+    assert names == ["配置里的商品"], names
+    assert [p["name"] for p in shop.editable_prizes()] == ["配置里的奖品"]
+    print("SHOP_EDIT_DEFAULT_OK (未编辑时用配置里的默认值)")
+
+    # ---------- 2. 编辑后以编辑结果为准 ----------
+    r = shop.save_items([
+        {"name": "奶茶", "cost": 50, "stock": 10},
+        {"name": "表情包", "cost": 30, "stock": None},
+    ])
+    assert r["ok"], r
+    items = shop.editable_items()
+    assert [i["name"] for i in items] == ["奶茶", "表情包"], items
+    assert items[0]["cost"] == 50 and items[0]["stock"] == 10, items[0]
+    assert items[1]["stock"] is None, "留空库存应表示不限量"
+    assert "配置里的商品" not in [i["name"] for i in items], "编辑后不该再出现配置默认值"
+    print("SHOP_EDIT_ITEMS_OK (增/改商品，且以编辑结果为准)")
+
+    # 落盘后仍然生效（换一个实例读同一份数据）
+    shop2 = ShopHandle(cfg, Storage(os.path.join(tmp, "d.json")))
+    assert [i["name"] for i in shop2.editable_items()] == ["奶茶", "表情包"], \
+        shop2.editable_items()
+    print("SHOP_EDIT_PERSIST_OK (重启后仍是编辑过的内容)")
+
+    # ---------- 3. 删除 ----------
+    r = shop.save_items([{"name": "奶茶", "cost": 50}])
+    assert r["ok"] and [i["name"] for i in shop.editable_items()] == ["奶茶"]
+    print("SHOP_EDIT_DELETE_OK (删除生效)")
+
+    # ---------- 4. 校验：名字必填 / 价格非负 ----------
+    bad = shop.save_items([{"name": "", "cost": 10}])
+    assert not bad["ok"] and any("缺少商品名" in p for p in bad["problems"]), bad
+    before_names = [i["name"] for i in shop.editable_items()]
+    assert before_names == ["奶茶"], "校验失败时不该改动已有数据"
+
+    bad2 = shop.save_items([{"name": "负价格", "cost": -5}])
+    assert not bad2["ok"] and any("不能为负" in p for p in bad2["problems"]), bad2
+    print("SHOP_EDIT_VALIDATE_OK (名字必填 / 价格非负，且失败不改数据)")
+
+    # ---------- 5. 概率总和不得超过 1 ----------
+    ok = shop.save_prizes([
+        {"name": "小奖", "chance": 0.3},
+        {"name": "大奖", "chance": 0.1, "rare": True},
+    ])
+    assert ok["ok"], ok
+    assert abs(ok["total_chance"] - 0.4) < 1e-9, ok
+
+    over = shop.save_prizes([
+        {"name": "A", "chance": 0.7},
+        {"name": "B", "chance": 0.5},
+    ])
+    assert not over["ok"], over
+    assert any("超过了 1" in p for p in over["problems"]), over
+    # 被拒绝后原奖池不变
+    assert [p["name"] for p in shop.editable_prizes()] == ["小奖", "大奖"], \
+        shop.editable_prizes()
+
+    single = shop.save_prizes([{"name": "超大", "chance": 1.5}])
+    assert not single["ok"] and any("不能大于 1" in p for p in single["problems"])
+    print("SHOP_EDIT_CHANCE_OK (合计 >1 被拒；单项 >1 被拒；拒绝不改数据)")
+
+    # ---------- 6. 奖品库存：抽完不再出 ----------
+    shop.save_prizes([{"name": "限量奖", "chance": 1.0, "stock": 2,
+                       "reward": "points", "value": "10"}])
+    db.add_points(GID, UID, 1000)
+
+    async def go():
+        got = 0
+        for _ in range(5):
+            out = await shop.draw(ev)
+            if "限量奖" in out:
+                got += 1
+            elif "没有可抽的奖品" in out or "已抽完" in out:
+                pass
+        return got
+
+    got = asyncio.run(go())
+    assert got == 2, f"库存 2 应当只中 2 次，实际 {got}"
+    # 抽完之后再抽应当提示没有可抽的奖品（并退还消耗）
+    tail = asyncio.run(shop.draw(ev))
+    assert "没有可抽的奖品" in tail or "已抽完" in tail, tail
+    print(f"SHOP_EDIT_PRIZE_STOCK_OK (库存 2 只中 2 次；抽完提示无奖品)")
+
+    # ---------- 7. 恢复默认 ----------
+    shop.reset_shop_data()
+    assert [i["name"] for i in shop.editable_items()] == ["配置里的商品"], \
+        shop.editable_items()
+    assert [p["name"] for p in shop.editable_prizes()] == ["配置里的奖品"]
+    print("SHOP_EDIT_RESET_OK (恢复为配置默认值)")
+
+    # ---------- 8. 命令版增删 ----------
+    msg = asyncio.run(shop.add_item_from_text("咖啡 60 5"))
+    assert "已上架" in msg and "咖啡" in msg, msg
+    assert any(i["name"] == "咖啡" for i in shop.editable_items())
+    msg2 = asyncio.run(shop.remove_item_by_name("咖啡"))
+    assert "已下架" in msg2, msg2
+    assert not any(i["name"] == "咖啡" for i in shop.editable_items())
+
+    pmsg = asyncio.run(shop.add_prize_from_text("参与奖 0.2"))
+    assert "已加奖品" in pmsg, pmsg
+    assert any(p["name"] == "参与奖" for p in shop.editable_prizes())
+    dmsg = asyncio.run(shop.remove_prize_by_name("参与奖"))
+    assert "已删除" in dmsg, dmsg
+    # 参数不对时给用法，而不是静默失败
+    assert "用法" in asyncio.run(shop.add_item_from_text("只有名字"))
+    assert "用法" in asyncio.run(shop.add_prize_from_text("只有名字"))
+    print("SHOP_EDIT_COMMANDS_OK (/上架 /下架 /奖池 /删奖品)")
+
+    # ---------- 9. 指令与入口 ----------
+    from astrbot_plugin_panshi.main import PanshiPlugin
+    for name in ("cmd_add_item", "cmd_del_item", "cmd_prize",
+                 "cmd_del_prize", "cmd_shop", "cmd_buy"):
+        assert hasattr(PanshiPlugin, name), f"缺少指令 {name}"
+    print("SHOP_EDIT_ENTRYPOINTS_OK (指令就位)")
 
 
 def test_schema_loadable():

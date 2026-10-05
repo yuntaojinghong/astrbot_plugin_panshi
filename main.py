@@ -132,6 +132,9 @@ class PanshiPlugin(Star):
             from .pages_service import PageService
 
             service = PageService(self.cfg, self.db, self.group_cache)
+            # 把商城句柄挂到 service 上，面板就能直接读写商品与奖池
+            # （见 pages_api 的 /shop/* 路由）
+            service.shop = self.shop
             self.web = PanshiWebController(context, service)
             # 面板保存全局配置后，让宵禁等自动化设置立即生效（不用重载插件）
             self.web.on_config_saved = self._apply_automate_sync
@@ -817,6 +820,48 @@ class PanshiPlugin(Star):
     async def cmd_consumption(self, event: AstrMessageEvent):
         """查看积分消费与抽奖记录：/消费记录"""
         yield event.plain_result(await self.shop.my_records(event))
+
+    # ---- 上架/下架：不想开面板时也能加商品与奖品 ----
+    #
+    #   /上架 奶茶 50 10          商品：名字 价格 库存（库存可省 = 不限量）
+    #   /上架 奶茶 50 10 头衔 学霸  再加发放方式与内容
+    #   /奖池 谢谢参与 0.3         奖品：名字 概率（库存可省 = 不限）
+    #   /奖池 头衔 0.01 1          奖品：名字 概率 库存
+    @filter.command("上架", alias={"加商品"})
+    async def cmd_add_item(self, event: AstrMessageEvent, arg: str = ""):
+        """上架商品：/上架 <商品名> <价格> [库存] [发放方式] [内容]"""
+        if not await self._check(event):
+            yield event.plain_result(self._no_perm())
+            return
+        yield event.plain_result(await self.shop.add_item_from_text(arg))
+
+    @filter.command("下架", alias={"删商品"})
+    async def cmd_del_item(self, event: AstrMessageEvent, arg: str = ""):
+        """下架商品：/下架 <商品名>"""
+        if not await self._check(event):
+            yield event.plain_result(self._no_perm())
+            return
+        yield event.plain_result(await self.shop.remove_item_by_name(arg))
+
+    @filter.command("奖池")
+    async def cmd_prize(self, event: AstrMessageEvent, arg: str = ""):
+        """加奖品：/奖池 <奖品名> <概率> [库存]；不带参数看当前奖池"""
+        if not await self._check(event):
+            yield event.plain_result(self._no_perm())
+            return
+        text = arg.strip()
+        if not text:
+            yield event.plain_result(await self.shop.show_chances(event))
+            return
+        yield event.plain_result(await self.shop.add_prize_from_text(text))
+
+    @filter.command("删奖品")
+    async def cmd_del_prize(self, event: AstrMessageEvent, arg: str = ""):
+        """删奖品：/删奖品 <奖品名>"""
+        if not await self._check(event):
+            yield event.plain_result(self._no_perm())
+            return
+        yield event.plain_result(await self.shop.remove_prize_by_name(arg))
 
     # ========== 指令：互动工具 ==========
     @filter.command("投票", alias={"vote"})

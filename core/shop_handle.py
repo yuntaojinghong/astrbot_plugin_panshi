@@ -23,8 +23,41 @@ from .shop import (
 )
 
 
+def _int(value, default: int = 0) -> int:
+    """稳妥转 int；失败或为负时回退默认值。"""
+    try:
+        if isinstance(value, bool):
+            return default
+        n = int(value)
+    except (TypeError, ValueError):
+        return default
+    return n if n >= 0 else default
+
+
+def _slug(name: str) -> str:
+    """把名字转成可用作 id 的短串（保留中英文数字）。"""
+    import re
+    s = re.sub(r"[^\w\u4e00-\u9fff]+", "_", str(name or "").strip())
+    return s.strip("_")[:24] or "item"
+
+
+def _unique_id(given: str, name: str, seen: set[str]) -> str:
+    """生成不重复的条目 id。
+
+    用户看不到 id，但它是购买/记录的键，重复会导致两件商品互相覆盖，
+    所以这里保证唯一。
+    """
+    base = given or _slug(name)
+    if base not in seen:
+        return base
+    i = 2
+    while f"{base}_{i}" in seen:
+        i += 1
+    return f"{base}_{i}"
+
+
 def _parse_switch(arg: str) -> bool | None:
-    """把开关参数解析成 True/False；认不出来返回 None（表示"只是查询"）。
+    """把开关参数解析成 True/False；认不出来返回 None（表示「只是查询」）。
 
     只认明确的开关词。空字符串返回 None，这样「/积分开关」不带参数
     就是查询当前状态，而不是误改成关闭。
@@ -100,12 +133,334 @@ class ShopHandle(BaseHandle):
     # ------------------------------------------------------------------ #
 
     def _config(self, event=None):
-        """解析商城/抽奖配置（按群视角，允许每群不同）。"""
+        """解析商城/抽奖配置（按群视角，允许每群不同）。
+
+        商品与奖池优先取**面板里编辑过的数据**（存在 storage 里），
+        没有则回退到 ``_conf_schema.json`` 里的默认值。
+        这样既有出厂默认，又能用图形界面自由增删。
+        """
         raw = self.cfg_for(event).shop if event is not None else self.cfg.shop
-        cfg, notes = parse_config(raw or {})
+        raw = dict(raw) if isinstance(raw, dict) else {}
+
+        stored_items = self.db.get_shop_items()
+        if stored_items is not None:
+            raw["items"] = stored_items
+
+        lot_raw = raw.get("lottery")
+        lot_raw = dict(lot_raw) if isinstance(lot_raw, dict) else {}
+        stored_prizes = self.db.get_prizes()
+        if stored_prizes is not None:
+            lot_raw["prizes"] = stored_prizes
+        raw["lottery"] = lot_raw
+
+        cfg, notes = parse_config(raw)
         for n in notes:
             logger.info(f"[磐石] 商城配置提示：{n}")
         return cfg
+
+    # ------------------------------------------------------------------ #
+    #  面板用的编辑接口（商品 / 奖池）
+    # ------------------------------------------------------------------ #
+
+    #: 奖品"已中次数"复用 sold 表，加前缀避免与商品 id 撞车
+    @staticmethod
+    def _prize_key(prize_id: str) -> str:
+        return f"prize::{prize_id}"
+
+    def _prize_stock(self, prize_id: str) -> int | None:
+        """奖品剩余可中次数。``None`` = 不限。"""
+        total = self.db.get_stock(self._prize_key(prize_id))
+        if total is None:
+            return None
+        return total - self.db.sold_count(self._prize_key(prize_id))
+
+    def set_prize_stock(self, prize_id: str, total: int | None) -> None:
+        self.db.set_stock(self._prize_key(prize_id), total)
+
+    def _prize_exhausted(self, prize_id: str) -> bool:
+        """该奖品是否已经抽完（设了库存且已发满）。"""
+        left = self._prize_stock(prize_id)
+        return left is not None and left <= 0
+
+    def editable_items(self) -> list[dict]:
+        """给面板用的商品列表（已归一化，附带已售/剩余）。"""
+        cfg = self._config()
+        return [{
+            "id": it.item_id, "name": it.name, "cost": it.cost,
+            "stock": it.stock, "description": it.description,
+            "limit_per_user": it.limit_per_user,
+            "limit_per_day": it.limit_per_day,
+            "reward": it.reward, "value": it.value,
+            "enabled": it.enabled,
+            "sold": self.db.sold_count(it.item_id),
+            "left": self.stock_left(it),
+        } for it in cfg.items]
+
+    def editable_prizes(self) -> list[dict]:
+        """给面板用的奖池（含归一化后的实际概率与剩余次数）。"""
+        cfg = self._config()
+        return [{
+            "id": p.prize_id, "name": p.name,
+            "chance": p.chance, "weight": p.weight,
+            "rare": p.rare, "reward": p.reward, "value": p.value,
+            "enabled": p.enabled,
+            "stock": self._prize_stock(p.prize_id),
+            "won": self.db.sold_count(self._prize_key(p.prize_id)),
+        } for p in cfg.lottery.prizes]
+
+    def save_items(self, items: list) -> dict:
+        """保存商品列表。返回 ``{ok, problems, items}``。
+
+        校验不通过的条目会被**挡下并说明原因**，而不是静默丢弃——
+        否则用户点了保存却少了一件商品，很难发现。
+        """
+        problems: list[str] = []
+        clean: list[dict] = []
+        seen: set[str] = set()
+
+        for i, raw in enumerate(items or []):
+            if not isinstance(raw, dict):
+                problems.append(f"第 {i + 1} 项不是对象")
+                continue
+            name = str(raw.get("name") or "").strip()
+            if not name:
+                problems.append(f"第 {i + 1} 项缺少商品名")
+                continue
+            try:
+                cost = int(raw.get("cost", 0) or 0)
+            except (TypeError, ValueError):
+                problems.append(f"「{name}」价格不是数字")
+                continue
+            if cost < 0:
+                problems.append(f"「{name}」价格不能为负")
+                continue
+
+            item_id = _unique_id(str(raw.get("id") or "").strip(), name, seen)
+            seen.add(item_id)
+
+            stock_raw = raw.get("stock")
+            stock = None
+            if stock_raw is not None and str(stock_raw).strip() != "":
+                try:
+                    stock = int(stock_raw)
+                except (TypeError, ValueError):
+                    stock = None
+                if stock is not None and stock < 0:
+                    stock = None
+
+            clean.append({
+                "id": item_id, "name": name, "cost": cost,
+                "description": str(raw.get("description") or ""),
+                "stock": stock,
+                "limit_per_user": _int(raw.get("limit_per_user"), 0),
+                "limit_per_day": _int(raw.get("limit_per_day"), 0),
+                "reward": str(raw.get("reward") or "manual"),
+                "value": str(raw.get("value") or ""),
+                "enabled": bool(raw.get("enabled", True)),
+            })
+
+        if problems:
+            return {"ok": False, "problems": problems, "items": []}
+        self.db.set_shop_items(clean)
+        return {"ok": True, "problems": [], "items": clean}
+
+    def save_prizes(self, prizes: list) -> dict:
+        """保存奖池。**校验概率总和不得超过 1**，超了直接拒绝并说明。"""
+        clean: list[dict] = []
+        seen: set[str] = set()
+        problems: list[str] = []
+        total = 0.0
+
+        for i, raw in enumerate(prizes or []):
+            if not isinstance(raw, dict):
+                problems.append(f"第 {i + 1} 项不是对象")
+                continue
+            name = str(raw.get("name") or "").strip()
+            if not name:
+                problems.append(f"第 {i + 1} 项缺少奖品名")
+                continue
+            try:
+                chance = float(raw.get("chance", raw.get("weight", 0)) or 0)
+            except (TypeError, ValueError):
+                problems.append(f"「{name}」概率不是数字")
+                continue
+            if chance < 0:
+                problems.append(f"「{name}」概率不能为负")
+                continue
+            if chance > 1:
+                problems.append(f"「{name}」概率不能大于 1（当前 {chance}）")
+                continue
+
+            enabled = bool(raw.get("enabled", True))
+            if enabled:
+                total += chance
+
+            prize_id = _unique_id(str(raw.get("id") or "").strip(), name, seen)
+            seen.add(prize_id)
+            clean.append({
+                "id": prize_id, "name": name, "weight": chance,
+                "rare": bool(raw.get("rare", False)),
+                "reward": str(raw.get("reward") or "points"),
+                "value": str(raw.get("value") or "0"),
+                "enabled": enabled,
+            })
+
+        # 这是用户明确要求的约束：总概率不超过 1
+        if total > 1.0 + 1e-9:
+            problems.append(
+                f"所有奖品的概率加起来是 {total:.4f}，超过了 1。"
+                f"要么调低某些奖品，要么留一部分作为「未中奖」概率。")
+        if problems:
+            return {"ok": False, "problems": problems, "prizes": []}
+
+        self.db.set_prizes(clean)
+        # 库存单独存（不是 schema 字段，走 storage）
+        for raw in (prizes or []):
+            if not isinstance(raw, dict) or "stock" not in raw:
+                continue
+            nm = str(raw.get("name") or "").strip()
+            if not nm:
+                continue
+            match = next((c for c in clean if c["name"] == nm), None)
+            if match is None:
+                continue
+            s = raw.get("stock")
+            try:
+                s = None if s is None or str(s).strip() == "" else int(s)
+            except (TypeError, ValueError):
+                s = None
+            if s is not None and s < 0:
+                s = None
+            self.set_prize_stock(match["id"], s)
+
+        return {"ok": True, "problems": [], "prizes": clean,
+                "total_chance": total}
+
+    def reset_shop_data(self) -> None:
+        """清空面板编辑过的商品/奖池，回到配置默认值。"""
+        self.db.reset_shop_data()
+
+    # ------------------------------------------------------------------ #
+    #  文字指令版的增删（不想开面板时用）
+    # ------------------------------------------------------------------ #
+
+    async def add_item_from_text(self, text: str) -> str:
+        """``/上架 名字 价格 [库存] [发放方式] [内容]``。"""
+        parts = str(text or "").split()
+        if len(parts) < 2:
+            return ("❓ 用法：/上架 <商品名> <价格> [库存] [发放方式] [内容]\n"
+                    "例如：/上架 奶茶 50 10\n"
+                    "      /上架 专属头衔 200 5 title 学霸\n"
+                    "库存省略或填 0 表示不限量。\n"
+                    "发放方式：points（积分）/ title（头衔）/ manual（人工发放）")
+
+        name = parts[0]
+        try:
+            cost = int(parts[1])
+        except ValueError:
+            return f"❓ 价格「{parts[1]}」不是数字。用法：/上架 奶茶 50 [库存]"
+        if cost < 0:
+            return "❓ 价格不能为负。"
+
+        stock = None
+        idx = 2
+        if len(parts) > 2:
+            try:
+                v = int(parts[2])
+                stock = v if v > 0 else None
+                idx = 3
+            except ValueError:
+                pass          # 不是数字就当作发放方式
+
+        reward = parts[idx].lower() if len(parts) > idx else "manual"
+        if reward not in ("points", "title", "manual", "action"):
+            reward = "manual"
+        value = " ".join(parts[idx + 1:]) if len(parts) > idx + 1 else ""
+
+        items = self.editable_items()
+        items.append({"name": name, "cost": cost, "stock": stock,
+                      "reward": reward, "value": value, "enabled": True})
+        result = self.save_items(items)
+        if not result.get("ok"):
+            return "❌ 上架失败：" + "；".join(result.get("problems") or [])
+        stock_txt = "不限量" if stock is None else f"库存 {stock}"
+        return f"✅ 已上架「{name}」：{cost} 积分 · {stock_txt}"
+
+    async def remove_item_by_name(self, name: str) -> str:
+        key = str(name or "").strip()
+        if not key:
+            return "❓ 用法：/下架 <商品名>"
+        items = self.editable_items()
+        hit = [it for it in items
+               if it["name"] == key or it["id"] == key]
+        if not hit:
+            return f"❓ 没找到商品「{key}」。用「/商城」看看有哪些。"
+        remain = [it for it in items if it not in hit]
+        result = self.save_items(remain)
+        if not result.get("ok"):
+            return "❌ 下架失败：" + "；".join(result.get("problems") or [])
+        return f"✅ 已下架「{hit[0]['name']}」"
+
+    async def add_prize_from_text(self, text: str) -> str:
+        """``/奖池 名字 概率 [库存]``。"""
+        parts = str(text or "").split()
+        if len(parts) < 2:
+            return ("❓ 用法：/奖池 <奖品名> <概率> [库存]\n"
+                    "例如：/奖池 谢谢参与 0.3\n"
+                    "      /奖池 限定头衔 0.01 1\n"
+                    "概率是 0~1 的小数；所有奖品概率之和不能超过 1。\n"
+                    "库存省略表示不限量（可以无限次被抽中）。")
+
+        name = parts[0]
+        try:
+            chance = float(parts[1])
+        except ValueError:
+            return f"❓ 概率「{parts[1]}」不是数字。用法：/奖池 谢谢参与 0.3"
+        if chance < 0 or chance > 1:
+            return "❓ 概率要在 0~1 之间（0.3 表示 30%）。"
+
+        stock = None
+        if len(parts) > 2:
+            try:
+                v = int(parts[2])
+                stock = v if v > 0 else None
+            except ValueError:
+                return f"❓ 库存「{parts[2]}」不是数字。"
+
+        prizes = self.editable_prizes()
+        # 新奖品的发放方式：名字里带"积分"就给积分，否则按人工处理
+        reward, value = "manual", ""
+        if "积分" in name:
+            import re
+            m = re.search(r"\d+", name)
+            reward, value = "points", (m.group(0) if m else "10")
+
+        prizes.append({"name": name, "chance": chance, "stock": stock,
+                       "reward": reward, "value": value, "enabled": True})
+        result = self.save_prizes(prizes)
+        if not result.get("ok"):
+            return "❌ 加奖品失败：" + "；".join(result.get("problems") or [])
+        total = result.get("total_chance", 0)
+        return (f"✅ 已加奖品「{name}」：{chance * 100:.2f}%"
+                + ("（不限量）" if stock is None else f"（限 {stock} 次）")
+                + f"\n🎰 当前中奖概率合计 {total * 100:.2f}%，"
+                f"未中奖 {(1 - total) * 100:.2f}%")
+
+    async def remove_prize_by_name(self, name: str) -> str:
+        key = str(name or "").strip()
+        if not key:
+            return "❓ 用法：/删奖品 <奖品名>"
+        prizes = self.editable_prizes()
+        hit = [p for p in prizes if p["name"] == key or p["id"] == key]
+        if not hit:
+            return f"❓ 没找到奖品「{key}」。用「/奖池」看看有哪些。"
+        remain = [p for p in prizes if p not in hit]
+        result = self.save_prizes(remain)
+        if not result.get("ok"):
+            return "❌ 删奖品失败：" + "；".join(result.get("problems") or [])
+        total = result.get("total_chance", 0)
+        return (f"✅ 已删除奖品「{hit[0]['name']}」\n"
+                f"🎰 当前中奖概率合计 {total * 100:.2f}%")
 
     def penalties(self, event=None) -> dict:
         raw = self.cfg_for(event).shop if event is not None else self.cfg.shop
@@ -232,18 +587,27 @@ class ShopHandle(BaseHandle):
         if not verdict.ok:
             return f"🎰 {verdict.reason}"
 
+        # 抽完的奖品要从池子里排除：
+        # 某个奖品设了「可中次数 N」，表示最多只能被抽中 N 次，之后不再出。
+        exhausted = {p.prize_id for p in lot.prizes
+                     if p.prize_id and self._prize_exhausted(p.prize_id)}
+
         # 保底计数：从历史记录里数「连续没中稀有档」
         streak = self._miss_streak(group_id, user_id, lot)
 
         if lot.cost:
             self.db.add_points(group_id, user_id, -lot.cost)
 
-        prize, by_pity = draw_prize(lot, miss_streak=streak)
+        prize, by_pity = draw_prize(lot, miss_streak=streak, skip=exhausted)
         name = await get_nickname(event, user_id)
 
         if prize is None:
             self.db.record_draw(group_id, user_id, "", lot.cost, note="奖池为空")
-            return "🎰 奖池是空的，已退还本次消耗，请联系管理员配置奖品。"
+            # 没有可抽的奖品：退还消耗，并说明是配置问题
+            if lot.cost:
+                self.db.add_points(group_id, user_id, lot.cost)
+            return ("🎰 没有可抽的奖品了（奖池为空或奖品都已抽完）。\n"
+                    "本次消耗已退还，请联系管理员补充奖品。")
         if prize.reward == "none":
             # 「谢谢参与」这类
             self.db.record_draw(group_id, user_id, prize.prize_id, lot.cost,
@@ -251,6 +615,10 @@ class ShopHandle(BaseHandle):
             left = self.db.get_points(group_id, user_id)
             return (f"🎰 {name} 抽到了「{prize.name}」\n"
                     f"消耗 {lot.cost} 积分，剩余 {left}。下次加油！")
+
+        # 记一次中奖占用（用于奖品库存）
+        if prize.prize_id:
+            self.db.bump_sold(self._prize_key(prize.prize_id))
 
         reward_note, delivered = await self._deliver(
             event, prize.reward, prize.value, user_id, name)

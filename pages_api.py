@@ -90,6 +90,12 @@ class PanshiWebController:
             ("/group", self.api_get_group, ["GET"], "单个群的配置"),
             ("/group", self.api_update_group, ["POST"], "保存单个群的配置"),
             ("/group/reset", self.api_reset_group, ["POST"], "重置单个群的配置"),
+            # 积分商城 / 奖池的可视化编辑（省得在配置页手写 JSON 数组）
+            ("/shop/items", self.api_shop_items, ["GET"], "商品列表"),
+            ("/shop/items", self.api_shop_save_items, ["POST"], "保存商品列表"),
+            ("/shop/prizes", self.api_shop_prizes, ["GET"], "奖池列表"),
+            ("/shop/prizes", self.api_shop_save_prizes, ["POST"], "保存奖池"),
+            ("/shop/reset", self.api_shop_reset, ["POST"], "恢复商品与奖池的默认值"),
         ]
 
         ok_count = 0
@@ -209,6 +215,71 @@ class PanshiWebController:
         result = _ok(self.service.reset_group_config(str(gid)))
         await self._notify_saved()
         return result
+
+    # ------------------------------------------------------------------ #
+    #  积分商城 / 奖池的可视化编辑
+    # ------------------------------------------------------------------ #
+    #
+    # 商品和奖池原来只能去 AstrBot 配置页手写 JSON 数组，加一件商品要
+    # 小心翼翼补逗号引号。这几个接口配合 pages/settings 里的管理页，
+    # 让用户点「＋」填三个框就能加一件。
+    #
+    # 数据存在插件的 storage 里（配置里的默认值作为初始内容），
+    # 所以改完立即生效，不需要重载插件。
+
+    def _shop(self):
+        """取 ShopHandle；没有（旧版本/未初始化）时返回 None。"""
+        return getattr(self.service, "shop", None)
+
+    async def api_shop_items(self):
+        shop = self._shop()
+        if shop is None:
+            return _err("商城模块不可用", 503)
+        return _ok({"items": shop.editable_items()})
+
+    async def api_shop_save_items(self):
+        shop = self._shop()
+        if shop is None:
+            return _err("商城模块不可用", 503)
+        payload = await _json_body()
+        items = payload.get("items")
+        if not isinstance(items, list):
+            return _err("缺少参数 items（数组）", 400)
+        result = shop.save_items(items)
+        if not result.get("ok"):
+            # 校验失败要原样返回原因，前端才能逐条展示给用户
+            return _err("；".join(result.get("problems") or ["保存失败"]), 400)
+        return _ok({"items": shop.editable_items(), "saved": len(result["items"])})
+
+    async def api_shop_prizes(self):
+        shop = self._shop()
+        if shop is None:
+            return _err("商城模块不可用", 503)
+        return _ok({"prizes": shop.editable_prizes()})
+
+    async def api_shop_save_prizes(self):
+        shop = self._shop()
+        if shop is None:
+            return _err("商城模块不可用", 503)
+        payload = await _json_body()
+        prizes = payload.get("prizes")
+        if not isinstance(prizes, list):
+            return _err("缺少参数 prizes（数组）", 400)
+        result = shop.save_prizes(prizes)
+        if not result.get("ok"):
+            return _err("；".join(result.get("problems") or ["保存失败"]), 400)
+        return _ok({"prizes": shop.editable_prizes(),
+                    "saved": len(result["prizes"]),
+                    "total_chance": result.get("total_chance", 0)})
+
+    async def api_shop_reset(self):
+        shop = self._shop()
+        if shop is None:
+            return _err("商城模块不可用", 503)
+        shop.reset_shop_data()
+        return _ok({"items": shop.editable_items(),
+                    "prizes": shop.editable_prizes(),
+                    "message": "已恢复为配置里的默认商品与奖池"})
 
 
 # ======================================================================

@@ -401,11 +401,13 @@ def chance_summary(lot: LotteryConfig, *, limit: int = 8) -> list[str]:
 # --------------------------------------------------------------------------- #
 
 def draw_prize(lot: LotteryConfig, *, miss_streak: int = 0,
-               rng: random.Random | None = None) -> tuple[Prize | None, bool]:
+               rng: random.Random | None = None,
+               skip: set[str] | None = None) -> tuple[Prize | None, bool]:
     """抽一个奖品。
 
     Args:
         miss_streak: 连续未中稀有档的次数（用于保底）。
+        skip: 要排除的奖品 id（用于「抽完的奖品不再出」）。
 
     Returns:
         ``(奖品, 是否由保底触发)``。
@@ -415,15 +417,16 @@ def draw_prize(lot: LotteryConfig, *, miss_streak: int = 0,
         * 奖池里一个可用奖品都没有 → 应当**退还本次消耗**（不可能中奖）
         * 概率合计不足 1，这次落在那段余量里 → 正常的「没抽中」
 
-        这个区分很重要：前者是配置问题，不该收钱；后者是玩家运气问题。
-        为区分两者，未中奖时返回一个 ``reward="none"`` 的占位奖品而不是 None——
-        见下面 ``miss_placeholder``。真正"无奖池"才返回 None。
+        后者会返回一个 ``reward="none"`` 的占位奖品而非 ``None``，
+        所以调用方只要判断 ``None`` 就是"配置问题"。
     """
     rnd = rng or random
-    pool = [p for p in lot.prizes if p.enabled and p.chance > 0]
+    excluded = set(skip or ())
+    pool = [p for p in lot.prizes
+            if p.enabled and p.chance > 0 and p.prize_id not in excluded]
     rares = [p for p in pool if p.rare]
 
-    # 没有任何可用奖品 → 配置问题
+    # 没有任何可用奖品 → 配置问题（或全都抽完了）
     if not pool:
         return None, False
 

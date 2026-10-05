@@ -1418,3 +1418,112 @@ select.input {
     grid-template-columns: repeat(2, 1fr);
   }
 }
+
+
+/* ============================================================
+ * 积分商城 / 奖池 管理界面
+ *
+ * 目标：加一件商品只要点「＋」再填三个框，不用手写 JSON。
+ * 表格在小屏上会横向滚动，不做堆叠——堆叠会让「名字/价格/库存」
+ * 的对应关系看不清，反而更难填。
+ * ============================================================ */
+
+.shop-wrap { display: flex; flex-direction: column; gap: 16px; padding-bottom: 24px; }
+
+.shop-head {
+  display: flex; align-items: flex-start; justify-content: space-between;
+  gap: 14px; flex-wrap: wrap;
+}
+.shop-head h2 { margin: 0 0 4px; font-size: 18px; }
+.shop-head .sub { margin: 0; font-size: 12.5px; color: var(--fg-2); line-height: 1.7; max-width: 62ch; }
+
+.shop-card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-sm);
+  padding: 14px 16px;
+}
+
+.shop-card-head {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+.shop-card-head strong { font-size: 14px; }
+.shop-card-head .muted { font-size: 12px; color: var(--fg-3); }
+.shop-card-head .spacer { flex: 1; }
+
+/* 表格本身：小屏横向滚动 */
+.shop-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  display: block;
+  overflow-x: auto;
+}
+.shop-table thead th {
+  text-align: left;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--fg-3);
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+.shop-table td { padding: 5px 8px; vertical-align: middle; }
+.shop-table tr.shop-row:hover { background: var(--panel-hover); }
+.shop-table th.grow-2, .shop-table td.grow-2 { min-width: 180px; }
+.shop-table th.num, .shop-table td.num { width: 110px; }
+.shop-table th.shop-center, .shop-table td.shop-center { width: 56px; text-align: center; }
+.shop-table th.shop-meta, .shop-table td.shop-meta { width: 92px; }
+.shop-table th.shop-ops, .shop-table td.shop-ops { width: 46px; text-align: right; }
+
+.shop-input {
+  width: 100%;
+  box-sizing: border-box;
+  font: inherit;
+  font-size: 13px;
+  padding: 6px 9px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--bg-soft);
+  color: var(--fg);
+  transition: border-color .15s, box-shadow .15s;
+}
+.shop-input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.shop-input.num { text-align: right; font-variant-numeric: tabular-nums; }
+
+.shop-num-cell { display: flex; align-items: center; gap: 6px; }
+.shop-num-cell .shop-input { flex: 1; min-width: 62px; }
+.shop-pct {
+  font-size: 11.5px;
+  color: var(--fg-3);
+  font-variant-numeric: tabular-nums;
+  min-width: 48px;
+  text-align: right;
+}
+.shop-pct.warn { color: var(--danger); font-weight: 600; }
+
+.shop-table .muted { font-size: 11.5px; color: var(--fg-3); }
+.shop-empty-row td { padding: 16px 8px; text-align: center; }
+
+.shop-actions {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  margin-top: 10px;
+}
+.shop-total {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  font-size: 12.5px; font-variant-numeric: tabular-nums;
+}
+.shop-total.over { color: var(--danger); }
+.shop-total .muted { color: var(--fg-3); }
+.shop-over-hint { color: var(--danger); font-size: 12px; }
+
+@media (max-width: 720px) {
+  .shop-head { flex-direction: column; }
+  .shop-card { padding: 12px; }
+}
