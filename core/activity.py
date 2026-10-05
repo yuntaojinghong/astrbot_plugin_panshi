@@ -6,6 +6,7 @@ import random
 
 from ..utils import get_nickname
 from .base_handle import BaseHandle
+from .shop import apply_points_floor
 
 
 class ActivityHandle(BaseHandle):
@@ -42,6 +43,44 @@ class ActivityHandle(BaseHandle):
         points = self.db.get_points(group_id, user_id)
         name = await get_nickname(event, user_id)
         return f"💎 {name} 当前积分：{points}"
+
+    # ------------------------------------------------------------------ #
+    #  加/扣积分（管理员手动调整）
+    # ------------------------------------------------------------------ #
+
+    async def adjust_points(self, event, target_id: str | None, delta: int,
+                            reason: str = "") -> str:
+        """给某人加（delta>0）或扣（delta<0）积分。
+
+        回执里带上变动前后的数值，管理员一眼能确认改对了没有；
+        扣分同样不会扣成负数（与违规扣分保持一致的语义）。
+        """
+        group_id = self.group_id(event)
+        if not target_id:
+            return "❓ 不知道要给谁加减积分。用「@某人」或引用他的消息。"
+        if delta == 0:
+            return "❓ 数量是 0，没有变化。"
+
+        user_id = str(target_id)
+        name = await get_nickname(event, user_id)
+        cur = self.db.get_points(group_id, user_id)
+
+        if delta > 0:
+            new_points = self.db.add_points(group_id, user_id, delta)
+            tail = f"（{reason}）" if reason else ""
+            return (f"✅ 已给 {name} 加 {delta} 积分{tail}\n"
+                    f"💎 {cur} → {new_points}")
+
+        new_points, actual = apply_points_floor(cur, delta)
+        if actual <= 0:
+            return f"❓ {name} 当前积分为 {cur}，没有可扣的。"
+        self.db.add_points(group_id, user_id, -actual)
+        tail = f"（{reason}）" if reason else ""
+        if actual < abs(delta):
+            return (f"✅ 已扣 {name} {actual} 积分{tail}（积分不够扣满 "
+                    f"{abs(delta)}）\n💎 {cur} → {new_points}")
+        return (f"✅ 已扣 {name} {actual} 积分{tail}\n"
+                f"💎 {cur} → {new_points}")
 
     async def rank_points(self, event, limit: int = 10) -> str:
         group_id = self.group_id(event)

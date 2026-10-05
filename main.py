@@ -42,7 +42,8 @@ from .core.intent_executor import _as_bool, _as_int
 from .core.shop_handle import ShopHandle
 from .data import GroupInfoCache, Storage
 from .utils import (PermLevel, check_permission, check_permission_async,
-                   parse_duration, parse_target, safe_int)
+                   parse_amount, parse_duration, parse_target, safe_int,
+                   strip_amount)
 from .utils.helpers import get_group_id
 
 # 内置事件子类型常量（aiocqhttp / OneBot v11）
@@ -723,9 +724,53 @@ class PanshiPlugin(Star):
 
     @filter.command("积分", alias={"查积分"})
     async def cmd_points(self, event: AstrMessageEvent):
-        """查积分：/积分 [@某人]"""
+        """查积分：/积分 [@某人 或 引用消息]"""
         target, _ = parse_target(event)
         yield event.plain_result(await self.activity.query_points(event, target))
+
+    # ---- 加减积分：尽量让人话能直接用 ----
+    #
+    # 支持的写法（都能用）：
+    #   /加分 @小明 10          /加分 10（引用他的消息）
+    #   /加分 @小明 10 表现好     /扣分 @小明 10 刷屏
+    #   /加积分 @小明 10         /减积分 @小明 10
+    #
+    # 数量解析交给 parse_amount，它会排除像 QQ 号的数字——
+    # 否则「@某人 2226175932」会被当成"加 22 亿分"。
+    @filter.command("加分", alias={"加积分", "给分", "奖励"})
+    async def cmd_add_points(self, event: AstrMessageEvent, arg: str = ""):
+        """加积分：/加分 @某人 <数量> [理由]"""
+        if not await self._check(event):
+            yield event.plain_result(self._no_perm())
+            return
+        target, _ = parse_target(event, arg)
+        amount, why = parse_amount(arg, default=10)
+        if amount is None:
+            yield event.plain_result(
+                f"❓ 没看懂要给多少积分（{why}）。\n"
+                f"用法：/加分 @某人 10 [理由]，或引用他的消息发 /加分 10。")
+            return
+        # 默认加分时长写 -10 这种负数时按扣分处理，避免出现"加 -10 分"
+        reason = strip_amount(arg, amount)
+        yield event.plain_result(
+            await self.activity.adjust_points(event, target, abs(amount), reason))
+
+    @filter.command("扣分", alias={"减积分", "罚分"})
+    async def cmd_sub_points(self, event: AstrMessageEvent, arg: str = ""):
+        """扣积分：/扣分 @某人 <数量> [理由]"""
+        if not await self._check(event):
+            yield event.plain_result(self._no_perm())
+            return
+        target, _ = parse_target(event, arg)
+        amount, why = parse_amount(arg, default=10)
+        if amount is None:
+            yield event.plain_result(
+                f"❓ 没看懂要扣多少积分（{why}）。\n"
+                f"用法：/扣分 @某人 10 [理由]，或引用他的消息发 /扣分 10。")
+            return
+        reason = strip_amount(arg, amount)
+        yield event.plain_result(
+            await self.activity.adjust_points(event, target, -abs(amount), reason))
 
     @filter.command("排行", alias={"排行榜"})
     async def cmd_rank(self, event: AstrMessageEvent, arg: str = ""):

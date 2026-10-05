@@ -262,8 +262,172 @@ def main():
     test_shop_logic()
     test_shop_probability()
     test_points_switch()
+    test_simple_points_commands()
 
     print("ALL_SELFTEST_PASS")
+
+
+def test_simple_points_commands():
+    """简化版积分指令：/加分、/扣分、/积分。
+
+    用户要求「简答一些，单发积分、显示我的积分、管理员@人加10就是加10积分」。
+
+    这套指令最大的坑是**把 QQ 号当成积分数量**：
+    消息里同时有 @目标的 QQ 号和数量，取错就会「给某人加 22 亿分」。
+    所以这里密集覆盖各种写法。
+    """
+    import asyncio
+    import os
+    import tempfile
+
+    from astrbot_plugin_panshi.config import PluginConfig
+    from astrbot_plugin_panshi.core.activity import ActivityHandle
+    from astrbot_plugin_panshi.data import Storage
+    from astrbot_plugin_panshi.main import PanshiPlugin
+    from astrbot_plugin_panshi.utils import parse_amount, strip_amount
+
+    # ---------- 1. 数量解析 ----------
+    AMOUNTS = [
+        ("@小明 10", 10),
+        ("@小明 10 表现好", 10),
+        ("2226175932 10", 10),            # QQ 号 + 数量
+        ("@小明 2226175932 10", 10),       # 两个数字：QQ 和数量
+        ("10", 10),
+        ("+50", 50),
+        ("-30", -30),
+        ("20分", 20),
+        ("15积分", 15),
+        ("数量=25", 25),
+        ("@小明 999999999", None),         # 只有像 QQ 号的数字
+    ]
+    bad = []
+    for text, want in AMOUNTS:
+        got, _why = parse_amount(text)
+        if got != want:
+            bad.append((text, want, got))
+    assert not bad, f"数量解析错误: {bad}"
+    print(f"AMOUNT_PARSE_OK ({len(AMOUNTS)} 种写法，含 QQ 号干扰)")
+
+    # 默认值：/@加分 @某人 不写数量时按 10
+    got, why = parse_amount("@小明", default=10)
+    assert got == 10, (got, why)
+    # 不传 default 时要求明确给出，不能瞎猜
+    got2, _ = parse_amount("@小明")
+    assert got2 is None, got2
+    # 空文本
+    assert parse_amount("", default=10)[0] == 10
+    assert parse_amount("")[0] is None
+    print("AMOUNT_DEFAULT_OK (默认 10；不传 default 时要求明确)")
+
+    # ---------- 2. 理由剥离：不能吃掉理由里的数字 ----------
+    REASONS = [
+        ("@小明 10 表现好", "表现好"),
+        ("@小明 10 刷屏", "刷屏"),
+        ("@某人 5 连刷 3 条", "连刷 3 条"),   # 理由里的 3 要保住
+        ("@小明 8 广告刷屏", "广告刷屏"),
+        ("@小明 10", ""),
+        ("2226175932 10", ""),               # QQ 号不该进理由
+    ]
+    bad2 = []
+    for text, want in REASONS:
+        amt, _ = parse_amount(text)
+        got = strip_amount(text, amt or 0)
+        if got != want:
+            bad2.append((text, want, got))
+    assert not bad2, f"理由剥离错误: {bad2}"
+    print(f"AMOUNT_REASON_OK ({len(REASONS)} 种写法)")
+
+    # ---------- 3. 加减积分的行为 ----------
+    GID, ADMIN, TARGET = "1077250302", "3823105457", "2226175932"
+
+    class _Ev:
+        def __init__(self):
+            self.message_obj = types.SimpleNamespace(raw_message={})
+            self.message_str = ""
+            self.bot = types.SimpleNamespace()
+
+        def get_group_id(self):
+            return GID
+
+        def get_self_id(self):
+            return ADMIN
+
+        def get_sender_id(self):
+            return TARGET
+
+        def get_sender_name(self):
+            return "小明"
+
+        def get_messages(self):
+            return []
+
+        def is_stopped(self):
+            return False
+
+    tmp = tempfile.mkdtemp(prefix="panshi_pts_")
+    cfg = PluginConfig({"basic": {"default_ban_time": 60}})
+    db = Storage(os.path.join(tmp, "d.json"))
+    act = ActivityHandle(cfg, db)
+    ev = _Ev()
+
+    async def go():
+        # 加 10
+        r = await act.adjust_points(ev, TARGET, 10)
+        assert "加 10" in r, r
+        assert db.get_points(GID, TARGET) == 10, db.get_points(GID, TARGET)
+        # 回执要同时给出变动前后，管理员才能确认改对了
+        assert "0 → 10" in r, r
+
+        # 再加 5，带理由
+        r2 = await act.adjust_points(ev, TARGET, 5, "表现好")
+        assert "15" in r2 and "表现好" in r2, r2
+        assert db.get_points(GID, TARGET) == 15
+
+        # 扣 5
+        r3 = await act.adjust_points(ev, TARGET, -5)
+        assert db.get_points(GID, TARGET) == 10, db.get_points(GID, TARGET)
+        assert "10" in r3, r3
+
+        # 扣超：不扣成负数
+        r4 = await act.adjust_points(ev, TARGET, -999)
+        assert db.get_points(GID, TARGET) == 0, db.get_points(GID, TARGET)
+        assert "0" in r4, r4
+
+        # 已经没有积分时再扣
+        r5 = await act.adjust_points(ev, TARGET, -10)
+        assert "没有可扣" in r5 or "0" in r5, r5
+        assert db.get_points(GID, TARGET) == 0
+
+        # 没给目标
+        r6 = await act.adjust_points(ev, None, 10)
+        assert "不知道要给谁" in r6, r6
+
+        # 数量 0
+        r7 = await act.adjust_points(ev, TARGET, 0)
+        assert "0" in r7 and "没有变化" in r7, r7
+
+    asyncio.run(go())
+    print("ADJUST_POINTS_OK (加/扣/扣不穿/无目标/数量 0)")
+
+    # ---------- 4. 指令存在且别名好记 ----------
+    for name, aliases in (
+        ("cmd_add_points", ("加分", "加积分", "给分", "奖励")),
+        ("cmd_sub_points", ("扣分", "减积分", "罚分")),
+        ("cmd_points", ("积分", "查积分")),
+    ):
+        fn = getattr(PanshiPlugin, name, None)
+        assert fn is not None, f"缺少指令 {name}"
+        doc = (fn.__doc__ or "")
+        assert doc.strip(), f"{name} 缺少说明"
+    print("SIMPLE_CMD_OK (/加分 /扣分 /积分 三个指令就位)")
+
+    # ---------- 5. 入口检查：新增能力必须能被指令到达 ----------
+    import inspect as _inspect
+    main_src = _inspect.getsource(PanshiPlugin)
+    for meth in ("adjust_points", "query_points"):
+        assert f".{meth}(" in main_src, (
+            f"ActivityHandle.{meth} 没有指令入口，用户用不到")
+    print("SIMPLE_CMD_ENTRYPOINTS_OK")
 
 
 def test_shop_probability():

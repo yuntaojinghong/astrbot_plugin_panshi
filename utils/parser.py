@@ -184,6 +184,123 @@ _QQ_RE = re.compile(r"(?<!\d)(\d{5,12})(?!\d)")
 _AT_TEXT_RE = re.compile(r"@(\S+)")
 
 
+def parse_amount(text: str, *, default: int | None = None,
+                 maximum: int = 1_000_000) -> tuple[int | None, str]:
+    """从指令文本里解析出「加/扣多少积分」。
+
+    这是积分指令最容易被写坏的地方：消息里往往**同时**有别人的 QQ 号和数量，
+    直接取数字就会把 QQ 号（如 2226175932）当成积分，
+    变成「给某人加 22 亿分」。
+
+    区分办法按可靠性排序：
+
+    1. 带正负号或数量单位的数字（``+10`` / ``10分`` / ``10积分``）——最明确
+    2. 明确写出的 ``数量`` / ``num`` / ``amount`` 参数
+    3. **排除 QQ 号后取第一个数字**
+       ——指令格式是「目标 数量 [理由]」，数量在理由**之前**，
+       所以取第一个而不是最后一个；否则「连刷 3 条」里的 3 会被当数量
+    4. 都没有则用 ``default``
+
+    什么算"像 QQ 号"：位数 ≥ 9 的整数。QQ 号至少 5 位但常见的是 9~11 位，
+    而积分数量很少超过 8 位（超过 ``maximum`` 也会被拒），
+    所以用 9 位做分界；再配合 ``maximum`` 双重兜底。
+
+    Args:
+        text: 待解析文本（一般是指令后面的参数部分）。
+        default: 一个数字都找不到时的默认值；``None`` 表示要求用户明确给出。
+        maximum: 上限，超过视为无效。
+
+    Returns:
+        ``(数量, 说明)``。数量为 ``None`` 表示没解析出来。
+    """
+    raw = str(text or "").strip()
+    if not raw:
+        return (default, "默认值") if default is not None else (None, "缺少数量")
+
+    # 1) 带符号或单位：最明确的写法
+    m = re.search(r"([+-]\s*\d+|\d+\s*(?:积分|分|点|points?))", raw, re.IGNORECASE)
+    if m:
+        digits = re.search(r"\d+", m.group(1))
+        if digits:
+            val = int(digits.group(0))
+            if m.group(1).lstrip().startswith("-"):
+                val = -val
+            if abs(val) <= maximum:
+                return val, "带符号/单位"
+            return None, f"数量 {val} 超出上限 {maximum}"
+
+    # 2) 明确写出的关键字参数
+    m = re.search(r"(?:数量|num|amount)\s*[:=]?\s*(\d+)", raw, re.IGNORECASE)
+    if m:
+        val = int(m.group(1))
+        if abs(val) <= maximum:
+            return val, "显式数量"
+
+    # 3) 排除 QQ 号后取第一个数字
+    for mm in re.finditer(r"\d+", raw):
+        token = mm.group(0)
+        if len(token) >= _QQ_MIN_DIGITS:
+            continue                      # 像 QQ 号，跳过
+        val = int(token)
+        if val <= maximum:
+            return val, "首个有效数字"
+
+    if default is not None:
+        return default, "默认值（没找到有效数量）"
+    return None, "没找到数量（数字都像 QQ 号或超出上限）"
+
+
+#: 达到这个位数的整数视为「像 QQ 号」，不作为数量候选。
+#: QQ 号常见 9~11 位；积分数量超过 8 位没有实际意义。
+_QQ_MIN_DIGITS = 9
+
+
+def strip_amount(text: str, amount: int) -> str:
+    """从指令文本里去掉「数量」与 @目标，剩下的当理由。
+
+    「@小明 10 表现好」→ ``表现好``。
+
+    只剥掉**第一个**匹配到的数量写法，并且对"裸数字"只剥掉**第一个**
+    非 QQ 号数字——理由里常带数字（「连刷 3 条」），那些要保住。
+    """
+    raw = str(text or "")
+
+    # 与 parse_amount 相同的优先级：带符号/单位 > 关键字 > 首个裸数字
+    for pat in (r"[+-]\s*\d+", r"\d+\s*(?:积分|分|点|points?)",
+                r"(?:数量|num|amount)\s*[:=]?\s*\d+"):
+        m = re.search(pat, raw, re.IGNORECASE)
+        if m:
+            raw = raw[:m.start()] + " " + raw[m.end():]
+            break
+    else:
+        for mm in re.finditer(r"\d+", raw):
+            if len(mm.group(0)) >= _QQ_MIN_DIGITS:
+                continue
+            raw = raw[:mm.start()] + " " + raw[mm.end():]
+            break
+
+    # 去掉 @某人 文本与独立出现的 QQ 号，再清掉多余分隔符
+    raw = re.sub(r"@\S+", " ", raw)
+    raw = re.sub(r"(?<!\d)\d{%d,}(?!\d)" % _QQ_MIN_DIGITS, " ", raw)
+    return re.sub(r"\s+", " ", raw).strip(" ,，。.、:：")
+
+
+def parse_switch(text: str) -> bool | None:
+    """把开关参数解析成 True/False；认不出来返回 None（表示「只是查询」）。
+
+    只认明确的开关词。空字符串返回 None——这样「/某开关」不带参数
+    就是查询状态，而不是被误改成关闭。
+    """
+    t = str(text or "").strip().lower()
+    if not t:
+        return None
+    if t in ("on", "开", "开启", "启用", "打开", "true", "1", "yes", "是"):
+        return True
+    if t in ("off", "关", "关闭", "停用", "停", "false", "0", "no", "否"):
+        return False
+    return None
+
+
 def parse_target(event, arg_text: str = "") -> tuple[str | None, str]:
     """从消息事件中解析操作目标。
 
