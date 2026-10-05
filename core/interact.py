@@ -19,6 +19,62 @@ from astrbot.api import logger
 from ..utils import get_nickname
 from .base_handle import BaseHandle
 
+# ======================================================================
+#  裸词快捷通道
+# ======================================================================
+#
+# 群友不会为了查个积分去记「/积分」还要带斜杠。像「积分」「签到」
+# 「积分排行」「积分商城」这种两三个字的词，直接打出来就应该能用。
+#
+# 匹配规则刻意做得很**严**：把消息去掉 @提及、空白、标点和句末语气词之后，
+# **必须整句恰好等于某个词**才算命中。句中夹着这些词一律不触发
+# （「我积分怎么还没到」不会命中）。这是这个功能最容易出事的地方——
+# 一旦放宽成"包含即触发"，群里正常聊天就会被抢答。
+_BARE_ACTIONS: dict[str, str] = {
+    "积分": "points", "我的积分": "points", "查积分": "points",
+    "我有多少积分": "points", "积分查询": "points", "查分": "points",
+    "签到": "checkin", "我要签到": "checkin", "打卡": "checkin",
+    "积分排行": "rank", "排行榜": "rank", "积分榜": "rank", "排行": "rank",
+    "发言排行": "rank_msg", "发言榜": "rank_msg",
+    "积分商城": "shop", "商城": "shop", "商店": "shop",
+    "抽奖": "lottery", "抽一次": "lottery",
+    "我的记录": "records", "消费记录": "records", "积分记录": "records",
+    "我的": "self", "我的信息": "self", "我的档案": "self", "我的群档案": "self",
+    "群管帮助": "help", "帮助": "help", "菜单": "help",
+}
+
+#: 自定义裸词时允许填的动作名 -> 说明（面板上照这个填）
+BARE_ACTIONS: dict[str, str] = {
+    "points": "查积分",
+    "checkin": "签到",
+    "rank": "积分排行",
+    "rank_msg": "发言排行",
+    "shop": "积分商城",
+    "lottery": "抽奖",
+    "records": "消费记录",
+    "self": "我的群档案",
+    "help": "帮助",
+}
+
+#: 归一化：开头的 @某人、空白、中英文标点
+_BARE_AT_RE = re.compile(r"^@\S+\s*")
+_BARE_STRIP_RE = re.compile(
+    r"[\s,，。.!！?？~～、:：;；\"'“”‘’()（）\[\]【】<>《》\-—_·]+")
+#: 句末语气词（「积分呢」「签到吧」也应当命中）
+_BARE_TAIL_RE = re.compile(r"[呢啊吧呀哦噢啦嘛嘞哈]+$")
+
+
+def normalize_bare_word(text: str) -> str:
+    """把一条消息归一化成「裸词」形态，便于整句精确比较。
+
+    依次去掉：开头的 ``@某人``、空白与常见中英文标点、句末语气词。
+    """
+    t = str(text or "").strip()
+    t = _BARE_AT_RE.sub("", t)
+    t = _BARE_STRIP_RE.sub("", t)
+    t = _BARE_TAIL_RE.sub("", t)
+    return t
+
 
 class InteractHandle(BaseHandle):
     """投票 / 接龙 / 自助查询 / 关键词回复。"""
@@ -180,6 +236,39 @@ class InteractHandle(BaseHandle):
             f"📅 今日签到：{'已签' if self.db.has_checked_in(group_id, uid) else '未签'}\n"
             f"📋 违规：\n{_warns()}"
         )
+
+    # ========== 裸词快捷通道 ==========
+    def match_bare_word(self, text: str, extra: str = "") -> str | None:
+        """判断一条消息是不是「裸词快捷词」，是则返回对应动作名。
+
+        **只认整句精确匹配**（归一化之后）。宁可漏，绝不抢正常聊天。
+
+        Args:
+            text: 消息原文。
+            extra: 管理员自定义规则，每行 ``关键词 => 动作``。
+
+        Returns:
+            动作名（见 :data:`BARE_ACTIONS`）；不是裸词时返回 ``None``。
+        """
+        word = normalize_bare_word(text)
+        if not word or len(word) > 12:
+            return None
+
+        table = _BARE_ACTIONS
+        custom = str(extra or "").strip()
+        if custom:
+            table = dict(_BARE_ACTIONS)
+            for line in custom.splitlines():
+                line = line.strip()
+                if not line or line.startswith("#") or "=>" not in line:
+                    continue
+                kw, _, act = line.partition("=>")
+                kw, act = normalize_bare_word(kw), act.strip().lower()
+                if kw and act in BARE_ACTIONS:
+                    table[kw] = act
+                else:
+                    logger.info(f"[磐石] 裸词自定义规则已忽略（动作不识别）: {line!r}")
+        return table.get(word)
 
     # ========== 关键词自动回复 ==========
     def match_auto_reply(self, text: str) -> str | None:

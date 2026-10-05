@@ -382,6 +382,33 @@ class PanshiPlugin(Star):
                 yield event.plain_result(confirm_result)
                 return
 
+        # 5.5 裸词快捷通道：不打斜杠的短词也能用
+        #
+        # 群友不会为了查积分去记「/积分」还得敲个斜杠。「积分」「签到」
+        # 「积分排行」「积分商城」这种两三个字的词，直接打就应该有反应。
+        #
+        # 位置是刻意选的：
+        #   · 放在风控之后 —— 拿这些词刷屏照样会被拦；
+        #   · 放在「待确认」之后 —— 「回复 确认」这类交互优先级更高；
+        #   · 放在智能识别之前 —— 精确词没必要花 token 去问模型。
+        # 匹配是**整句精确**的（见 ``InteractHandle.match_bare_word``），
+        # 句中夹着这些词不会触发，所以不会把群里的正常聊天抢走。
+        try:
+            _interact = self.cfg.for_group(group_id).interact
+            if _interact.get("bare_word_enable", True):
+                action = self.interact.match_bare_word(
+                    text, _interact.get("bare_word_extra", ""))
+                if action:
+                    reply = await self._run_bare_word(event, action)
+                    if reply:
+                        logger.info(
+                            f"[磐石] 裸词快捷命中「{text[:12]}」-> {action}")
+                        yield event.plain_result(reply)
+                        self._consume(event)
+                        return
+        except Exception as e:
+            logger.warning(f"[磐石] 裸词快捷通道异常: {e}")
+
         # 6. 智能意图识别
         #    策略：**本地规则保底 + LLM 听懂人话**。
         #    - 本地规则处理「目标明确、句式标准」的指令，命中即秒执行，不消耗 token；
@@ -1362,6 +1389,32 @@ class PanshiPlugin(Star):
         except Exception:
             pass
 
+    async def _run_bare_word(self, event: AstrMessageEvent, action: str) -> str:
+        """执行裸词快捷动作，返回要发到群里的文本。
+
+        动作名与 :data:`core.interact.BARE_ACTIONS` 一一对应；
+        认不出的动作返回空串（调用方据此放行，不消费事件）。
+        """
+        if action == "points":
+            return await self.activity.query_points(event)
+        if action == "checkin":
+            return await self.activity.checkin(event)
+        if action == "rank":
+            return await self.activity.rank_points(event)
+        if action == "rank_msg":
+            return await self.activity.rank_messages(event)
+        if action == "shop":
+            return await self.shop.show_shop(event)
+        if action == "lottery":
+            return await self.shop.draw(event)
+        if action == "records":
+            return await self.shop.my_records(event)
+        if action == "self":
+            return await self.interact.self_query(event, "全部")
+        if action == "help":
+            return HELP_TEXT
+        return ""
+
     def _split_target_duration(self, event, arg: str) -> tuple[str | None, str]:
         """从参数里拆出目标与时长。
 
@@ -1428,6 +1481,10 @@ HELP_TEXT = """🪨 磐石 · 智能群管
 
 【群活跃】
 /签到  /积分 [@某人]  /排行 [积分|发言]
+/商城  /购买 <商品名>  /抽奖  /消费记录
+💡 不打斜杠也能用：直接发「积分」「签到」「积分排行」「积分商城」「抽奖」
+   等词即可（整句精确匹配，不会抢群里的正常聊天）。
+   想关掉或自定义，见「互动工具 → 裸词快捷触发」。
 
 【自动化】
 /宵禁 状态          — 查看宵禁设置

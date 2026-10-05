@@ -16,12 +16,21 @@ class ActivityHandle(BaseHandle):
         group_id = self.group_id(event)
         user_id = self.sender_id(event)
 
+        # 按群视角取配置：面板「独立配置」里的签到积分必须真的生效。
+        activity = self.cfg_for(event).activity
+
+        # 「启用签到」必须真的能把它关掉。
+        #
+        # 回归背景：`checkin_enable` 以前只被面板/自检读去「显示状态」，
+        # 签到逻辑本身从不看它——于是关掉开关后 /签到 照样加分，
+        # 是个典型的「假开关」：面板上写着已关闭，功能却还在跑。
+        if not bool(activity.get("checkin_enable", True)):
+            return "📅 本群未开启签到。管理员可在「群积分 → 启用签到」里打开。"
+
         if self.db.has_checked_in(group_id, user_id):
             points = self.db.get_points(group_id, user_id)
             return f"📅 你今天已经签到过啦，当前积分 {points}"
 
-        # 按群视角取配置：面板「独立配置」里的签到积分必须真的生效。
-        activity = self.cfg_for(event).activity
         base = int(activity.get("checkin_points", 10))
         bonus_max = int(activity.get("checkin_random_bonus", 10))
         bonus = random.randint(0, bonus_max) if bonus_max > 0 else 0

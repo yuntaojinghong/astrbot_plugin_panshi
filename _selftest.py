@@ -378,6 +378,8 @@ def main():
     test_errors()
     test_role_precheck()
     test_guard_punish_reports_failure()
+    test_bare_word_shortcuts()
+    test_checkin_respects_switch()
     test_curfew_intent()
     test_curfew_lift_reporting()
     test_per_group_runtime()
@@ -3460,6 +3462,127 @@ def test_guard_punish_reports_failure():
         assert "已撤回" not in no_recall, no_recall
         assert "禁言" in no_recall, no_recall
         print(f"GUARD_PUNISH_NO_RECALL_HONEST_OK ({no_recall})")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_bare_word_shortcuts():
+    """裸词快捷通道：整句精确才触发，句中夹着绝不触发。
+
+    这是这个功能最容易出事的地方——一旦放宽成「包含即触发」，
+    群里正常聊天就会被抢答。所以「不误触发」比「多命中」重要得多。
+    """
+    import inspect as _inspect
+    import shutil
+    import tempfile
+
+    from astrbot_plugin_panshi.config import PluginConfig
+    from astrbot_plugin_panshi.core.interact import BARE_ACTIONS, InteractHandle
+    from astrbot_plugin_panshi.data import Storage
+
+    tmp = tempfile.mkdtemp(prefix="panshi_bare_")
+    try:
+        h = InteractHandle(PluginConfig({}), Storage(tmp))
+
+        hits = {
+            "积分": "points", "我的积分": "points", "查积分": "points",
+            "签到": "checkin", "打卡": "checkin",
+            "积分排行": "rank", "排行榜": "rank", "发言排行": "rank_msg",
+            "积分商城": "shop", "商城": "shop",
+            "抽奖": "lottery", "我的": "self", "帮助": "help",
+        }
+        for text, want in hits.items():
+            got = h.match_bare_word(text)
+            assert got == want, f"「{text}」应命中 {want}，实际 {got}"
+        print(f"BARE_WORD_HIT_OK ({len(hits)} 个裸词都命中)")
+
+        noisy = {
+            "积分！": "points", "积分。": "points", "积分呢": "points",
+            "积分？": "points", "签到吧": "checkin", "@机器人 积分": "points",
+            "  积分  ": "points",
+        }
+        for text, want in noisy.items():
+            got = h.match_bare_word(text)
+            assert got == want, f"「{text}」应命中 {want}，实际 {got}"
+        print("BARE_WORD_NOISE_TOLERANT_OK (标点/语气词/@前缀都能归一化)")
+
+        # 关键用例：正常聊天绝不能被抢答
+        for text in ["我积分怎么还没到", "这个积分有什么用", "帮我看看积分",
+                     "积分榜第一名是谁", "签到功能坏了吧", "我刚才签到成功了",
+                     "大家积分都多少", "商城里有啥好东西", "能不能帮我查下积分",
+                     "", "   ", "嗯"]:
+            got = h.match_bare_word(text)
+            assert got is None, f"正常聊天被误触发：「{text}」-> {got}"
+        print("BARE_WORD_NO_HIJACK_OK (句子里的词不会误触发)")
+
+        # 自定义关键词：合法动作生效，乱写的动作被忽略
+        got = h.match_bare_word("宝石", "宝石 => points\n# 注释行\n乱写 => 没有这个动作")
+        assert got == "points", got
+        assert h.match_bare_word("乱写", "乱写 => 没有这个动作") is None
+        print("BARE_WORD_CUSTOM_OK (自定义关键词生效，非法动作被忽略)")
+
+        # 动作名必须都能在 main._run_bare_word 里找到实现
+        from astrbot_plugin_panshi.main import PanshiPlugin
+
+        src = _inspect.getsource(PanshiPlugin._run_bare_word)
+        unwired = [a for a in BARE_ACTIONS if f'"{a}"' not in src]
+        assert not unwired, f"这些动作在 _run_bare_word 里没有实现：{unwired}"
+        print(f"BARE_WORD_ACTIONS_WIRED_OK ({len(BARE_ACTIONS)} 个动作都有实现)")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_checkin_respects_switch():
+    """「启用签到」必须真的能关掉签到。
+
+    回归背景：`checkin_enable` 以前只被面板/自检读去「显示状态」，
+    签到逻辑本身从不看它——关掉开关后 /签到 照样加分，是个假开关。
+    """
+    import asyncio
+    import shutil
+    import tempfile
+
+    from astrbot_plugin_panshi.config import PluginConfig
+    from astrbot_plugin_panshi.core.activity import ActivityHandle
+    from astrbot_plugin_panshi.data import Storage
+
+    class _Ev:
+        bot = None
+
+        def get_group_id(self):
+            return 100
+
+        def get_sender_id(self):
+            return 3
+
+        def get_self_id(self):
+            return 99
+
+        def get_sender_name(self):
+            return "测试"
+
+    tmp = tempfile.mkdtemp(prefix="panshi_checkin_")
+    try:
+        db = Storage(tmp)
+
+        off = ActivityHandle(
+            PluginConfig({"activity": {"checkin_enable": False}}), db)
+        r = asyncio.run(off.checkin(_Ev()))
+        assert "未开启" in r, r
+        assert db.get_points(100, 3) == 0, "关掉签到却还是加了分"
+        print(f"CHECKIN_SWITCH_OFF_OK ({r})")
+
+        on = ActivityHandle(PluginConfig({
+            "activity": {"checkin_enable": True, "checkin_points": 10,
+                         "checkin_random_bonus": 0}}), db)
+        r2 = asyncio.run(on.checkin(_Ev()))
+        assert "签到成功" in r2, r2
+        assert db.get_points(100, 3) == 10, db.get_points(100, 3)
+        print(f"CHECKIN_SWITCH_ON_OK ({r2.replace(chr(10), ' / ')})")
+
+        again = asyncio.run(on.checkin(_Ev()))
+        assert "已经签到" in again, again
+        print(f"CHECKIN_TWICE_OK ({again})")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 

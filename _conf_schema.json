@@ -527,6 +527,18 @@
         "type": "text",
         "default": "",
         "hint": "示例：群规 => 群规见置顶公告；签到 => 发送 /签到 即可打卡"
+      },
+      "bare_word_enable": {
+        "description": "启用裸词快捷触发（不打斜杠也能用）",
+        "type": "bool",
+        "default": true,
+        "hint": "开启后直接发「积分」「签到」「积分排行」「积分商城」「抽奖」等词即可。只认整句精确匹配，句中夹着不触发。"
+      },
+      "bare_word_extra": {
+        "description": "裸词自定义（每行一条：关键词 => 动作）",
+        "type": "text",
+        "default": "",
+        "hint": "动作名：points 查积分、checkin 签到、rank 积分排行、rank_msg 发言排行、shop 商城、lottery 抽奖、records 消费记录、self 我的档案、help 帮助。例：宝石 => points"
       }
     }
   }
