@@ -98,22 +98,48 @@ class PanshiWebController:
             ("/shop/reset", self.api_shop_reset, ["POST"], "恢复商品与奖池的默认值"),
         ]
 
+        # 两条路径形式都注册一遍。
+        #
+        # AstrBot 内部会把「插件名 + 子路径」拼成真实 URL，同时有一个
+        # `_normalize_plugin_api_route` 在注册与匹配两侧各做一次归一化。
+        # 我没能确定它对前导斜杠的处理方向（字节码读不准，本地也没有
+        # 可运行的 AstrBot 来实测），所以两条都注册：
+        # 带斜杠（既有约定）和不带斜杠。哪条被匹配到都能用，
+        # 不会出现"页面渲染出来了但接口 404"。
         ok_count = 0
+        registered_paths: list[str] = []
+        failed: list[str] = []
         for path, handler, methods, desc in routes:
-            try:
-                register(
-                    f"/{PLUGIN_NAME}{path}",
-                    self._wrap(handler),
-                    methods,
-                    desc,
-                )
-                ok_count += 1
-            except Exception as e:
-                logger.error(f"[磐石] 注册路由 {path} 失败: {e}")
+            wrapped = self._wrap(handler)
+            for candidate in (f"/{PLUGIN_NAME}{path}",
+                              f"{PLUGIN_NAME}{path}"):
+                try:
+                    register(candidate, wrapped, methods, desc)
+                    ok_count += 1
+                    registered_paths.append(candidate)
+                except Exception as e:
+                    # 同一路由的两种写法，其中一条失败很正常（取决于版本），
+                    # 两条都失败才算真失败
+                    if not candidate.startswith("/"):
+                        failed.append(f"{candidate}: {e}")
+                    logger.debug(f"[磐石] 注册路由 {candidate} 未成功: {e}")
 
         self._registered = ok_count > 0
         if self._registered:
-            logger.info(f"[磐石] 配置面板已注册 {ok_count} 个接口")
+            # 把实际注册的路径打出来。线上遇到「未找到该路由」时，
+            # 这条日志能立刻看出接口到底有没有注册上、注册成了什么形式。
+            logger.info(
+                f"[磐石] 配置面板已注册 {ok_count} 个接口，"
+                f"子路径示例: {', '.join(registered_paths[:4])}"
+            )
+        else:
+            logger.warning(
+                "[磐石] 配置面板一个接口都没注册上。"
+                f"register_web_api 是否可用: {callable(register)}；"
+                f"Web 请求模块: {'可用' if request is not None else _WEB_IMPORT_ERROR}"
+            )
+        if failed:
+            logger.warning("[磐石] 这些路由注册失败: " + "; ".join(failed))
         return self._registered
 
     def _wrap(self, handler: Callable) -> Callable:

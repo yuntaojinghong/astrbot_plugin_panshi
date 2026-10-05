@@ -1291,22 +1291,27 @@ async function main() {
   $("#btnReload").addEventListener("click", () => loadAll(true));
   $("#btnSync").addEventListener("click", refreshGroups);
 
-  // 商城管理：切到可视化增删商品/奖池的界面（shop.js 挂在 window 上）
+  // 商品 / 抽奖：两个独立视图（用户要求分开），各自带「← 返回」
+  const openShopView = (which) => async () => {
+    const shop = window.PanshiShop;
+    if (!shop) {
+      showError("商城主页脚本未加载。请刷新页面；若仍然不行，说明插件文件不完整。");
+      return;
+    }
+    const content = $("#content");
+    // 返回 = 重新加载配置页（会把当前群/全局配置再拉一遍，状态干净）
+    const back = () => loadAll(true);
+    try {
+      if (which === "items") await shop.renderItemsView(content, back);
+      else await shop.renderPrizesView(content, back);
+    } catch (e) {
+      showError(String(e.message || e));
+    }
+  };
   const btnShop = $("#btnShop");
-  if (btnShop) {
-    btnShop.addEventListener("click", async () => {
-      const shop = window.PanshiShop;
-      if (!shop) {
-        showError("商城管理脚本未加载。请刷新页面；若仍然不行，说明插件文件不完整。");
-        return;
-      }
-      try {
-        await shop.renderShopView($("#content"));
-      } catch (e) {
-        showError(String(e.message || e));
-      }
-    });
-  }
+  if (btnShop) btnShop.addEventListener("click", openShopView("items"));
+  const btnLottery = $("#btnLottery");
+  if (btnLottery) btnLottery.addEventListener("click", openShopView("prizes"));
   $("#statusPill").addEventListener("click", () => {
     state.connExpanded = !state.connExpanded;
     if (state.connExpanded) checkConnection();

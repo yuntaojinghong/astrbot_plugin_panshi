@@ -152,8 +152,57 @@ class PanshiPlugin(Star):
             self.automate.bind_announce_sender(self._send_group_text)
             self.automate.bind_groups_provider(self._current_group_ids)
             await self.automate.apply_now()
+            self._clean_legacy_shop_config()
         except Exception as e:
             logger.warning(f"[磐石] 初始化后置任务异常: {e}")
+
+    def _clean_legacy_shop_config(self) -> None:
+        """清掉配置里遗留的对象数组，它们会在配置页显示成 [object Object]。
+
+        v1.9.1 及更早把 `shop.items` / `shop.prizes` / `shop.penalties`
+        的默认值写成了对象数组。升级到 v1.9.2 之后，schema 的默认值虽然改成
+        了空字符串，但**用户已有的配置文件里还是那份数组**，配置页读的是
+        配置里的实际值，所以照旧显示成一串 `[object Object]`。
+
+        这里主动把它们清成空字符串：
+
+        * 这几个字段现在都是 string 类型，留着数组也没有任何代码会读
+        * 真正在用的商品与奖池存在插件 storage 里（面板/指令写的），
+          **不受影响**，不会丢数据
+
+        只清这三项，其它配置一律不碰。
+        """
+        raw = getattr(self, "cfg", None)
+        if not isinstance(raw, dict):
+            return
+        shop = raw.get("shop")
+        if not isinstance(shop, dict):
+            return
+        targets = ("items", "penalties", "prizes", "lottery_prizes")
+        cleaned = []
+        for key in targets:
+            v = shop.get(key)
+            if isinstance(v, (list, tuple, dict)):
+                shop[key] = ""
+                cleaned.append(key)
+        # 旧结构：shop.lottery.prizes 也一起清
+        lot = shop.get("lottery")
+        if isinstance(lot, dict) and isinstance(lot.get("prizes"), (list, tuple, dict)):
+            lot["prizes"] = ""
+            cleaned.append("lottery.prizes")
+        if not cleaned:
+            return
+        save = getattr(raw, "save_config", None)
+        if callable(save):
+            try:
+                save()
+            except Exception as e:
+                logger.warning(f"[磐石] 清理旧商城配置后写盘失败（不影响使用）: {e}")
+        logger.info(
+            "[磐石] 已清理配置里遗留的对象数组 %s（配置页不再显示 "
+            "[object Object]；面板里配置的商品与奖池不受影响）",
+            ", ".join(cleaned),
+        )
 
     async def _current_group_ids(self) -> list[str]:
         """动态获取 bot 当前所在群列表（宵禁/定时公告每轮执行前调用）。"""

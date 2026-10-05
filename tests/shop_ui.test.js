@@ -1,7 +1,10 @@
-/* 商城管理界面（jsdom）
+/* 商品 / 抽奖管理界面（jsdom）
  *
- * 验证用户要的那件事：点「＋」填几个框就能加一条，不用写 JSON。
- * 同时验证概率总和 > 1 会被拦下——这是用户明确要求的约束。
+ * 用户要求：
+ *   · 商品与抽奖**分开成两页**
+ *   · 每页有「← 返回」
+ *   · 点「＋」填几个框就能加一条，不用写 JSON
+ *   · 概率之和不得超过 1
  *
  * 跑法：REPO=<插件目录> node tests/shop_ui.test.js
  */
@@ -27,6 +30,7 @@ const dom = new JSDOM(HTML, { runScripts: "outside-only", pretendToBeVisual: tru
 const { window } = dom;
 const doc = window.document;
 
+/* ---------------- 假后端 ---------------- */
 let items = [
   { id: "tea", name: "奶茶", cost: 50, stock: 10, sold: 2, left: 8,
     reward: "manual", value: "", description: "", limit_per_user: 0,
@@ -74,56 +78,67 @@ window.eval(fs.readFileSync(path.join(REPO, "pages/settings/shop.js"), "utf8"));
 
 const settle = () => new Promise((r) => setTimeout(r, 40));
 const $ = (s) => doc.querySelector(s);
-const $$ = (s) => [...doc.querySelectorAll(s)];
 const click = (n) => n.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
 
-/**
- * 按文案在某个区块里找按钮。
- *
- * 必须限定区块：商品和奖池各有一个「＋ 添加…」按钮，
- * 只按文案全局找会命中错的（我第一版就点到了奖品的添加按钮，
- * 结果把奖品字段填进了商品表，排查了好一会儿）。
- */
-function btnIn(cardIndex, text) {
-  const card = $$(".shop-card")[cardIndex];
-  if (!card) return null;
-  return [...card.querySelectorAll("button")]
+/** 精确按文案找按钮（避免「＋ 添加商品」被子串误命中）。 */
+function btn(root, text) {
+  return [...root.querySelectorAll("button")]
     .find((b) => (b.textContent || "").trim() === text) || null;
 }
 
-/** 某个区块里的所有数据行。 */
-function rowsIn(cardIndex) {
-  const card = $$(".shop-card")[cardIndex];
-  return card ? [...card.querySelectorAll("tr.shop-row")] : [];
+/** 把两个视图分别渲染到各自的容器里，便于同时断言。 */
+async function renderBoth() {
+  const host = $("#content");
+  host.innerHTML = "";
+  const a = doc.createElement("div");
+  const b = doc.createElement("div");
+  host.append(a, b);
+  let backA = 0, backB = 0;
+  await window.PanshiShop.renderItemsView(a, () => { backA++; });
+  await window.PanshiShop.renderPrizesView(b, () => { backB++; });
+  return { a, b, getBackA: () => backA, getBackB: () => backB };
 }
 
 (async () => {
-  const host = $("#content");
-  await window.PanshiShop.renderShopView(host);
+  $("#alertBox").innerHTML = "";
+
+  /* ---------- 1. 两个视图是分开的 ---------- */
+  const v1 = await renderBoth();
   await settle();
 
-  check("渲染出两个区块（商品 / 奖池）", $$(".shop-card").length === 2,
-        $$(".shop-card").length);
-  check("列出了已有商品", rowsIn(0).some((r) =>
-    (r.querySelector('input[type="text"]') || {}).value === "奶茶"));
-  check("列出了已有奖品", rowsIn(1).some((r) =>
-    (r.querySelector('input[type="text"]') || {}).value === "金牌"));
+  check("商品视图只包含商品行", v1.a.querySelectorAll("tr.shop-row").length === 1,
+        v1.a.querySelectorAll("tr.shop-row").length);
+  check("抽奖视图只包含奖品行", v1.b.querySelectorAll("tr.shop-row").length === 2,
+        v1.b.querySelectorAll("tr.shop-row").length);
+  check("两个视图是两个独立容器", v1.a !== v1.b);
 
-  // ---------- 加一件商品：只需三个框 ----------
-  const addItemBtn = btnIn(0, "＋ 添加商品");
-  check("商品区有「＋ 添加商品」按钮", !!addItemBtn,
-        $$("button").map((b) => b.textContent.trim()));
-
-  const before = rowsIn(0).length;
-  if (addItemBtn) {
-    click(addItemBtn);
+  /* ---------- 2. 返回按钮 ---------- */
+  check("商品视图有「← 返回」", !!btn(v1.a, "← 返回"));
+  check("抽奖视图有「← 返回」", !!btn(v1.b, "← 返回"));
+  const backBtn = btn(v1.a, "← 返回");
+  if (backBtn) {
+    click(backBtn);
     await settle();
-    const rows = rowsIn(0);
-    check("点加号后商品多出一行", rows.length === before + 1,
+    check("点返回会触发回调", v1.getBackA() === 1, v1.getBackA());
+  }
+
+  /* ---------- 3. 商品：加号 + 三个框 ---------- */
+  const v2 = await renderBoth();
+  await settle();
+  const addItem = btn(v2.a, "＋ 添加商品");
+  check("商品区有「＋ 添加商品」", !!addItem,
+        [...v2.a.querySelectorAll("button")].map((b) => b.textContent.trim()));
+  check("商品区没有奖品按钮（已分页）", !btn(v2.a, "＋ 添加奖品"));
+
+  if (addItem) {
+    const before = v2.a.querySelectorAll("tr.shop-row").length;
+    click(addItem);
+    await settle();
+    const rows = [...v2.a.querySelectorAll("tr.shop-row")];
+    check("点加号后商品多一行", rows.length === before + 1,
           { before, after: rows.length });
 
-    const newRow = rows[rows.length - 1];
-    const inputs = [...newRow.querySelectorAll("input")];
+    const inputs = [...rows[rows.length - 1].querySelectorAll("input")];
     const texts = inputs.filter((i) => i.type === "text" || i.type === "number");
     check("新行是三个框（商品名 / 价格 / 库存）", texts.length === 3,
           inputs.map((i) => i.type));
@@ -133,14 +148,13 @@ function rowsIn(cardIndex) {
     texts[2].value = "5";
     await settle();
 
-    const saveBtn = btnIn(0, "保存商品");
-    check("有「保存商品」按钮", !!saveBtn);
-    if (saveBtn) {
-      click(saveBtn);
+    const save = btn(v2.a, "保存商品");
+    check("有「保存商品」", !!save);
+    if (save) {
+      click(save);
       await settle();
       const post = calls.filter((c) =>
         c[0] === "POST" && String(c[1]).includes("shop/items")).pop();
-      check("保存时发出了 POST", !!post);
       check("提交内容含新加的那件（名字/价格/库存都对）",
             !!post && post[2].items.some((i) =>
               i.name === "表情包" && i.cost === 30 && i.stock === 5),
@@ -151,72 +165,90 @@ function rowsIn(cardIndex) {
     }
   }
 
-  // ---------- 删除一行 ----------
-  await window.PanshiShop.renderShopView(host);
+  /* ---------- 4. 删除行 ---------- */
+  const v3 = await renderBoth();
   await settle();
-  const delBtns = rowsIn(0).map((r) => r.querySelector(".btn.danger")).filter(Boolean);
-  check("商品每行都有删除按钮", delBtns.length >= 1, delBtns.length);
-  const n0 = rowsIn(0).length;
-  if (delBtns.length) {
-    click(delBtns[delBtns.length - 1]);
+  const del = v3.a.querySelector("tr.shop-row .btn.danger");
+  check("商品行有删除按钮", !!del);
+  const n0 = v3.a.querySelectorAll("tr.shop-row").length;
+  if (del) {
+    click(del);
     await settle();
-    check("删除后行数减少", rowsIn(0).length === n0 - 1,
-          { before: n0, after: rowsIn(0).length });
+    check("删除后行数减少", v3.a.querySelectorAll("tr.shop-row").length === n0 - 1,
+          { before: n0, after: v3.a.querySelectorAll("tr.shop-row").length });
   }
 
-  // ---------- 概率合计 ----------
-  await window.PanshiShop.renderShopView(host);
+  /* ---------- 5. 概率合计 ---------- */
+  const v4 = await renderBoth();
   await settle();
-  let total = $(".shop-total");
-  check("显示中奖概率合计", !!total && /中奖合计/.test(total.textContent || ""),
+  const total = v4.b.querySelector(".shop-total");
+  check("抽奖页显示中奖概率合计",
+        !!total && /中奖合计/.test(total.textContent || ""),
         total ? total.textContent : null);
   check("合计数值正确（0.70+0.01=0.71）",
         !!total && /71\.00%/.test(total.textContent || ""),
         total ? total.textContent : null);
-  check("同时显示未中奖概率",
-        !!total && /未中奖/.test(total.textContent || ""), null);
+  check("商品页不显示概率合计", !v4.a.querySelector(".shop-total"));
 
-  // ---------- 概率超过 1 被拦下 ----------
-  const pr = rowsIn(1);
-  const goldRow = pr[pr.length - 1];
-  const goldChance = goldRow && goldRow.querySelector('input[type="number"]');
+  /* ---------- 6. 概率超过 1 被拦下 ---------- */
+  const pr = [...v4.b.querySelectorAll("tr.shop-row")];
+  const goldChance = pr[pr.length - 1].querySelector('input[type="number"]');
   if (goldChance) {
-    goldChance.value = "0.9";           // 0.7 + 0.9 = 1.6 > 1
+    goldChance.value = "0.9";           // 0.7 + 0.9 = 1.6
     goldChance.dispatchEvent(new window.Event("input", { bubbles: true }));
     await settle();
+    const t2 = v4.b.querySelector(".shop-total");
+    check("超限时合计区标红", !!t2 && t2.classList.contains("over"),
+          t2 ? t2.className : null);
+    check("超限时给出提示", !!t2 && /超过 1/.test(t2.textContent || ""),
+          t2 ? t2.textContent : null);
 
-    total = $(".shop-total");
-    check("超限时合计区标红", !!total && total.classList.contains("over"),
-          total ? total.className : null);
-    check("超限时给出提示", !!total && /超过 1/.test(total.textContent || ""),
-          total ? total.textContent : null);
-
-    const savePrizes = btnIn(1, "保存奖池");
-    if (savePrizes) {
-      click(savePrizes);
+    const save = btn(v4.b, "保存奖池");
+    if (save) {
+      click(save);
       await settle();
-      const box = $("#alertBox");
       check("保存被拒绝并展示原因",
-            !!box && /超过/.test(box.textContent || ""),
-            box ? box.textContent : null);
+            /超过/.test($("#alertBox").textContent || ""),
+            $("#alertBox").textContent);
     }
   }
 
-  // ---------- 加奖品：名字 / 概率 / 次数 ----------
-  await window.PanshiShop.renderShopView(host);
+  /* ---------- 7. 抽奖页加奖品 ---------- */
+  const v5 = await renderBoth();
   await settle();
-  const addPrizeBtn = btnIn(1, "＋ 添加奖品");
-  check("奖池区有「＋ 添加奖品」按钮", !!addPrizeBtn);
-  if (addPrizeBtn) {
-    const n1 = rowsIn(1).length;
-    click(addPrizeBtn);
+  const addPrize = btn(v5.b, "＋ 添加奖品");
+  check("抽奖区有「＋ 添加奖品」", !!addPrize);
+  check("抽奖区没有商品按钮（已分页）", !btn(v5.b, "＋ 添加商品"));
+  if (addPrize) {
+    const n1 = v5.b.querySelectorAll("tr.shop-row").length;
+    click(addPrize);
     await settle();
-    check("点加号后奖池多出一行", rowsIn(1).length === n1 + 1,
-          { before: n1, after: rowsIn(1).length });
-    const row = rowsIn(1)[rowsIn(1).length - 1];
-    const nums = [...row.querySelectorAll('input[type="number"]')];
-    check("奖品行有概率与可中次数两个数字框", nums.length === 2, nums.length);
+    check("点加号后奖池多一行",
+          v5.b.querySelectorAll("tr.shop-row").length === n1 + 1,
+          { before: n1, after: v5.b.querySelectorAll("tr.shop-row").length });
+    const row = [...v5.b.querySelectorAll("tr.shop-row")].pop();
+    check("奖品行有概率与可中次数两个数字框",
+          row.querySelectorAll('input[type="number"]').length === 2);
   }
+
+  /* ---------- 8. 路由失败时给出可操作的提示 ---------- */
+  //
+  // 线上遇到过「未找到该路由」：页面标题渲染出来了（HTML 是静态的），
+  // 但 apiGet 拿不到数据。只把原始错误抛出来，用户看不出该做什么。
+  const savedGet = window.AstrBotPluginPage.apiGet;
+  window.AstrBotPluginPage.apiGet = async () => {
+    throw new Error("未找到该路由");
+  };
+  const host6 = $("#content");
+  host6.innerHTML = "";
+  const solo = doc.createElement("div");
+  host6.append(solo);
+  await window.PanshiShop.renderItemsView(solo, () => {});
+  await settle();
+  const alertText = ($("#alertBox").textContent || "") + (solo.textContent || "");
+  check("路由失败时提示里指明要重载插件",
+        /重载/.test(alertText), alertText.slice(0, 120));
+  window.AstrBotPluginPage.apiGet = savedGet;
 
   console.log(out.join("\n"));
   console.log(`\n结果: ${pass} 通过, ${fail} 失败`);

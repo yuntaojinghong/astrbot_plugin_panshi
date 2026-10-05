@@ -420,28 +420,28 @@
         "description": "商城 · 启用积分商城",
         "type": "bool",
         "default": false,
-        "hint": "开启后群友可用「/商城」查看、「/购买 <商品名>」下单，积分来自签到与发言奖励。\n可以按群单独关闭：管理员在本群发「/积分开关 off」即可，关闭后本群不显示商城、不能购买与抽奖，也不再扣违规积分。"
+        "hint": "开启后群友可用 /商城、/购买 <商品名>。"
       },
       "items": {
-        "description": "商城 · 商品列表（留空 = 用面板里配置的商品）",
+        "description": "商城 · 商品列表",
         "type": "string",
         "default": "",
-        "hint": "留空即可。商品在插件面板顶栏「🛒 商城管理」里点「＋ 添加商品」填写，或用指令 /上架 <商品名> <价格> [库存]。<br>这里只有高级用户需要手写：一个 JSON 数组，每项形如 <code>{\"name\":\"奶茶\",\"cost\":50,\"stock\":10}</code>。<br>字段：name（必填）cost（价格）stock（库存，留空或 0 = 不限量）limit_per_user（每人限购，0 = 不限）limit_per_day（每日限购，0 = 不限）reward（发放方式 points / title / manual）value（发放内容）enabled（是否上架）。<br><b>注意</b>：只要在面板里编辑过商品，就以面板里的内容为准，这里不再生效。"
+        "hint": "留空即可。商品在面板顶栏「🛒 商品」里点「＋ 添加商品」填写，或用指令 /上架 <商品名> <价格> [库存]。"
       },
       "penalties": {
-        "description": "违规扣积分（留空 = 用面板里配置的规则）",
+        "description": "违规扣积分",
         "type": "string",
-        "hint": "留空即可。违规扣分在插件面板「🛒 商城管理」页配置。<br>这里只有高级用户需要手写：一个 JSON 数组，每项形如 <code>{\"reason\":\"刷屏\",\"points\":20,\"ban\":true}</code>。<br>reason 要和风控那侧的叫法一致（刷屏 / 违禁词 / 广告 / 复读）；points 是扣多少积分（不会扣成负数）；ban 是是否同时禁言；enabled 是是否启用这条。",
+        "hint": "留空即可。违规扣分在面板「风控」组里配置。",
         "default": ""
       },
       "lottery_enable": {
         "description": "抽奖 · 启用抽奖",
         "type": "bool",
         "default": false,
-        "hint": "开启后群友可用「/抽奖」。可以先只开商城不开抽奖。"
+        "hint": "开启后群友可用 /抽奖。可以先只开商城不开抽奖。"
       },
       "lottery_cost": {
-        "description": "抽奖 · 每次抽奖消耗积分",
+        "description": "抽奖 · 每次消耗积分",
         "type": "int",
         "default": 10,
         "slider": {
@@ -452,7 +452,7 @@
         "hint": "设为 0 则免费抽。"
       },
       "lottery_daily_limit": {
-        "description": "抽奖 · 每人每日抽奖次数",
+        "description": "抽奖 · 每人每日次数",
         "type": "int",
         "default": 3,
         "slider": {
@@ -463,7 +463,7 @@
         "hint": "0 = 不限次数。"
       },
       "lottery_pity": {
-        "description": "抽奖 · 抽奖保底次数",
+        "description": "抽奖 · 保底次数",
         "type": "int",
         "default": 10,
         "slider": {
@@ -474,10 +474,10 @@
         "hint": "连续这么多次没抽中「稀有」档时，下一次必出稀有。0 = 不要保底。"
       },
       "lottery_prizes": {
-        "description": "抽奖 · 奖池（留空 = 用面板里配置的奖品）",
+        "description": "抽奖 · 奖池",
         "type": "string",
         "default": "",
-        "hint": "留空即可。奖池在插件面板顶栏「🛒 商城管理」里点「＋ 添加奖品」填写，或用指令 /奖池 <奖品名> <概率> [可中次数]。<br>这里只有高级用户需要手写：一个 JSON 数组，每项形如 <code>{\"name\":\"谢谢参与\",\"weight\":0.3,\"reward\":\"none\"}</code>。<br>weight 是<b>绝对概率</b>，取值 0~1，所有奖品之和<b>不得超过 1</b>；不足 1 的剩余部分自动成为「未中奖」。<br><b>注意</b>：只要在面板里编辑过奖池，就以面板里的内容为准，这里不再生效。"
+        "hint": "留空即可。奖品在面板顶栏「🎰 抽奖」里点「＋ 添加奖品」填写，或用指令 /奖池 <奖品名> <概率> [可中次数]。"
       }
     }
   },

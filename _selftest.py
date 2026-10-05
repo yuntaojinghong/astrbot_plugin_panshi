@@ -215,23 +215,35 @@ def main():
     assert inst.web is not None, "面板控制器未创建"
     # 断言"必需路由都在"而不是写死数量——每加一个接口都要改测试的话，
     # 这条断言迟早会被随手改成一个更大的数字，失去意义。
-    paths = [r[0] for r in ctx.routes]
+    #
+    # 注意：现在每条路由会注册**两种路径形式**（带前导斜杠 / 不带），
+    # 因为 AstrBot 内部 `_normalize_plugin_api_route` 对前导斜杠的处理方向
+    # 我无法在本地实测，两种都注册可以避免"页面渲染出来但接口 404"。
+    # 所以这里统一按"去掉前导斜杠"后比对。
+    def _norm(route: str) -> str:
+        return route.lstrip("/")
+
+    paths = {_norm(r[0]) for r in ctx.routes}
     required_routes = [
-        "/astrbot_plugin_panshi/bootstrap",
-        "/astrbot_plugin_panshi/overview",
-        "/astrbot_plugin_panshi/global",
-        "/astrbot_plugin_panshi/group",
-        "/astrbot_plugin_panshi/group/reset",
-        "/astrbot_plugin_panshi/shop/items",
-        "/astrbot_plugin_panshi/shop/prizes",
-        "/astrbot_plugin_panshi/shop/reset",
+        "astrbot_plugin_panshi/bootstrap",
+        "astrbot_plugin_panshi/overview",
+        "astrbot_plugin_panshi/global",
+        "astrbot_plugin_panshi/group",
+        "astrbot_plugin_panshi/group/reset",
+        "astrbot_plugin_panshi/shop/items",
+        "astrbot_plugin_panshi/shop/prizes",
+        "astrbot_plugin_panshi/shop/reset",
     ]
     missing = [r for r in required_routes if r not in paths]
-    assert not missing, f"缺少路由 {missing}，实际 {paths}"
-    assert len(ctx.routes) >= len(required_routes), len(ctx.routes)
+    assert not missing, f"缺少路由 {missing}"
+    # 两种形式都要有：只有一种的话，遇到另一种匹配方式就会 404
+    raw_paths = [r[0] for r in ctx.routes]
+    for r in required_routes:
+        assert f"/{r}" in raw_paths, f"缺少带斜杠的 {r}"
+        assert r in raw_paths, f"缺少不带斜杠的 {r}"
     for route, _h, _m, _d in ctx.routes:
-        assert route.startswith("/astrbot_plugin_panshi/"), route
-    print(f"WEB_ROUTES_OK ({len(ctx.routes)} 个，必需路由齐全)")
+        assert route.lstrip("/").startswith("astrbot_plugin_panshi/"), route
+    print(f"WEB_ROUTES_OK ({len(raw_paths)} 条 = 必需路由 × 两种路径形式)")
     for route, _h, methods, _d in ctx.routes:
         print("   ", ",".join(methods).ljust(4), route)
 
@@ -408,6 +420,63 @@ def test_schema_renders_in_ui():
     assert empty.lottery.prizes == [], empty.lottery.prizes
     assert empty.lottery.cost == 10, empty.lottery
     print("SCHEMA_EMPTY_STR_OK (默认的空字符串按「未配置」处理，不报错)")
+
+    # hint 里不能有 HTML —— 配置页不渲染标签，用户会看到满屏 <code> <br>。
+    # 这个坑我踩过：上一版在 hint 里写了标签，线上就是这样显示的。
+    raw = _json.dumps(schema, ensure_ascii=False)
+    tags = [t for t in ("<br>", "<code>", "</code>", "<b>", "</b>",
+                        "<i>", "</i>", "<p>", "</p>", "<a ") if t in raw]
+    assert not tags, f"schema 里有 HTML 标签，配置页只会原样显示：{tags}"
+    print("SCHEMA_NO_HTML_OK (说明文字是纯文本，不会显示成标签原文)")
+
+    # 说明要短——用户明确说过「不要留者还写一大段话」
+    for key in ("items", "penalties", "lottery_prizes"):
+        hint = shop[key].get("hint") or ""
+        assert len(hint) <= 90, (
+            f"shop.{key} 的说明 {len(hint)} 字，太长了（配置页显示不下，"
+            f"用户要求简短）：{hint}")
+    print("SCHEMA_HINT_SHORT_OK (内容型字段说明都在 90 字以内)")
+
+    # 升级后，用户配置里遗留的对象数组要被清掉。
+    # 不清的话，schema 改了也没用——配置页读的是配置里的**实际值**，
+    # 照旧显示成一串 [object Object]（截图里就是这样）。
+    import types as _types
+    from astrbot_plugin_panshi.main import PanshiPlugin
+
+    class _Cfg(dict):
+        saved = 0
+
+        def save_config(self, *a, **k):
+            type(self).saved += 1
+
+    fake = PanshiPlugin.__new__(PanshiPlugin)     # 不走 __init__，只测这个方法
+    fake.cfg = _Cfg({
+        "basic": {"default_ban_time": 60},
+        "shop": {
+            "enable": True,
+            "items": [{"name": "旧商品", "cost": 10}],      # 遗留对象数组
+            "penalties": [{"reason": "刷屏", "points": 20}],
+            "lottery": {"prizes": [{"name": "旧奖品"}]},
+            "lottery_cost": 30,
+        },
+    })
+    fake._clean_legacy_shop_config()
+    sh = fake.cfg["shop"]
+    assert sh["items"] == "", sh["items"]
+    assert sh["penalties"] == "", sh["penalties"]
+    assert sh["lottery"]["prizes"] == "", sh["lottery"]
+    # 不相关的配置一个字都不能动
+    assert sh["lottery_cost"] == 30, sh["lottery_cost"]
+    assert sh["enable"] is True, sh["enable"]
+    assert fake.cfg["basic"]["default_ban_time"] == 60
+    assert _Cfg.saved >= 1, "清理后应当写盘，否则重启又出现"
+    print("SCHEMA_LEGACY_CLEANUP_OK (遗留对象数组被清空；其它配置不动)")
+
+    # 已经是空字符串时不该反复写盘
+    before = _Cfg.saved
+    fake._clean_legacy_shop_config()
+    assert _Cfg.saved == before, "没有需要清理的内容时不该写盘"
+    print("SCHEMA_LEGACY_IDEMPOTENT_OK (无遗留内容时不写盘)")
 
 
 def test_shop_editing():

@@ -1527,3 +1527,8 @@ select.input {
   .shop-head { flex-direction: column; }
   .shop-card { padding: 12px; }
 }
+
+/* 视图头右侧的按钮组（恢复默认 / ← 返回） */
+.shop-head-actions {
+  display: flex; align-items: center; gap: 8px; flex: none;
+}
