@@ -235,12 +235,49 @@ def main():
     # 端点表与真实处理函数必须对得上——写错名字会在运行时才炸
     from astrbot_plugin_panshi.pages_api import PanshiWebController
     table = inst.web._endpoint_table()
-    for ep, (fname, methods) in table.items():
-        assert hasattr(PanshiWebController, fname), \
-            f"端点 {ep} 指向不存在的处理函数 {fname}"
-        assert methods, f"端点 {ep} 没有允许的方法"
-        assert methods <= {"GET", "POST", "DELETE", "PUT", "PATCH"}, (ep, methods)
+    for ep, handlers in table.items():
+        assert handlers, f"端点 {ep} 没有登记任何方法"
+        for method, fname in handlers.items():
+            assert method in ("GET", "POST", "DELETE", "PUT", "PATCH"), (ep, method)
+            assert hasattr(PanshiWebController, fname), \
+                f"端点 {ep} 的 {method} 指向不存在的处理函数 {fname}"
     print(f"WEB_ENDPOINTS_OK ({len(table)} 个端点都指向真实处理函数)")
+
+    # 前端真正会调的「端点 + 方法」，必须都在端点表里登记过。
+    #
+    # 回归背景（v1.9.13 线上）：端点表早期写成「一个处理函数 + 允许的方法
+    # 集合」，`global` / `group` 只登记了 GET。而面板「保存配置」走的是
+    # POST /global，于是被自己的路由判断挡下，界面弹：
+    #     「global 不接受 POST（允许 GET）」
+    # 页面能打开、配置读得出来，就是**存不进去**——不点保存根本发现不了。
+    #
+    # 修法是把表改成「端点 -> {方法: 处理函数}」。但光修不够：这种"前端加了
+    # 调用、后端忘了登记"的走散必须能自动抓到，所以这里直接拿前端的调用当
+    # 需求清单来核对，前后端再也别想悄悄走散。
+    import os as _os
+    import re as _re
+
+    _pages_dir = _os.path.join(
+        _os.path.dirname(_os.path.abspath(__file__)), "pages", "settings")
+    _calls: set[tuple[str, str]] = set()
+    for _fn in ("app.js", "shop.js"):
+        _p = _os.path.join(_pages_dir, _fn)
+        if not _os.path.exists(_p):
+            continue
+        with open(_p, encoding="utf-8") as _f:
+            _text = _f.read()
+        for _m in _re.finditer(r"api(Get|Post)\(\s*[\"']([^\"']+)[\"']", _text):
+            _calls.add((_m.group(1).upper(), _m.group(2).split("?")[0]))
+    assert _calls, "没从面板前端解析到任何接口调用，正则或路径可能变了"
+    _missing = sorted(
+        (ep, method) for method, ep in _calls
+        if method not in (table.get(ep) or {})
+    )
+    assert not _missing, (
+        "面板前端调用的「端点+方法」后端没登记，运行时会报 405："
+        f"{_missing}")
+    print(f"WEB_FRONTEND_CONTRACT_OK "
+          f"(前端 {len(_calls)} 处调用全部有对应处理函数)")
 
     # 后缀识别：真实 URL 的三种前缀层数都要能定位到同一个端点
     class _PathReq:

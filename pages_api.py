@@ -147,28 +147,38 @@ class PanshiWebController:
             )
         return self._registered
 
-    #: 端点表：后缀 -> (处理函数名, 允许的方法)
-    def _endpoint_table(self) -> dict[str, tuple[str, set[str]]]:
+    #: 端点表：后缀 -> {HTTP 方法: 处理函数名}
+    #
+    # 这里必须按**方法**分别映射，不能写成「一个处理函数 + 允许的方法集合」。
+    # 原因：``global`` 与 ``group`` 是**同名不同方法的两个端点**——
+    #   GET  /global  -> 读全局默认配置
+    #   POST /global  -> 保存全局默认配置
+    # 之前的表把 ``global`` / ``group`` 只映射到了 GET 的处理函数，于是面板
+    # 「保存配置」发出的 POST 会被自己的路由判断挡下，回一句
+    # 「global 不接受 POST（允许 GET）」，表现为**读得出来、就是存不进去**。
+    # 因为 GET 一切正常、页面也打得开，这个 bug 藏了很久才被用户点到。
+    def _endpoint_table(self) -> dict[str, dict[str, str]]:
         return {
-            "bootstrap": ("api_bootstrap", {"GET"}),
-            "overview": ("api_overview", {"GET"}),
-            "connection": ("api_connection", {"GET"}),
-            "export": ("api_export", {"GET"}),
-            "import": ("api_import", {"POST"}),
-            "groups": ("api_groups", {"GET"}),
-            "groups/refresh": ("api_groups_refresh", {"POST"}),
-            "global": ("api_get_global", {"GET"}),
-            "group": ("api_get_group", {"GET"}),
-            "group/reset": ("api_reset_group", {"POST"}),
-            "shop/items": ("api_shop_items", {"GET"}),
-            "shop/prizes": ("api_shop_prizes", {"GET"}),
-            "shop/settings": ("api_shop_settings", {"GET"}),
-            "shop/reset": ("api_shop_reset", {"POST"}),
-            "shop/save-items": ("api_shop_save_items", {"POST"}),
-            "shop/save-prizes": ("api_shop_save_prizes", {"POST"}),
-            "shop/save-settings": ("api_shop_save_settings", {"POST"}),
+            "bootstrap": {"GET": "api_bootstrap"},
+            "overview": {"GET": "api_overview"},
+            "connection": {"GET": "api_connection"},
+            "export": {"GET": "api_export"},
+            "import": {"POST": "api_import"},
+            "groups": {"GET": "api_groups"},
+            "groups/refresh": {"POST": "api_groups_refresh"},
+            # 同一个端点名，GET 读 / POST 存——两个都要在，缺一个就「存不进去」
+            "global": {"GET": "api_get_global", "POST": "api_update_global"},
+            "group": {"GET": "api_get_group", "POST": "api_update_group"},
+            "group/reset": {"POST": "api_reset_group"},
+            "shop/items": {"GET": "api_shop_items"},
+            "shop/prizes": {"GET": "api_shop_prizes"},
+            "shop/settings": {"GET": "api_shop_settings"},
+            "shop/reset": {"POST": "api_shop_reset"},
+            "shop/save-items": {"POST": "api_shop_save_items"},
+            "shop/save-prizes": {"POST": "api_shop_save_prizes"},
+            "shop/save-settings": {"POST": "api_shop_save_settings"},
             # 诊断：把后端此刻的状态原样给前端看，便于定位「保存成功但界面为空」
-            "shop/debug": ("api_shop_debug", {"GET"}),
+            "shop/debug": {"GET": "api_shop_debug"},
         }
 
     def _tail_of(self, request_: Any) -> str:
@@ -240,15 +250,16 @@ class PanshiWebController:
         method = str(getattr(req_obj, "method", "GET") or "GET").upper()
 
         table = self._endpoint_table()
-        hit = table.get(endpoint)
-        if hit is None:
+        handlers = table.get(endpoint)
+        if not handlers:
             logger.warning(f"[磐石] 面板请求了未知端点: {endpoint!r}")
             return _err(f"未知接口 {endpoint!r}，请更新插件", 404)
 
-        handler_name, allowed = hit
-        if method not in allowed:
+        handler_name = handlers.get(method)
+        if handler_name is None:
             return _err(
-                f"{endpoint} 不接受 {method}（允许 {'/'.join(sorted(allowed))}）", 405)
+                f"{endpoint} 不接受 {method}"
+                f"（允许 {'/'.join(sorted(handlers))}）", 405)
 
         return await getattr(self, handler_name)()
 
