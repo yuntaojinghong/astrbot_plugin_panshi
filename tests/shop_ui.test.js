@@ -43,6 +43,11 @@ let prizes = [
     rare: true, reward: "points", value: "200", enabled: true },
 ];
 
+let settings = {
+  enable: false, lottery_enable: false, lottery_cost: 10,
+  lottery_daily_limit: 3, lottery_pity: 10,
+};
+
 const calls = [];
 
 window.AstrBotPluginPage = {
@@ -51,6 +56,7 @@ window.AstrBotPluginPage = {
     const ep = String(endpoint).split("?")[0];
     if (ep.endsWith("/shop/items")) return { items: JSON.parse(JSON.stringify(items)) };
     if (ep.endsWith("/shop/prizes")) return { prizes: JSON.parse(JSON.stringify(prizes)) };
+    if (ep.endsWith("/shop/settings")) return JSON.parse(JSON.stringify(settings));
     return {};
   },
   apiPost: async (endpoint, body) => {
@@ -69,6 +75,10 @@ window.AstrBotPluginPage = {
       }
       prizes = body.prizes.map((p) => ({ ...p, won: 0 }));
       return { prizes, saved: prizes.length, total_chance: total };
+    }
+    if (ep.endsWith("/shop/settings")) {
+      settings = { ...settings, ...body.settings };
+      return settings;
     }
     return {};
   },
@@ -249,6 +259,72 @@ async function renderBoth() {
   check("路由失败时提示里指明要重载插件",
         /重载/.test(alertText), alertText.slice(0, 120));
   window.AstrBotPluginPage.apiGet = savedGet;
+
+  /* ---------- 9. 设置区（开关与参数已从配置页搬进来） ---------- */
+  const v6 = await renderBoth();
+  await settle();
+
+  check("商品页有商城设置区", /商城设置/.test(v6.a.textContent || ""));
+  check("抽奖页有抽奖设置区", /抽奖设置/.test(v6.b.textContent || ""));
+  check("商品页不放抽奖参数（各管各的）",
+        !/每次抽奖消耗积分/.test(v6.a.textContent || ""));
+  check("抽奖页不放商品设置",
+        !/商城设置/.test(v6.b.textContent || ""));
+
+  const shopSwitch = v6.a.querySelector(".shop-switch-box");
+  check("商品页有启用开关", !!shopSwitch);
+  const lotSwitches = [...v6.b.querySelectorAll(".shop-switch-box")];
+  check("抽奖页有启用开关", lotSwitches.length >= 1, lotSwitches.length);
+
+  const lotNums = [...v6.b.querySelectorAll(".shop-setting-ctrl input[type=number]")];
+  check("抽奖页有三个参数框（消耗 / 每日次数 / 保底）",
+        lotNums.length === 3, lotNums.map((i) => i.value));
+  check("参数框带上了当前值",
+        lotNums[0].value === "10" && lotNums[1].value === "3" && lotNums[2].value === "10",
+        lotNums.map((i) => i.value));
+
+  // 改开关 + 参数后保存，应发出 POST 且内容正确
+  if (shopSwitch) {
+    shopSwitch.checked = true;
+    shopSwitch.dispatchEvent(new window.Event("change", { bubbles: true }));
+    const saveSet = btn(v6.a, "保存设置");
+    check("商品页有「保存设置」", !!saveSet);
+    if (saveSet) {
+      const before = calls.filter((c) =>
+        c[0] === "POST" && String(c[1]).includes("shop/settings")).length;
+      click(saveSet);
+      await settle();
+      const posts = calls.filter((c) =>
+        c[0] === "POST" && String(c[1]).includes("shop/settings"));
+      check("保存设置发出了 POST", posts.length === before + 1, posts.length);
+      const body = posts.length ? posts[posts.length - 1][2] : null;
+      console.log("      [dbg] shop settings POST =", JSON.stringify(body));
+      console.log("      [dbg] switch checked =", shopSwitch.checked,
+                  " 设置区数量 =", v6.a.querySelectorAll(".shop-setting").length,
+                  " 开关数量 =", v6.a.querySelectorAll(".shop-switch-box").length);
+      check("提交的是商城的 enable", !!body && body.settings.enable === true,
+            body ? body.settings : null);
+    }
+  }
+
+  const saveLotSet = btn(v6.b, "保存设置");
+  if (saveLotSet && lotNums.length === 3) {
+    lotNums[0].value = "25";
+    lotNums[1].value = "5";
+    lotNums[2].value = "20";
+    click(saveLotSet);
+    await settle();
+    const posts = calls.filter((c) =>
+      c[0] === "POST" && String(c[1]).includes("shop/settings"));
+    const body = posts.length ? posts[posts.length - 1][2] : null;
+    check("抽奖设置提交的是 lottery_* 参数",
+          !!body && body.settings.lottery_cost === 25
+            && body.settings.lottery_daily_limit === 5
+            && body.settings.lottery_pity === 20,
+          body ? body.settings : null);
+    check("抽奖设置不会误带商城 enable",
+          !!body && !("enable" in body.settings), body ? body.settings : null);
+  }
 
   console.log(out.join("\n"));
   console.log(`\n结果: ${pass} 通过, ${fail} 失败`);

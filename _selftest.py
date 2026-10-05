@@ -214,38 +214,29 @@ def main():
     # 校验 WebUI 面板路由注册
     assert inst.web is not None, "面板控制器未创建"
     #
-    # **这里必须断言「路径不带插件名前缀」。**
+    # 每条路由注册**两种路径形式**：带插件名前缀 / 不带。
     #
-    # 回归背景（v1.9.3 线上，所有面板接口一起报「未找到该路由」）：
-    # 我按 `/{PLUGIN_NAME}{path}` 注册，也就是
-    # `/astrbot_plugin_panshi/shop/items`。但 AstrBot 4.28.2 的匹配是：
+    # 这一处的约定我搞错过两次，两次都让面板全部接口失效
+    # （「未找到该路由」）。按 AstrBot 4.28.2 的字节码读，
+    # `_match_registered_web_api` 收到的 subpath 就是完整的 plugin_path
+    # （含插件名），所以带前缀那份才会被命中；但不同版本可能先剥掉插件名，
+    # 那时就要用不带前缀的。两种都注册，不匹配的那份永远不会被命中。
     #
-    #   路由声明   /plugins/extensions/{plugin_path:path}
-    #   plugin_path = "astrbot_plugin_panshi/shop/items"
-    #   _match_registered_web_api 用**整条** plugin_path 去 fullmatch 注册路径
-    #
-    # 插件名并没有被剥掉，所以注册路径也不该带插件名。
-    # 差一个前缀的结果是**每一条**路由都匹配不上——单段路径同样失效，
-    # 因为前缀对所有路由都多了一段。
-    #
-    # 而页面本身照旧能加载（HTML 是静态文件，不走路由表），
-    # 表现就是"界面出来了、点什么都提示未找到该路由"。
+    # 断言方式：两种形式必须**都有**，缺一种就等于赌一种约定。
     raw_paths = [r[0] for r in ctx.routes]
+    from astrbot_plugin_panshi.pages_api import PLUGIN_NAME
     required_routes = [
         "/bootstrap", "/overview", "/global", "/group", "/group/reset",
         "/shop/items", "/shop/prizes", "/shop/reset",
     ]
-    missing = [r for r in required_routes if r not in raw_paths]
-    assert not missing, f"缺少路由 {missing}，实际 {raw_paths}"
-
-    prefixed = [p for p in raw_paths if "astrbot_plugin_panshi" in p]
-    assert not prefixed, (
-        "路由路径不能带插件名前缀——AstrBot 匹配时用的是完整的 plugin_path，"
-        f"带前缀会全部匹配不上：{prefixed}")
+    for r in required_routes:
+        assert r in raw_paths, f"缺少不带前缀的路由 {r}"
+        assert f"/{PLUGIN_NAME}{r}" in raw_paths, f"缺少带前缀的路由 {r}"
 
     for path in raw_paths:
         assert path.startswith("/"), f"路由应以 / 开头: {path}"
-    print(f"WEB_ROUTES_OK ({len(raw_paths)} 条，均不带插件名前缀)")
+    print(f"WEB_ROUTES_OK ({len(raw_paths)} 条 = {len(required_routes)} × 两种形式)")
+
     for route, _h, methods, _d in ctx.routes:
         print("   ", ",".join(methods).ljust(4), route)
 
@@ -625,9 +616,14 @@ def test_shop_editing():
 
     # ---------- 7. 恢复默认 ----------
     shop.reset_shop_data()
+    print("  [dbg] storage.get_prizes() =", db.get_prizes())
+    print("  [dbg] storage settings     =", db.get_shop_settings())
+    print("  [dbg] cfg shop keys        =", sorted((cfg.shop or {}).keys()))
+    print("  [dbg] cfg lottery keys     =", sorted(((cfg.shop or {}).get("lottery") or {}).keys()))
     assert [i["name"] for i in shop.editable_items()] == ["配置里的商品"], \
         shop.editable_items()
-    assert [p["name"] for p in shop.editable_prizes()] == ["配置里的奖品"]
+    assert [p["name"] for p in shop.editable_prizes()] == ["配置里的奖品"], \
+        [p["name"] for p in shop.editable_prizes()]
     print("SHOP_EDIT_RESET_OK (恢复为配置默认值)")
 
     # ---------- 8. 命令版增删 ----------
@@ -654,6 +650,93 @@ def test_shop_editing():
                  "cmd_del_prize", "cmd_shop", "cmd_buy"):
         assert hasattr(PanshiPlugin, name), f"缺少指令 {name}"
     print("SHOP_EDIT_ENTRYPOINTS_OK (指令就位)")
+
+    # ---------- 10. 开关与参数也能在面板里改 ----------
+    #
+    # 用户要求：把商城/抽奖的设置从 AstrBot 原生配置页搬进插件面板。
+    # 存法与商品/奖池一致——配置值作默认，面板改过以 storage 为准。
+    tmp2 = tempfile.mkdtemp(prefix="panshi_set_")
+    cfg2 = PluginConfig({
+        "basic": {"default_ban_time": 60},
+        "shop": {
+            "enable": False,                    # 配置里是关的
+            "lottery_enable": False,
+            "lottery_cost": 10,
+            "lottery_daily_limit": 3,
+            "lottery_pity": 10,
+        },
+    })
+    db2 = Storage(os.path.join(tmp2, "d.json"))
+    sh2 = ShopHandle(cfg2, db2)
+
+    got = sh2.editable_settings()
+    assert got == {"enable": False, "lottery_enable": False, "lottery_cost": 10,
+                   "lottery_daily_limit": 3, "lottery_pity": 10}, got
+    print("SHOP_SETTINGS_DEFAULT_OK (未改时用配置里的值)")
+
+    r = sh2.save_settings({"enable": True, "lottery_enable": True,
+                           "lottery_cost": 25, "lottery_daily_limit": 5,
+                           "lottery_pity": 20})
+    assert r["ok"], r
+    assert sh2.editable_settings() == {
+        "enable": True, "lottery_enable": True, "lottery_cost": 25,
+        "lottery_daily_limit": 5, "lottery_pity": 20}, sh2.editable_settings()
+    # 换一个实例读同一份数据，确认落盘了
+    sh3 = ShopHandle(cfg2, Storage(os.path.join(tmp2, "d.json")))
+    assert sh3.editable_settings()["lottery_cost"] == 25, sh3.editable_settings()
+    print("SHOP_SETTINGS_SAVE_OK (开关与参数能改、能落盘)")
+
+    # 非法值要被挡下，且不破坏已有设置
+    bad = sh2.save_settings({"lottery_cost": "abc"})
+    assert not bad["ok"] and any("整数" in p for p in bad["problems"]), bad
+    bad2 = sh2.save_settings({"lottery_pity": -1})
+    assert not bad2["ok"], bad2
+    bad3 = sh2.save_settings({"lottery_cost": 10 ** 9})
+    assert not bad3["ok"], bad3
+    assert sh2.editable_settings()["lottery_cost"] == 25, sh2.editable_settings()
+    print("SHOP_SETTINGS_VALIDATE_OK (非法值被拒；被拒后原设置不变)")
+
+    # 开关真的影响行为
+    class _Ev2:
+        def get_group_id(self):
+            return "1077250302"
+
+    ev2 = _Ev2()
+    assert sh2.points_enabled(ev2) is True, "面板打开后本群应启用积分系统"
+    sh2.save_settings({"enable": False})
+    assert sh2.points_enabled(ev2) is False, "面板关闭后本群应停用积分系统"
+    print("SHOP_SETTINGS_EFFECT_OK (面板开关真的改变行为)")
+
+    # 恢复默认要连设置一起清掉
+    sh2.save_settings({"enable": True, "lottery_cost": 99})
+    sh2.reset_shop_data()
+    assert sh2.editable_settings()["lottery_cost"] == 10, sh2.editable_settings()
+    print("SHOP_SETTINGS_RESET_OK (恢复默认会连设置一起回退)")
+
+    # ---------- 11. 首次读取把配置灌进 storage ----------
+    #
+    # 不灌的话会出现「配置里有 3 件 + 面板加 1 件 → 看到 4 件；
+    # 删掉面板那件后配置的 3 件又冒回来」这种自相矛盾的行为。
+    tmp3 = tempfile.mkdtemp(prefix="panshi_seed_")
+    cfg3 = PluginConfig({"shop": {
+        "enable": True,
+        "items": [{"name": "配置商品", "cost": 5}],
+        "lottery_prizes": [{"name": "配置奖品", "weight": 0.5}],
+    }})
+    db3 = Storage(os.path.join(tmp3, "d.json"))
+    sh4 = ShopHandle(cfg3, db3)
+    assert db3.get_shop_items() is None, "读之前不该有数据"
+    names = [i["name"] for i in sh4.editable_items()]
+    assert names == ["配置商品"], names
+    assert db3.get_shop_items() is not None, "首次读取后应已灌入 storage"
+    assert [p["name"] for p in sh4.editable_prizes()] == ["配置奖品"]
+
+    # 灌过之后再删掉，配置里的不该冒回来
+    sh4.save_items([])
+    assert [i["name"] for i in sh4.editable_items()] == [], \
+        "删空后配置里的商品又冒回来了"
+    print("SHOP_SEED_ONCE_OK (配置只灌一次；删空后不会复活)")
+
 
 
 def test_schema_loadable():

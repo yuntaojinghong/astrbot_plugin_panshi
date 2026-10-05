@@ -18,6 +18,25 @@ jobs:
       - name: Run selftest
         run: python _selftest.py
 
+      # 版本号要三处一致：metadata.yaml（面板实际显示的那个）、
+      # pages_service 的兜底值、以及 tag。之前没有这条检查，
+      # 只改一处也不会报错，面板上的版本号就会和实际装的版本对不上。
+      - name: 版本号一致性（metadata.yaml / pages_service.py）
+        run: |
+          python - <<'PY'
+          import re, sys, pathlib
+          meta = pathlib.Path("metadata.yaml").read_text(encoding="utf-8")
+          m = re.search(r"^version:\s*(\S+)\s*$", meta, re.M)
+          svc = pathlib.Path("pages_service.py").read_text(encoding="utf-8")
+          s = re.search(r'FALLBACK_VERSION\s*=\s*"([^"]+)"', svc)
+          got = {"metadata.yaml": m.group(1) if m else None,
+                 "pages_service.py": s.group(1) if s else None}
+          if None in got.values() or len(set(got.values())) != 1:
+              print("版本号不一致（两处必须相同，改一处就要改另一处）:", got)
+              sys.exit(1)
+          print(f"版本号一致：{got['metadata.yaml']}")
+          PY
+
       - name: 面板前端测试（jsdom）
         run: |
           npm install --no-save --no-audit --no-fund jsdom

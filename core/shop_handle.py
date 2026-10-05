@@ -85,6 +85,13 @@ class ShopHandle(BaseHandle):
         总开关就是 ``shop.enable``，但读取时走**按群视角**——于是管理员
         既可以在全局配置里开关，也可以用「/积分开关 off」只关掉某个群。
         关掉后：商城、购买、抽奖、违规扣分全部不生效。
+
+        取值顺序（和 :meth:`_config` 一致，否则会出现
+        「面板里打开了开关、/积分开关 却说还是关的」这种自相矛盾）：
+
+        1. 本群 override（``/积分开关``）
+        2. 面板里保存过的值（``/shop/settings``）
+        3. 配置文件里的值
         """
         if event is not None:
             raw = self.cfg_for(event).shop
@@ -92,7 +99,13 @@ class ShopHandle(BaseHandle):
             raw = self.cfg.for_group(group_id).shop
         else:
             raw = self.cfg.shop
-        cfg, _ = parse_config(raw or {})
+        raw = dict(raw) if isinstance(raw, dict) else {}
+        for k in self._CONTENT_KEYS:
+            raw.pop(k, None)
+        stored = self.db.get_shop_settings()
+        if "enable" in stored:
+            raw["enable"] = stored["enable"]
+        cfg, _ = parse_config(raw)
         return bool(cfg.enable)
 
     async def toggle(self, event, arg: str = "") -> str:
@@ -132,31 +145,123 @@ class ShopHandle(BaseHandle):
     #  配置
     # ------------------------------------------------------------------ #
 
-    def _config(self, event=None):
-        """解析商城/抽奖配置（按群视角，允许每群不同）。
+    #: 只存在 storage 里的"内容型"字段。这些键一旦出现在 raw 里，
+    #: 就会盖过 storage 的值（parse_config 对嵌套写法有更高优先级），
+    #: 所以拼装 raw 时必须把它们剥掉。
+    _CONTENT_KEYS = ("items", "商品", "prizes", "奖池", "lottery_prizes")
 
-        商品与奖池优先取**面板里编辑过的数据**（存在 storage 里），
-        没有则回退到 ``_conf_schema.json`` 里的默认值。
-        这样既有出厂默认，又能用图形界面自由增删。
+    def _raw_shop_config(self, event=None) -> dict:
+        """取原始配置字典（按群视角），覆盖上面板存过的标量参数。
+
+        **剥掉内容型字段**：商品与奖池只从 storage 读。
+        不剥的话，配置里的嵌套写法（``lottery.prizes``）会盖过 storage，
+        出现「面板存成功了、读出来还是配置里的旧值」。
         """
         raw = self.cfg_for(event).shop if event is not None else self.cfg.shop
         raw = dict(raw) if isinstance(raw, dict) else {}
 
-        stored_items = self.db.get_shop_items()
-        if stored_items is not None:
-            raw["items"] = stored_items
+        stored = self.db.get_shop_settings()
+        if stored:
+            for k in ("enable", "lottery_enable", "lottery_cost",
+                      "lottery_daily_limit", "lottery_pity"):
+                if k in stored:
+                    raw[k] = stored[k]
 
-        lot_raw = raw.get("lottery")
-        lot_raw = dict(lot_raw) if isinstance(lot_raw, dict) else {}
-        stored_prizes = self.db.get_prizes()
-        if stored_prizes is not None:
-            lot_raw["prizes"] = stored_prizes
-        raw["lottery"] = lot_raw
+        for k in self._CONTENT_KEYS:
+            raw.pop(k, None)
+        lot = raw.get("lottery")
+        if isinstance(lot, dict):
+            lot = dict(lot)
+            for k in ("prizes", "奖池"):
+                lot.pop(k, None)
+            raw["lottery"] = lot
+        return raw
 
+    def _seed_from_config(self, event=None) -> None:
+        """把配置里的商品/奖池**首次**灌进 storage。
+
+        为什么要灌：面板上的编辑要以 storage 为唯一出口。如果 storage 为空时
+        让配置值直接透出来，就会出现「配置里有 3 件 + 面板加了 1 件 → 面板看到
+        4 件；把面板那件删掉后配置的 3 件又冒回来」这种自相矛盾的行为。
+
+        所以首次读取时把配置值固化进 storage，之后一切以 storage 为准；
+        「恢复默认」就是清空 storage，配置值会重新灌一次。
+
+        只在对应字段为空时灌，不覆盖用户已经在面板里编辑过的内容。
+        """
+        if self.db.get_shop_items() is not None and self.db.get_prizes() is not None:
+            return                   # 两边都有了，不需要再看配置
+        cfg_src = self.cfg_for(event).shop if event is not None else self.cfg.shop
+        cfg_src = cfg_src if isinstance(cfg_src, dict) else {}
+        lot = cfg_src.get("lottery")
+        lot = lot if isinstance(lot, dict) else {}
+
+        if self.db.get_shop_items() is None:
+            self.db.set_shop_items(cfg_src.get("items", cfg_src.get("商品", [])) or [])
+        if self.db.get_prizes() is None:
+            self.db.set_prizes(
+                cfg_src.get("lottery_prizes") or cfg_src.get("prizes")
+                or lot.get("prizes") or lot.get("奖池") or []
+            )
+
+    def _config(self, event=None):
+        """解析商城/抽奖配置（当前实际生效的值）。
+
+        标量参数（开关、消耗、次数、保底）取配置值 + 面板存过的覆盖；
+        商品与奖池只取 storage（首次从配置灌入）。
+        """
+        self._seed_from_config(event)
+        raw = self._raw_shop_config(event)
+        raw["items"] = self.db.get_shop_items() or []
+        raw["lottery_prizes"] = self.db.get_prizes() or []
         cfg, notes = parse_config(raw)
         for n in notes:
             logger.info(f"[磐石] 商城配置提示：{n}")
         return cfg
+
+    def editable_settings(self) -> dict:
+        """给面板用的商城/抽奖参数（当前实际生效的值）。"""
+        cfg = self._config()
+        return {
+            "enable": bool(cfg.enable),
+            "lottery_enable": bool(cfg.lottery.enable),
+            "lottery_cost": int(cfg.lottery.cost),
+            "lottery_daily_limit": int(cfg.lottery.daily_limit),
+            "lottery_pity": int(cfg.lottery.pity),
+        }
+
+    def save_settings(self, values: dict) -> dict:
+        """保存商城/抽奖参数。返回 ``{ok, problems, settings}``。"""
+        clean: dict = {}
+        problems: list[str] = []
+
+        for key in ("enable", "lottery_enable"):
+            if key in values:
+                clean[key] = bool(values[key])
+
+        limits = {
+            "lottery_cost": (0, 100000, "每次抽奖消耗积分"),
+            "lottery_daily_limit": (0, 10000, "每人每日抽奖次数"),
+            "lottery_pity": (0, 100000, "抽奖保底次数"),
+        }
+        for key, (lo, hi, label) in limits.items():
+            if key not in values:
+                continue
+            try:
+                n = int(values[key])
+            except (TypeError, ValueError):
+                problems.append(f"{label} 要是整数")
+                continue
+            if n < lo or n > hi:
+                problems.append(f"{label} 要在 {lo}~{hi} 之间（当前 {n}）")
+                continue
+            clean[key] = n
+
+        if problems:
+            return {"ok": False, "problems": problems, "settings": {}}
+        if clean:
+            self.db.set_shop_settings(clean)
+        return {"ok": True, "problems": [], "settings": self.editable_settings()}
 
     # ------------------------------------------------------------------ #
     #  面板用的编辑接口（商品 / 奖池）
@@ -337,8 +442,13 @@ class ShopHandle(BaseHandle):
                 "total_chance": total}
 
     def reset_shop_data(self) -> None:
-        """清空面板编辑过的商品/奖池，回到配置默认值。"""
+        """清空面板编辑过的商品、奖池与设置，回到配置默认值。
+
+        必须连设置一起清：只清商品奖池的话，用户点了「恢复默认」，
+        开关和消耗还是面板里改过的值，看起来像没生效。
+        """
         self.db.reset_shop_data()
+        self.db.clear_shop_settings()
 
     # ------------------------------------------------------------------ #
     #  文字指令版的增删（不想开面板时用）

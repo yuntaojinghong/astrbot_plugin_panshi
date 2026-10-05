@@ -96,43 +96,47 @@ class PanshiWebController:
             ("/shop/prizes", self.api_shop_prizes, ["GET"], "奖池列表"),
             ("/shop/prizes", self.api_shop_save_prizes, ["POST"], "保存奖池"),
             ("/shop/reset", self.api_shop_reset, ["POST"], "恢复商品与奖池的默认值"),
+            ("/shop/settings", self.api_shop_settings, ["GET"], "商城与抽奖的开关参数"),
+            ("/shop/settings", self.api_shop_save_settings, ["POST"], "保存商城与抽奖参数"),
         ]
 
-        # 注册的路径**不带插件名前缀**。
+        # 注册的路径**同时提供两种形式**：带插件名前缀 / 不带。
         #
-        # 这一点搞错了就是「未找到该路由」，而且所有路由一起失效（单段也失效）。
-        # 真实链路（读自 AstrBot 4.28.2 的 plugins.cpython-312.pyc）：
+        # 为什么要两种都注册：这一处的约定我反复搞错过两次，代价都是
+        # 面板全部接口失效（「未找到该路由」），所以不再赌单一种写法。
+        #
+        # AstrBot 4.28.2 上读到的链路（Python 3.12 dis 出的字节码）：
         #
         #   路由声明   /plugins/extensions/{plugin_path:path}
-        #   plugin_path = "astrbot_plugin_panshi/shop/items"
+        #   plugin_path = "astrbot_plugin_panshi/shop/items"      # 含插件名
         #   _match_registered_web_api(registered_web_apis, plugin_path, method)
-        #     request_path = "/" + subpath.lstrip("/")     -> "/astrbot_plugin_panshi/shop/items"
-        #     re.fullmatch(pattern, request_path)          -> 拿注册路径去匹配**整条**
+        #       request_path = "/" + subpath.lstrip("/")          # 整条 plugin_path
+        #       re.fullmatch(pattern, request_path)               # 用注册路径匹配整条
         #
-        # 也就是说匹配时用的就是完整 plugin_path，插件名没有被剥掉。
-        # 所以注册 "/shop/items" 才会命中；注册带前缀的
-        # "/astrbot_plugin_panshi/shop/items" 则永远匹配不上。
-        #
-        # 前端 bridge 那边是 apiGet("shop/items")，由 SDK 自己补插件名，
-        # 与这里的约定一致。
+        # 按这个读法，注册路径**要带**插件名（v1.9.3 那样）。
+        # 但不同 AstrBot 版本/分支可能把插件名剥掉后再匹配，
+        # 那时就要用不带前缀的形式。两种都注册，哪边被匹配到都能用：
+        # 多注册一份只是占一点内存，不匹配的那份永远不会被命中。
         ok_count = 0
         registered_paths: list[str] = []
         for path, handler, methods, desc in routes:
-            candidate = path if path.startswith("/") else f"/{path}"
-            try:
-                register(candidate, self._wrap(handler), methods, desc)
-                ok_count += 1
-                registered_paths.append(candidate)
-            except Exception as e:
-                logger.error(f"[磐石] 注册路由 {candidate} 失败: {e}")
+            sub = path if path.startswith("/") else f"/{path}"
+            wrapped = self._wrap(handler)
+            for candidate in (f"/{PLUGIN_NAME}{sub}", sub):
+                try:
+                    register(candidate, wrapped, methods, desc)
+                    ok_count += 1
+                    registered_paths.append(candidate)
+                except Exception as e:
+                    logger.debug(f"[磐石] 注册路由 {candidate} 未成功: {e}")
 
         self._registered = ok_count > 0
         if self._registered:
-            # 把实际注册的路径打出来。线上再遇到「未找到该路由」，
+            # 把实际注册的路径打出来。再遇到「未找到该路由」，
             # 这条日志能立刻看出接口注册成了什么形式。
             logger.info(
-                f"[磐石] 配置面板已注册 {ok_count} 个接口，"
-                f"子路径示例: {', '.join(registered_paths[:4])}"
+                f"[磐石] 配置面板已注册 {ok_count} 个接口（两种路径形式），"
+                f"示例: {', '.join(registered_paths[:4])}"
             )
         else:
             logger.warning(
@@ -306,6 +310,30 @@ class PanshiWebController:
         return _ok({"items": shop.editable_items(),
                     "prizes": shop.editable_prizes(),
                     "message": "已恢复为配置里的默认商品与奖池"})
+
+    async def api_shop_settings(self):
+        shop = self._shop()
+        if shop is None:
+            return _err("商城模块不可用", 503)
+        return _ok(shop.editable_settings())
+
+    async def api_shop_save_settings(self):
+        """保存开关与参数（启用商城/抽奖、消耗、每日次数、保底）。
+
+        这些原本只能去 AstrBot 原生配置页改，现在直接在插件面板里改，
+        不用来回跳。
+        """
+        shop = self._shop()
+        if shop is None:
+            return _err("商城模块不可用", 503)
+        payload = await _json_body()
+        values = payload.get("settings", payload)
+        if not isinstance(values, dict) or not values:
+            return _err("缺少参数 settings（对象）", 400)
+        result = shop.save_settings(values)
+        if not result.get("ok"):
+            return _err("；".join(result.get("problems") or ["保存失败"]), 400)
+        return _ok(result["settings"])
 
 
 # ======================================================================

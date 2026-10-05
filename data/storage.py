@@ -207,6 +207,31 @@ class Storage:
             t.pop("prizes", None)
             self.save()
 
+    # ---------- 商城 / 抽奖 的开关与参数 ---------- #
+    #
+    # 和 items / prizes 一样：配置里的值作为**默认**，面板里改过就以这里为准。
+    # 这样「启用商城」「每次抽奖消耗多少」这些也都能在面板里改，
+    # 不用再跳回 AstrBot 原生配置页。
+
+    def get_shop_settings(self) -> dict:
+        """面板里保存过的商城/抽奖参数；没保存过返回空 dict。"""
+        v = self._shop_table().get("settings")
+        return dict(v) if isinstance(v, dict) else {}
+
+    def set_shop_settings(self, values: dict) -> None:
+        with self._lock:
+            t = self._shop_table()
+            cur = t.get("settings")
+            cur = dict(cur) if isinstance(cur, dict) else {}
+            cur.update(values or {})
+            t["settings"] = cur
+            self.save()
+
+    def clear_shop_settings(self) -> None:
+        with self._lock:
+            self._shop_table().pop("settings", None)
+            self.save()
+
     # ---- 每人限购 / 每人每日抽奖次数 ---- #
 
     def _purchase_count(self, group_id, user_id, item_id: str,

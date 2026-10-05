@@ -283,14 +283,130 @@ function viewHead(title, subtitle, onBack, onReset) {
   ]);
 }
 
-/** 商品管理。 */
+/** 一行设置项：标签 + 控件 + 说明。 */
+function settingRow(label, control, hint) {
+  return el("div", { class: "shop-setting" }, [
+    el("div", { class: "shop-setting-label", text: label }),
+    el("div", { class: "shop-setting-ctrl" }, [control]),
+    hint ? el("div", { class: "shop-setting-hint", text: hint }) : null,
+  ]);
+}
+
+/** 数字输入（带上下限）。 */
+function numInput(value, { min = 0, max = 99999, step = 1 } = {}) {
+  return el("input", {
+    class: "shop-input num", type: "number",
+    min: String(min), max: String(max), step: String(step),
+    value: value ?? 0,
+  });
+}
+
+/**
+ * 开关（把 checkbox 样式化成滑块）。
+ *
+ * 返回 ``{el, box}``：``el`` 是给页面用的 `<label>`，
+ * 真正带 ``checked`` 的是里面的 ``box``。
+ *
+ * 必须把两者分开返回：之前只返回 `<label>`，读 ``label.checked``
+ * 永远是 ``undefined``，于是「启用商城」怎么点都保存不上，
+ * 而且不抛任何错——最难查的那种。
+ */
+function toggleInput(checked) {
+  const box = el("input", { type: "checkbox", class: "shop-switch-box", checked: !!checked });
+  const label = el("label", { class: "shop-switch" }, [
+    box, el("span", { class: "shop-switch-track" }, [el("span", { class: "shop-switch-dot" })]),
+  ]);
+  return { el: label, box };
+}
+
+/**
+ * 设置区：把原本在 AstrBot 原生配置页里的开关与参数搬到这里。
+ *
+ * 每页只放自己那部分——商品页放商城的，抽奖页放抽奖的。
+ * 返回 {section, read}，read() 给出待保存的值。
+ */
+function settingsSection(kind, settings, onSaved) {
+  const isShop = kind === "shop";
+
+  const enable = toggleInput(isShop ? settings.enable : settings.lottery_enable);
+  const rows = [
+    settingRow(
+      isShop ? "启用积分商城" : "启用抽奖",
+      enable.el,
+      isShop ? "开启后群友可用 /商城、/购买 <商品名>"
+             : "开启后群友可用 /抽奖。可以先只开商城不开抽奖。",
+    ),
+  ];
+
+  let cost = null, daily = null, pity = null;
+  if (!isShop) {
+    cost = numInput(settings.lottery_cost, { max: 100000 });
+    daily = numInput(settings.lottery_daily_limit, { max: 10000 });
+    pity = numInput(settings.lottery_pity, { max: 100000 });
+    rows.push(
+      settingRow("每次抽奖消耗积分", cost, "设为 0 则免费抽"),
+      settingRow("每人每日抽奖次数", daily, "0 = 不限次数"),
+      settingRow("抽奖保底次数", pity,
+        "连续这么多次没抽中「稀有」档时，下一次必出稀有。0 = 不要保底。"),
+    );
+  }
+
+  const read = () => {
+    const out = isShop
+      ? { enable: enable.box.checked }
+      : {
+        lottery_enable: enable.box.checked,
+        lottery_cost: Number(cost.value || 0),
+        lottery_daily_limit: Number(daily.value || 0),
+        lottery_pity: Number(pity.value || 0),
+      };
+    return out;
+  };
+
+  const section = el("section", { class: "shop-card" }, [
+    el("div", { class: "shop-card-head" }, [
+      el("strong", { text: isShop ? "商城设置" : "抽奖设置" }),
+      el("span", { class: "muted", text: "改完点保存，立即生效" }),
+    ]),
+    el("div", { class: "shop-settings" }, rows),
+    el("div", { class: "shop-actions" }, [
+      el("button", {
+        class: "btn primary", type: "button", text: "保存设置",
+        onClick: async () => {
+          try {
+            await apiPost("shop/settings", { settings: read() });
+            toast("设置已保存");
+            if (onSaved) await onSaved();
+          } catch (e) {
+            showError(String(e.message || e));
+          }
+        },
+      }),
+      el("span", {
+        class: "muted",
+        text: isShop ? "关闭后本群不显示商城、不能购买与抽奖，也不再扣违规积分"
+                     : "关闭后 /抽奖 不可用，商城不受影响",
+      }),
+    ]),
+  ]);
+
+  return { section, read };
+}
+
+/** 商品管理（含商城设置）。 */
 async function renderItemsView(host, onBack) {
   host.innerHTML = "";
   const wrap = el("div", { class: "shop-wrap" });
 
   let data = { items: [] };
+  let settings = { enable: false };
   try {
-    data = await apiGet("shop/items", {});
+    const [itemsRes, setRes] = await Promise.all([
+      apiGet("shop/items", {}),
+      apiGet("shop/settings", {}).catch(() => ({})),
+    ]);
+    data = itemsRes;
+    settings = { ...settings, ...setRes };
   } catch (e) {
     wrap.append(el("div", {
       class: "alert error",
@@ -329,6 +445,10 @@ async function renderItemsView(host, onBack) {
     }
   }));
 
+  // 商城设置放在列表上面：先决定开不开，再管具体商品
+  wrap.append(settingsSection("shop", settings,
+    () => renderItemsView(host, onBack)).section);
+
   wrap.append(el("section", { class: "shop-card" }, [
     el("div", { class: "shop-card-head" }, [
       el("strong", { text: "商品列表" }),
@@ -366,8 +486,15 @@ async function renderPrizesView(host, onBack) {
   const wrap = el("div", { class: "shop-wrap" });
 
   let data = { prizes: [] };
+  let settings = { lottery_enable: false, lottery_cost: 10,
+                   lottery_daily_limit: 3, lottery_pity: 10 };
   try {
-    data = await apiGet("shop/prizes", {});
+    const [prizeRes, setRes] = await Promise.all([
+      apiGet("shop/prizes", {}),
+      apiGet("shop/settings", {}).catch(() => ({})),
+    ]);
+    data = prizeRes;
+    settings = { ...settings, ...setRes };
   } catch (e) {
     wrap.append(el("div", {
       class: "alert error",
@@ -426,6 +553,10 @@ async function renderPrizesView(host, onBack) {
       showError(String(e.message || e));
     }
   }));
+
+  // 抽奖设置放在列表上面：先决定开不开，再管具体奖品
+  wrap.append(settingsSection("lottery", settings,
+    () => renderPrizesView(host, onBack)).section);
 
   wrap.append(el("section", { class: "shop-card" }, [
     el("div", { class: "shop-card-head" }, [

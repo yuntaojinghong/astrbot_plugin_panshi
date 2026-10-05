@@ -1532,3 +1532,76 @@ select.input {
 .shop-head-actions {
   display: flex; align-items: center; gap: 8px; flex: none;
 }
+
+/* ============================================================
+ * 商城 / 抽奖 的设置区
+ *
+ * 把原本在 AstrBot 原生配置页里的开关与参数搬到这里，
+ * 省掉「面板 / 配置页」来回跳。
+ * ============================================================ */
+
+.shop-settings {
+  display: grid;
+  grid-template-columns: minmax(140px, max-content) minmax(96px, max-content) 1fr;
+  gap: 10px 14px;
+  align-items: center;
+  margin: 4px 0 2px;
+}
+
+.shop-setting { display: contents; }
+
+.shop-setting-label {
+  font-size: 13px;
+  color: var(--fg);
+  white-space: nowrap;
+}
+
+.shop-setting-ctrl { display: flex; align-items: center; gap: 8px; }
+
+.shop-setting-ctrl .shop-input { width: 110px; }
+
+.shop-setting-hint {
+  font-size: 12px;
+  color: var(--fg-3);
+  line-height: 1.6;
+}
+
+/* 开关：自绘滑块，不依赖浏览器默认 checkbox 外观 */
+.shop-switch {
+  display: inline-flex; align-items: center;
+  cursor: pointer; user-select: none;
+}
+.shop-switch-box {
+  position: absolute; opacity: 0; width: 0; height: 0;
+}
+.shop-switch-track {
+  position: relative;
+  display: inline-block;
+  width: 44px; height: 24px;
+  border-radius: 999px;
+  background: var(--border-strong);
+  transition: background .18s ease;
+  flex: none;
+}
+.shop-switch-dot {
+  position: absolute; top: 3px; left: 3px;
+  width: 18px; height: 18px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, .3);
+  transition: transform .18s ease;
+}
+.shop-switch-box:checked + .shop-switch-track { background: var(--accent); }
+.shop-switch-box:checked + .shop-switch-track .shop-switch-dot {
+  transform: translateX(20px);
+}
+.shop-switch-box:focus-visible + .shop-switch-track {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+@media (max-width: 720px) {
+  .shop-settings { grid-template-columns: 1fr; }
+  .shop-setting { display: block; margin-bottom: 10px; }
+  .shop-setting-hint { margin-top: 4px; }
+}
