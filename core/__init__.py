@@ -18,6 +18,7 @@ from .intent import IntentParser
 from .intent_gate import IntentGate, looks_like_command
 from .local_intent import LocalIntentParser
 from .interact import InteractHandle
+from .games import GamesHandle
 from .panel import PanelHandle
 from .intent_executor import IntentExecutor
 
@@ -50,5 +51,6 @@ __all__ = [
     "LocalIntentParser",
     "IntentExecutor",
     "InteractHandle",
+    "GamesHandle",
     "PanelHandle",
 ]

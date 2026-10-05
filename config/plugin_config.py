@@ -17,7 +17,8 @@ from typing import Any
 from astrbot.api import logger
 
 # 配置分组的展示顺序（与 _conf_schema.json 的 key 一致）
-GROUP_ORDER = ["basic", "guard", "welcome", "warning", "smart", "activity", "automate", "interact"]
+GROUP_ORDER = ["basic", "guard", "welcome", "warning", "smart", "activity",
+               "game", "automate", "interact"]
 
 #: 不显示在插件面板上的分组。目前为空。
 #:
@@ -34,9 +35,10 @@ GROUP_ICONS = {
     "warning": "⚠️",
     "smart": "🧠",
     "activity": "📊",
+    "game": "🎮",
     "shop": "🛒",
     "automate": "🌙",
-    "interact": "🎮",
+    "interact": "🎯",
 }
 
 
@@ -173,6 +175,11 @@ class PluginConfig:
     @property
     def activity(self) -> dict:
         return self._group("activity")
+
+    @property
+    def game(self) -> dict:
+        """群内小游戏（猜数字 / 摇骰子 / 猜拳 / 押注）。"""
+        return self._group("game")
 
     @property
     def shop(self) -> dict:

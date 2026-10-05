@@ -419,6 +419,87 @@
     },
     "hint": "签到与积分规则。积分商城、抽奖、违规扣分在顶栏的「🛒 商品」和「🎰 抽奖」两个页面里配置。"
   },
+  "game": {
+    "description": "小游戏",
+    "type": "object",
+    "items": {
+      "guess_enable": {
+        "description": "启用猜数字",
+        "type": "bool",
+        "default": true,
+        "hint": "群里发「猜数字」开局，谁先猜中谁得分。有冷却与每日发奖局数上限，不会无限发分。"
+      },
+      "guess_reward": {
+        "description": "猜中奖励积分",
+        "type": "int",
+        "default": 20,
+        "slider": {
+          "min": 0,
+          "max": 500,
+          "step": 1
+        }
+      },
+      "guess_daily_games": {
+        "description": "每群每天发奖局数上限",
+        "type": "int",
+        "default": 10,
+        "slider": {
+          "min": 0,
+          "max": 200,
+          "step": 1
+        }
+      },
+      "guess_cooldown": {
+        "description": "猜数字开局冷却（秒）",
+        "type": "int",
+        "default": 60,
+        "slider": {
+          "min": 0,
+          "max": 600,
+          "step": 10
+        }
+      },
+      "dice_enable": {
+        "description": "启用摇骰子",
+        "type": "bool",
+        "default": true,
+        "hint": "群里发「摇骰子」或「摇骰子 3」即可。纯娱乐，不影响积分。"
+      },
+      "rps_enable": {
+        "description": "启用猜拳",
+        "type": "bool",
+        "default": true,
+        "hint": "群里发「猜拳石头 / 猜拳剪刀 / 猜拳布」与机器人猜拳。纯娱乐，不影响积分。"
+      },
+      "bet_enable": {
+        "description": "启用押注（与机器人比骰子大小）",
+        "type": "bool",
+        "default": false,
+        "hint": "默认关闭。开启后发「押注 10」可押积分比骰子：赢 +N、输 -N、平局退还；有单次与每日净输上限。"
+      },
+      "bet_max": {
+        "description": "单次押注上限",
+        "type": "int",
+        "default": 20,
+        "slider": {
+          "min": 1,
+          "max": 1000,
+          "step": 1
+        }
+      },
+      "bet_daily_loss": {
+        "description": "每人每天最多净输积分",
+        "type": "int",
+        "default": 100,
+        "slider": {
+          "min": 0,
+          "max": 10000,
+          "step": 10
+        }
+      }
+    },
+    "hint": "群内小游戏。所有触发词都是整句精确匹配，不会抢群里的正常聊天；猜数字只在有局进行中时才吃数字。"
+  },
   "automate": {
     "description": "自动化",
     "type": "object",

@@ -4,13 +4,13 @@
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0.html)
 [![AstrBot](https://img.shields.io/badge/AstrBot-4.24.2%2B-orange.svg)](https://github.com/AstrBotDevs/AstrBot)
-[![Version](https://img.shields.io/badge/version-v1.10.0-green.svg)](https://github.com/yuntaojinghong/astrbot_plugin_panshi/releases)
+[![Version](https://img.shields.io/badge/version-v1.11.0-green.svg)](https://github.com/yuntaojinghong/astrbot_plugin_panshi/releases)
 
 一个为 [AstrBot](https://github.com/AstrBotDevs/AstrBot) 打造的 QQ 群管理插件，基于 NapCat / OneBot v11（`aiocqhttp`）协议。
 
 **🌐 项目主页：** https://yuntaojinghong.github.io/astrbot_plugin_panshi/
 
-> **当前版本 v1.10.0** · 44 个指令 · 8 个 LLM 工具 · 9 类功能 · 8 组配置
+> **当前版本 v1.11.0** · 48 个指令 · 8 个 LLM 工具 · 10 类功能 · 9 组配置
 
 
 ## ✨ 特色
@@ -131,6 +131,19 @@ git clone https://github.com/yuntaojinghong/astrbot_plugin_panshi.git
 | `/接龙 <开头>` | 发起接龙，自动记录顺序 |
 | `/查 <关键词>` | 群内自助查询（违禁词 / 配置 / 状态） |
 | 关键词自动回复 | 命中预设关键词自动答，无需 @机器人 |
+
+### 小游戏（v1.11.0）
+所有触发词都是**整句精确匹配**，不会抢群里的正常聊天。
+
+| 玩法 | 怎么玩 | 说明 |
+|---|---|---|
+| 猜数字 | 直接发「猜数字」开局，再发数字来猜 | 猜错提示大小；猜中得积分。有开局冷却与每日发奖局数上限 |
+| 摇骰子 | 直接发「摇骰子」或「摇骰子 3」 | 纯娱乐，不影响积分 |
+| 猜拳 | 直接发「猜拳石头 / 猜拳剪刀 / 猜拳布」 | 纯娱乐，不影响积分 |
+| 押注 | 直接发「押注 10」 | 与机器人比骰子点数，赢 +N、输 −N、平局退还。**默认关闭**，有单次与每日净输上限 |
+
+> 猜数字只在**本群正好有一局在进行中**时才会把纯数字消息当成猜——
+> 其它时候纯数字一律放行，所以不会把日常聊天里的数字吃掉。
 
 ### 面板与自检
 | 指令 | 说明 |
@@ -321,6 +334,30 @@ python _selftest.py
 ## 📝 更新日志
 
 完整历史见 [Releases 页面](https://github.com/yuntaojinghong/astrbot_plugin_panshi/releases)。
+
+### v1.11.0 — 群内小游戏（猜数字 / 摇骰子 / 猜拳 / 可选押注）
+- 新增配置组 **「小游戏」**，所有触发词都是**整句精确匹配**，不抢正常聊天。
+- **猜数字**：发「猜数字」开局，发数字来猜；猜错给大小提示，猜中得积分。
+  有开局冷却与每群每日发奖局数上限——没有这两道闸，它就是台无限发分机。
+- **摇骰子 / 猜拳**：纯娱乐，不影响积分。
+- **押注**（默认关闭）：与机器人比骰子点数，赢 +N、输 −N、平退还；
+  有单次上限与**每人每天净输上限**，避免有人一夜清零。
+- 关键安全设计：**只有本群正好有一局猜数字在进行中时**，纯数字消息才会被
+  当成"猜"；其余时候纯数字一律放行。
+
+### v1.10.0 — 积分跨群共用（可选开关）
+- 新增 `群积分 → 积分跨群共用`（默认关）。开启后**所有群共用一份积分**、
+  **签到每天只算一次**、**违规扣分跨群生效**、**排行变成全服榜**；
+  切换后积分从零重算，历史分保留在各自群里。
+- 界限：只有积分和签到跨群；违规记录、发言数、购买/抽奖记录、限购计数
+  仍按各自的群走。
+- 修：面板概览的「纳管群聊」不再把内部保留键当成真实群（会多算 1）。
+
+### v1.9.16 — 裸词快捷触发 + 修掉「启用签到」假开关
+- **不打斜杠也能用**：直接发「积分」「签到」「积分排行」「积分商城」「抽奖」
+  等词即可。整句精确匹配，句中夹着这些词不会触发。
+  可在「互动工具 → 裸词快捷触发」里开关并自定义关键词。
+- 修：`启用签到` 以前只影响面板显示，关掉后 `/签到` 照样加分——现在真的能关掉。
 
 ### v1.7.4 — 修复两个线上 bug：「按群配置静默失效」与「关闭全体禁言反被开启」
 - **修复：按群独立配置静默失效**（日志 `cannot pickle '_thread.lock' object`）

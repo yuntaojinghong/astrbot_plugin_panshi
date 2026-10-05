@@ -21,6 +21,7 @@ from .core import (
     ActivityHandle,
     AutomateHandle,
     ContextCollector,
+    GamesHandle,
     GuardHandle,
     IntentExecutor,
     IntentGate,
@@ -91,6 +92,8 @@ class PanshiPlugin(Star):
         # 积分商城 / 抽奖 / 积分惩罚
         self.shop = ShopHandle(self.cfg, self.db)
         self.interact = InteractHandle(self.cfg, self.db)
+        # 群内小游戏（猜数字 / 摇骰子 / 猜拳 / 可选押注）
+        self.games = GamesHandle(self.cfg, self.db)
         # 面板 / 自检 / 配置向导
         self.panel = PanelHandle(self.cfg, self.db)
 
@@ -411,19 +414,30 @@ class PanshiPlugin(Star):
                 yield event.plain_result(confirm_result)
                 return
 
-        # 5.5 裸词快捷通道：不打斜杠的短词也能用
+        # 5.5 群内小游戏 + 裸词快捷通道
         #
         # 群友不会为了查积分去记「/积分」还得敲个斜杠。「积分」「签到」
-        # 「积分排行」「积分商城」这种两三个字的词，直接打就应该有反应。
+        # 「积分排行」「积分商城」这种两三个字的词，直接打就应该有反应；
+        # 「猜数字」「摇骰子」「猜拳」同理。
         #
         # 位置是刻意选的：
         #   · 放在风控之后 —— 拿这些词刷屏照样会被拦；
         #   · 放在「待确认」之后 —— 「回复 确认」这类交互优先级更高；
         #   · 放在智能识别之前 —— 精确词没必要花 token 去问模型。
-        # 匹配是**整句精确**的（见 ``InteractHandle.match_bare_word``），
-        # 句中夹着这些词不会触发，所以不会把群里的正常聊天抢走。
+        #
+        # 小游戏先于裸词表：一局猜数字进行中时，「纯数字」消息要被它接走；
+        # 没有进行中的局时它一律返回 None，纯数字照常放行（不抢话）。
         try:
-            _interact = self.cfg.for_group(group_id).interact
+            _cfg = self.cfg.for_group(group_id)
+
+            game_reply = await self.games.play(event, text, _cfg.game)
+            if game_reply:
+                logger.info(f"[磐石] 小游戏命中「{text[:12]}」")
+                yield event.plain_result(game_reply)
+                self._consume(event)
+                return
+
+            _interact = _cfg.interact
             if _interact.get("bare_word_enable", True):
                 action = self.interact.match_bare_word(
                     text, _interact.get("bare_word_extra", ""))
@@ -436,7 +450,7 @@ class PanshiPlugin(Star):
                         self._consume(event)
                         return
         except Exception as e:
-            logger.warning(f"[磐石] 裸词快捷通道异常: {e}")
+            logger.warning(f"[磐石] 小游戏/裸词快捷通道异常: {e}")
 
         # 6. 智能意图识别
         #    策略：**本地规则保底 + LLM 听懂人话**。
@@ -1027,6 +1041,50 @@ class PanshiPlugin(Star):
             return
         yield event.plain_result(await self.interact.self_query(event, arg))
 
+    # ========== 指令：群内小游戏 ==========
+    #
+    # 这些指令只是"带斜杠的入口"，方便记和发现；真正的常用方式是直接发
+    # 「猜数字」「摇骰子」「猜拳石头」「押注 10」——裸词通道同样接得住。
+    @filter.command("猜数字", alias={"猜数"})
+    async def cmd_guess_number(self, event: AstrMessageEvent):
+        """开始一局猜数字：/猜数字"""
+        cfg = self.cfg.for_group(get_group_id(event)).game
+        yield event.plain_result(await self.games.start_guess(event, cfg))
+
+    @filter.command("摇骰子", alias={"掷骰子"})
+    async def cmd_roll_dice(self, event: AstrMessageEvent, arg: str = ""):
+        """摇骰子：/摇骰子 [个数]"""
+        cfg = self.cfg.for_group(get_group_id(event)).game
+        text = f"摇骰子{arg.strip()}" if arg.strip().isdigit() else "摇骰子"
+        result = await self.games.roll_dice(event, text, cfg)
+        if result:
+            yield event.plain_result(result)
+
+    @filter.command("猜拳")
+    async def cmd_rps(self, event: AstrMessageEvent, arg: str = ""):
+        """猜拳：/猜拳 石头|剪刀|布"""
+        cfg = self.cfg.for_group(get_group_id(event)).game
+        result = await self.games.play_rps(event, arg, cfg)
+        if result:
+            yield event.plain_result(result)
+
+    @filter.command("押注")
+    async def cmd_bet(self, event: AstrMessageEvent, arg: str = ""):
+        """押注：/押注 <积分>（与机器人比骰子大小）"""
+        cfg = self.cfg.for_group(get_group_id(event)).game
+        try:
+            amount = int(str(arg).strip() or 0)
+        except ValueError:
+            amount = 0
+        if amount <= 0:
+            cap = int(cfg.get("bet_max", 20) or 20)
+            yield event.plain_result(
+                f"🎲 用法：/押注 <积分>（单次上限 {cap} 分，比骰子点数大小）")
+            return
+        result = await self.games.bet(event, amount, cfg)
+        if result:
+            yield event.plain_result(result)
+
     # ========== 指令：宵禁 ==========
     @filter.command("宵禁", alias={"夜间禁言"})
     async def cmd_curfew(self, event: AstrMessageEvent, arg: str = ""):
@@ -1540,6 +1598,14 @@ HELP_TEXT = """🪨 磐石 · 智能群管
 /接龙 主题                 — 发起接龙
 /我的 [积分|警告|发言|签到] — 成员自助查询
 /自助 [积分|警告|发言|签到] — 同上（别名）
+
+【小游戏】
+直接发这些词就行（整句精确匹配，不抢正常聊天）：
+ 「猜数字」        — 开局，谁先猜中谁得分（猜错会提示大小）
+ 「摇骰子 [个数]」  — 摇骰子，纯娱乐
+ 「猜拳石头/剪刀/布」— 和机器人猜拳
+ 「押注 10」        — 与机器人比骰子大小（默认关闭，可在「小游戏」里开）
+猜数字有开局冷却与每日发奖上限；押注有单次与每日净输上限。
 
 【管理面板】
 /面板        — 一屏总览本群已开启能力与参数

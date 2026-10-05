@@ -381,6 +381,7 @@ def main():
     test_bare_word_shortcuts()
     test_checkin_respects_switch()
     test_points_shared_across_groups()
+    test_games()
     test_curfew_intent()
     test_curfew_lift_reporting()
     test_per_group_runtime()
@@ -3463,6 +3464,133 @@ def test_guard_punish_reports_failure():
         assert "已撤回" not in no_recall, no_recall
         assert "禁言" in no_recall, no_recall
         print(f"GUARD_PUNISH_NO_RECALL_HONEST_OK ({no_recall})")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_games():
+    """群内小游戏：猜数字 / 摇骰子 / 猜拳 / 押注。
+
+    重点守三件最容易出事的事：
+      1. **没有进行中的局时，纯数字消息绝不能被吃掉**（那等于抢话）；
+      2. 猜数字有开局冷却与每日发奖上限（否则就是台无限发分机）；
+      3. 押注**默认关闭**，开启后单次押注会被压到上限内。
+    """
+    import asyncio
+    import shutil
+    import tempfile
+    import time
+
+    from astrbot_plugin_panshi.config import PluginConfig
+    from astrbot_plugin_panshi.core.games import GamesHandle, GuessRound
+    from astrbot_plugin_panshi.data import Storage
+
+    class _Ev:
+        bot = None
+
+        def __init__(self, uid=7, gid=100):
+            self._uid, self._gid = uid, gid
+
+        def get_group_id(self):
+            return self._gid
+
+        def get_sender_id(self):
+            return self._uid
+
+        def get_self_id(self):
+            return 99
+
+        def get_sender_name(self):
+            return f"用户{self._uid}"
+
+    tmp = tempfile.mkdtemp(prefix="panshi_games_")
+    try:
+        db = Storage(tmp)
+        cfg = PluginConfig({}).game
+        h = GamesHandle(PluginConfig({}), db)
+        ev = _Ev()
+
+        # 1) 没有局时，纯数字必须放行（最关键的"不抢话"用例）
+        assert asyncio.run(h.play(ev, "50", cfg)) is None, \
+            "没有进行中的局，纯数字却被吃掉了"
+        print("GAMES_NUMBER_PASS_THROUGH_OK (没开局时纯数字不抢话)")
+
+        # 2) 开局
+        start = asyncio.run(h.play(ev, "猜数字", cfg))
+        assert "1~100" in start, start
+        print(f"GAMES_GUESS_START_OK ({start.splitlines()[0]})")
+
+        # 3) 冷却：刚开过不能再开
+        again = asyncio.run(h.play(ev, "猜数字", cfg))
+        assert ("已经有一局" in again) or ("秒后再来" in again), again
+        print(f"GAMES_GUESS_COOLDOWN_OK ({again})")
+
+        # 4) 猜错给大小提示
+        h._round["100"] = GuessRound(answer=42, started=time.time())
+        low = asyncio.run(h.play(_Ev(7), "10", cfg))
+        high = asyncio.run(h.play(_Ev(8), "90", cfg))
+        assert "太小" in low, low
+        assert "太大" in high, high
+        print(f"GAMES_GUESS_HINT_OK ({low} / {high})")
+
+        # 5) 猜中发分（积分系统开着时）
+        shop_on = PluginConfig({"shop": {"enable": True}})
+        h_on = GamesHandle(shop_on, db)
+        h_on._round["100"] = GuessRound(answer=42, started=time.time())
+        win = asyncio.run(h_on.play(_Ev(7), "42", shop_on.game))
+        assert "猜中" in win, win
+        assert db.get_points(100, 7) > 0, win
+        print(f"GAMES_GUESS_WIN_OK ({win.replace(chr(10), ' / ')})")
+
+        # 6) 越界数字不响应（不报错、也不抢话）
+        h._round["100"] = GuessRound(answer=42, started=time.time())
+        assert asyncio.run(h.play(ev, "999", cfg)) is None, "越界数字被吃了"
+        h._round.pop("100", None)
+        print("GAMES_GUESS_OUT_OF_RANGE_OK (越界数字不响应)")
+
+        # 7) 摇骰子 / 猜拳
+        r1 = asyncio.run(h.play(ev, "摇骰子", cfg))
+        assert "🎲" in r1 and "合计" in r1, r1
+        r3 = asyncio.run(h.play(ev, "摇骰子 3", cfg))
+        assert "摇了 3 个" in r3, r3
+        rps = asyncio.run(h.play(ev, "猜拳石头", cfg))
+        assert "石头" in rps and ("赢" in rps or "平局" in rps), rps
+        usage = asyncio.run(h.play(ev, "猜拳", cfg))
+        assert "猜拳石头" in usage, usage
+        print(f"GAMES_DICE_RPS_OK ({r1.splitlines()[0]} / {rps})")
+
+        # 8) 押注默认关闭
+        closed = asyncio.run(h.play(ev, "押注 10", cfg))
+        assert "没开启" in closed, closed
+        print(f"GAMES_BET_OFF_BY_DEFAULT_OK ({closed})")
+
+        # 9) 押注开启后：单次押注被压到上限内
+        bet_cfg = PluginConfig({
+            "shop": {"enable": True},
+            "game": {"bet_enable": True, "bet_max": 20, "bet_daily_loss": 30},
+        })
+        hb = GamesHandle(bet_cfg, db)
+        db.add_points(100, 7, 1000)
+        out = asyncio.run(hb.play(ev, "押注999", bet_cfg.game))
+        assert out and "999" not in out, out
+        print(f"GAMES_BET_CAPPED_OK ({out.splitlines()[-1]})")
+
+        # 10) 每日发奖局数上限：设成 1 局
+        cap_cfg = PluginConfig({
+            "shop": {"enable": True},
+            "game": {"guess_reward": 5, "guess_daily_games": 1,
+                     "guess_cooldown": 0},
+        })
+        h2 = GamesHandle(cap_cfg, db)
+        asyncio.run(h2.play(_Ev(11), "猜数字", cap_cfg.game))
+        h2._round["100"] = GuessRound(answer=7, started=time.time())
+        first = asyncio.run(h2.play(_Ev(11), "7", cap_cfg.game))
+        assert "猜中" in first and "发完" not in first, first
+        asyncio.run(h2.play(_Ev(12), "猜数字", cap_cfg.game))
+        h2._round["100"] = GuessRound(answer=7, started=time.time())
+        second = asyncio.run(h2.play(_Ev(12), "7", cap_cfg.game))
+        assert "发完" in second, second
+        print(f"GAMES_DAILY_CAP_OK ({second.splitlines()[-1]})")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
