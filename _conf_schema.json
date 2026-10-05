@@ -420,7 +420,7 @@
         "description": "启用积分商城",
         "type": "bool",
         "default": false,
-        "hint": "开启后群友可用「/商城」查看、「/购买 <商品名>」下单，积分来自签到与发言奖励。"
+        "hint": "开启后群友可用「/商城」查看、「/购买 <商品名>」下单，积分来自签到与发言奖励。\n可以按群单独关闭：管理员在本群发「/积分开关 off」即可，关闭后本群不显示商城、不能购买与抽奖，也不再扣违规积分。"
       },
       "items": {
         "description": "商品列表",
@@ -497,8 +497,8 @@
             "default": [
               {
                 "id": "thanks",
-                "name": "谢谢参与",
-                "weight": 60,
+                "name": "谢谢参与（未中奖）",
+                "weight": 0.0,
                 "rare": false,
                 "reward": "none",
                 "value": ""
@@ -506,7 +506,7 @@
               {
                 "id": "pts_5",
                 "name": "5 积分",
-                "weight": 30,
+                "weight": 0.3,
                 "rare": false,
                 "reward": "points",
                 "value": "5"
@@ -514,7 +514,7 @@
               {
                 "id": "pts_50",
                 "name": "50 积分",
-                "weight": 9,
+                "weight": 0.09,
                 "rare": false,
                 "reward": "points",
                 "value": "50"
@@ -522,13 +522,13 @@
               {
                 "id": "title_rare",
                 "name": "限定头衔",
-                "weight": 1,
+                "weight": 0.01,
                 "rare": true,
                 "reward": "title",
                 "value": "欧皇"
               }
             ],
-            "hint": "每项字段：id、name（奖品名，必填）、weight（相对权重，越大越容易中）、rare（是否稀有，供保底使用）、reward（points/title/action/manual/none）、value（发放内容）、enabled。权重是相对值，不需要加起来等于 100。"
+            "hint": "每项字段：id、name（奖品名，必填）、weight（中奖概率，0~1 的小数）、rare（是否稀有，供保底使用）、reward（points/title/action/manual/none）、value（发放内容）、enabled。\n**所有奖品概率之和不得超过 1**；不足 1 的剩余部分自动成为「未中奖」概率。例如 0.30+0.09+0.01=0.40，则未中奖 60%。\n想要「谢谢参与」这类显式空奖，把它也当成一个奖品即可（reward 选 none）。"
           }
         }
       },

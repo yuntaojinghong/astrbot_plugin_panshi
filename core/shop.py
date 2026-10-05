@@ -56,13 +56,17 @@ class Prize:
 
     prize_id: str
     name: str
-    #: 相对权重。越大越容易中。0 表示不参与随机（但可被保底指定）
-    weight: int = 1
+    #: 中奖概率（0~1 的小数）。所有奖品之和 ≤ 1；
+    #: 不足 1 的部分自动成为「未中奖」的概率。
+    #: 也兼容把权重写成 60 这种整数——解析时会统一归一化成概率。
+    weight: float = 0.0
     #: 稀有档：保底会从这里挑
     rare: bool = False
     reward: str = "points"
     value: str = ""
     enabled: bool = True
+    #: 归一化后的实际概率（解析时填），用于面板展示
+    chance: float = 0.0
 
 
 @dataclass
@@ -111,17 +115,6 @@ def _as_bool(value, default: bool = False) -> bool:
         return False
     return default
 
-
-def _pick_id(raw: dict, index: int, prefix: str) -> str:
-    """取条目标识：优先用配置里的 id，否则按名字，再否则用序号。"""
-    for key in ("id", "item_id", "prize_id", "key"):
-        v = str(raw.get(key) or "").strip()
-        if v and _ID_RE.match(v):
-            return v
-    name = str(raw.get("name") or raw.get("名称") or "").strip()
-    if name and _ID_RE.match(name):
-        return name
-    return f"{prefix}{index + 1}"
 
 
 def parse_shop_items(raw_items, *, max_items: int = 100) -> tuple[list[ShopItem], list[str]]:
@@ -179,8 +172,28 @@ def parse_shop_items(raw_items, *, max_items: int = 100) -> tuple[list[ShopItem]
     return out, skipped
 
 
+def _as_float(value, default: float = 0.0) -> float:
+    try:
+        if isinstance(value, bool):
+            return default
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def parse_prizes(raw_items, *, max_items: int = 100) -> tuple[list[Prize], list[str]]:
-    """解析奖池配置。规则同 :func:`parse_shop_items`。"""
+    """解析奖池配置。
+
+    **概率规则**：每个奖品的 ``weight`` 就是它的中奖概率，取值 0~1。
+    所有奖品概率之和**不得超过 1**；不足 1 的剩余部分自动成为「未中奖」的概率。
+
+    例如：``0.05 + 0.02 + 0.93 = 1.0`` → 全部覆盖；
+    ``0.01 + 0.01 = 0.02`` → 剩下 98% 是没中奖。
+
+    为了兼容手写配置，也接受把权重写成 ``60`` 这种整数：
+    当所有值都 > 1 时按**权重**处理，自动归一化到总和为 1
+    （此时不再有"未中奖"余量，因为权重已经铺满整个区间）。
+    """
     out: list[Prize] = []
     skipped: list[str] = []
     if not isinstance(raw_items, (list, tuple)):
@@ -197,9 +210,13 @@ def parse_prizes(raw_items, *, max_items: int = 100) -> tuple[list[Prize], list[
         if not name:
             skipped.append(f"第 {i + 1} 项缺少名称")
             continue
-        weight = _as_int(raw.get("weight", raw.get("权重")), 1)
-        if weight < 0:
-            weight = 0
+
+        raw_w = raw.get("weight", raw.get("概率", raw.get("权重")))
+        w = _as_float(raw_w, -1.0)
+        if w < 0:
+            skipped.append(f"「{name}」概率无效（需为 0~1 的小数）")
+            continue
+
         reward = str(raw.get("reward", raw.get("发放", "points")) or "points").strip().lower()
         if reward not in ("points", "title", "action", "manual", "none"):
             skipped.append(f"「{name}」发放方式「{reward}」无法识别，按积分处理")
@@ -207,13 +224,75 @@ def parse_prizes(raw_items, *, max_items: int = 100) -> tuple[list[Prize], list[
         out.append(Prize(
             prize_id=_pick_id(raw, i, "prize"),
             name=name,
-            weight=weight,
+            weight=w,
             rare=_as_bool(raw.get("rare", raw.get("稀有", False)), False),
             reward=reward,
             value=str(raw.get("value", raw.get("数值", "0")) or "0"),
             enabled=_as_bool(raw.get("enabled", raw.get("启用", True)), True),
         ))
+
+    if not out:
+        return out, skipped
+
+    active = [p for p in out if p.enabled]
+    total = sum(float(p.weight) for p in active)
+
+    # 全部 ≥ 1 → 当作权重，归一化到 1
+    #
+    # 注意是 **≥ 1** 而不是 > 1：权重写 1 很常见（「其余都是 1」），
+    # 用 > 1 会把这种配置漏掉，然后落到"总和超过 1"的分支里被误删奖品。
+    #
+    # 兼容手写配置里 "0.3" 这种字符串：先统一成 float 再判断，
+    # 否则字符串比较既不报错也不生效，最后表现为"概率完全没起作用"。
+    if total > 1.0 and all(float(p.weight) >= 1.0 for p in active):
+        for p in active:
+            p.chance = float(p.weight) / total
+        for p in out:
+            if not p.enabled:
+                p.chance = 0.0
+        skipped.append(
+            f"概率写成了权重（合计 {total:g}），已按比例归一化："
+            + "、".join(f"{p.name} {p.chance * 100:.1f}%" for p in active))
+        return out, skipped
+
+    # 标准路径：每个值就是概率，总和不得超过 1
+    if total > 1.0 + 1e-9:
+        # 超了就按顺序累加，越界的那一项起全部剔除——保留能用的，
+        # 而不是让整个奖池失效
+        acc = 0.0
+        dropped = []
+        for p in active:
+            w = float(p.weight)
+            if acc + w > 1.0 + 1e-9:
+                p.enabled = False
+                p.chance = 0.0
+                dropped.append(p.name)
+                continue
+            acc += w
+            p.chance = w
+        skipped.append(
+            f"奖品概率之和为 {total:.4f}，超过 1；已剔除超出的"
+            f"「{'、'.join(dropped)}」，保留部分合计 {acc:.4f}")
+        return out, skipped
+
+    for p in active:
+        p.chance = float(p.weight)
+    miss = max(0.0, 1.0 - total)
+    if miss > 1e-9:
+        skipped.append(f"奖品概率合计 {total:.4f}，剩余 {miss:.4f} 为未中奖概率")
     return out, skipped
+
+
+def _pick_id(raw: dict, index: int, prefix: str) -> str:
+    """取条目标识：优先用配置里的 id，否则按名字，再否则用序号。"""
+    for key in ("id", "item_id", "prize_id", "key"):
+        v = str(raw.get(key) or "").strip()
+        if v and _ID_RE.match(v):
+            return v
+    name = str(raw.get("name") or raw.get("名称") or "").strip()
+    if name and _ID_RE.match(name):
+        return name
+    return f"{prefix}{index + 1}"
 
 
 def parse_config(raw: dict) -> tuple[ShopConfig, list[str]]:
@@ -291,13 +370,30 @@ def can_buy(item: ShopItem, *, points: int, stock: int | None,
 def can_draw(lot: LotteryConfig, *, points: int, drawn_today: int) -> Check:
     if not lot.enable:
         return Check(False, "抽奖未开启")
-    if not [p for p in lot.prizes if p.enabled]:
-        return Check(False, "奖池是空的，请管理员先配置奖品")
+    real = [p for p in lot.prizes if p.enabled and p.chance > 0]
+    if not real:
+        return Check(False, "奖池是空的（或所有奖品概率都是 0），请管理员先配置奖品")
     if lot.daily_limit and drawn_today >= lot.daily_limit:
         return Check(False, f"今天已经抽过 {drawn_today} 次，明天再来")
     if points < lot.cost:
         return Check(False, f"积分不足：抽一次需要 {lot.cost}，你只有 {points}")
     return Check(True)
+
+
+def chance_summary(lot: LotteryConfig, *, limit: int = 8) -> list[str]:
+    """把奖池概率渲染成人能读的清单，供「抽奖概率」指令与面板展示。"""
+    lines: list[str] = []
+    active = [p for p in lot.prizes if p.enabled]
+    for p in active[:limit]:
+        mark = "★" if p.rare else " "
+        lines.append(f"{mark} {p.name} — {p.chance * 100:.2f}%")
+    if len(active) > limit:
+        lines.append(f"… 另有 {len(active) - limit} 个")
+    total = sum(p.chance for p in active)
+    miss = max(0.0, 1.0 - total)
+    lines.append(f"合计中奖概率 {total * 100:.2f}%"
+                 + (f"，未中奖 {miss * 100:.2f}%" if miss > 1e-9 else "（已铺满）"))
+    return lines
 
 
 # --------------------------------------------------------------------------- #
@@ -312,19 +408,45 @@ def draw_prize(lot: LotteryConfig, *, miss_streak: int = 0,
         miss_streak: 连续未中稀有档的次数（用于保底）。
 
     Returns:
-        ``(奖品, 是否由保底触发)``。奖池为空时返回 ``(None, False)``。
+        ``(奖品, 是否由保底触发)``。
+
+        ``奖品为 None`` 有两种含义，调用方要分清：
+
+        * 奖池里一个可用奖品都没有 → 应当**退还本次消耗**（不可能中奖）
+        * 概率合计不足 1，这次落在那段余量里 → 正常的「没抽中」
+
+        这个区分很重要：前者是配置问题，不该收钱；后者是玩家运气问题。
+        为区分两者，未中奖时返回一个 ``reward="none"`` 的占位奖品而不是 None——
+        见下面 ``miss_placeholder``。真正"无奖池"才返回 None。
     """
     rnd = rng or random
-    pool = [p for p in lot.prizes if p.enabled and p.weight > 0]
+    pool = [p for p in lot.prizes if p.enabled and p.chance > 0]
     rares = [p for p in pool if p.rare]
+
+    # 没有任何可用奖品 → 配置问题
+    if not pool:
+        return None, False
 
     # 保底：连击达标且存在稀有档 → 必出稀有
     if lot.pity > 0 and rares and miss_streak >= lot.pity:
-        return rnd.choices(rares, weights=[p.weight for p in rares], k=1)[0], True
+        return rnd.choices(rares, weights=[p.chance for p in rares], k=1)[0], True
 
-    if not pool:
-        return None, False
-    return rnd.choices(pool, weights=[p.weight for p in pool], k=1)[0], False
+    total = sum(p.chance for p in pool)
+    # 落在"未中奖"余量里 → 返回占位奖品，让调用方知道这是正常空手
+    if total < 1.0 and rnd.random() > total:
+        return miss_placeholder(), False
+
+    return rnd.choices(pool, weights=[p.chance for p in pool], k=1)[0], False
+
+
+def miss_placeholder() -> Prize:
+    """表示「这次没中奖」的占位奖品。
+
+    用占位对象而不是 ``None``，是为了把「概率余量导致空手」与
+    「奖池为空（配置错误）」区分开——后者要退还消耗。
+    """
+    return Prize(prize_id="", name="未中奖", weight=0.0, reward="none",
+                 value="", enabled=True, chance=0.0)
 
 
 def reward_points(prize: Prize | None) -> int:

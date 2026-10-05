@@ -260,8 +260,242 @@ def main():
     test_self_defense()
     test_welcome_self_and_at()
     test_shop_logic()
+    test_shop_probability()
+    test_points_switch()
 
     print("ALL_SELFTEST_PASS")
+
+
+def test_shop_probability():
+    """奖池概率：总和不得超过 1，不足 1 的部分是「未中奖」。
+
+    用户要求「概率可以自己设置，但总概率不超过 1」。
+    这里固定三件事：恰好 1 / 不足 1 / 超过 1 的处理方式。
+    """
+    from astrbot_plugin_panshi.core.shop import (
+        LotteryConfig, can_draw, chance_summary, draw_prize, miss_placeholder,
+        parse_prizes,
+    )
+
+    # ---------- 1. 恰好合计 1：全部铺满，没有未中奖余量 ----------
+    prizes, notes = parse_prizes([
+        {"name": "A", "weight": 0.5, "reward": "points", "value": "1"},
+        {"name": "B", "weight": 0.3, "reward": "points", "value": "2"},
+        {"name": "C", "weight": 0.2, "reward": "points", "value": "3"},
+    ])
+    assert abs(sum(p.chance for p in prizes) - 1.0) < 1e-9, [p.chance for p in prizes]
+    assert not any("未中奖" in n for n in notes), notes
+    print("PROB_SUM_ONE_OK (合计 1 → 无未中奖余量)")
+
+    # ---------- 2. 不足 1：余量成为未中奖 ----------
+    prizes2, notes2 = parse_prizes([
+        {"name": "小奖", "weight": 0.03, "reward": "points", "value": "5"},
+        {"name": "大奖", "weight": 0.01, "rare": True, "reward": "points", "value": "100"},
+    ])
+    assert abs(sum(p.chance for p in prizes2) - 0.04) < 1e-9
+    assert any("未中奖" in n for n in notes2), notes2
+    print(f"PROB_REMAINDER_OK ({notes2[-1]})")
+
+    # ---------- 3. 超过 1：剔除越界项，保留能用的 ----------
+    prizes3, notes3 = parse_prizes([
+        {"name": "甲", "weight": 0.6, "reward": "points", "value": "1"},
+        {"name": "乙", "weight": 0.6, "reward": "points", "value": "2"},
+        {"name": "丙", "weight": 0.1, "reward": "points", "value": "3"},
+    ])
+    kept = [p.name for p in prizes3 if p.enabled]
+    # 累加式保留：甲 0.6 收下；乙会让总和到 1.2 → 剔除；
+    # 丙 0.6+0.1=0.7 仍在上限内 → 保留。所以是甲、丙。
+    assert kept == ["甲", "丙"], kept
+    assert abs(sum(p.chance for p in prizes3) - 0.7) < 1e-9, \
+        sum(p.chance for p in prizes3)
+    assert any("超过 1" in n for n in notes3), notes3
+    print(f"PROB_OVER_ONE_OK ({notes3[-1]})")
+
+    # 负数/非法概率跳过
+    prizes4, notes4 = parse_prizes([
+        {"name": "正常", "weight": 0.2},
+        {"name": "负数", "weight": -0.5},
+        {"name": "乱写", "weight": "abc"},
+    ])
+    assert [p.name for p in prizes4] == ["正常"], [p.name for p in prizes4]
+    rejected = [n for n in notes4 if "概率无效" in n]
+    assert len(rejected) == 2, notes4
+
+    # 兼容旧写法：都 > 1 时按权重归一化
+    prizes5, notes5 = parse_prizes([
+        {"name": "常见", "weight": 60},
+        {"name": "稀有", "weight": 1},
+    ])
+    assert abs(sum(p.chance for p in prizes5) - 1.0) < 1e-9, [p.chance for p in prizes5]
+    assert prizes5[0].chance > prizes5[1].chance
+    assert any("归一化" in n for n in notes5), notes5
+    print("PROB_WEIGHT_COMPAT_OK (整数权重自动归一化)")
+
+    # ---------- 4. 概率真的影响结果 ----------
+    import random
+    lot = LotteryConfig(enable=True, cost=0, pity=0, prizes=prizes2)
+    rnd = random.Random(7)
+    hits = {"小奖": 0, "大奖": 0}
+    misses = 0
+    for _ in range(4000):
+        p, _ = draw_prize(lot, rng=rnd)
+        if p is None:
+            continue
+        if p.name in hits:
+            hits[p.name] += 1
+        elif p.reward == "none":
+            misses += 1
+    # 合计 4%，4000 次期望 ~160 次中奖、~3840 次空手
+    total_hits = hits["小奖"] + hits["大奖"]
+    assert 80 < total_hits < 260, (hits, misses)
+    assert misses > 3500, misses
+    assert hits["小奖"] > hits["大奖"], hits
+    print(f"PROB_EFFECT_OK (4000 次中 {total_hits} 次中奖 / {misses} 次空手，比例合理)")
+
+    # ---------- 5. 「空手」与「奖池为空」必须区分 ----------
+    # 空手 = 概率余量，是正常结果；奖池为空 = 配置错误，要退还消耗
+    p_none, _ = draw_prize(LotteryConfig(enable=True, prizes=[]), rng=rnd)
+    assert p_none is None, "奖池为空应返回 None（调用方据此退还消耗）"
+    assert miss_placeholder().reward == "none"
+    assert miss_placeholder().name == "未中奖"
+    print("PROB_EMPTY_VS_MISS_OK (奖池为空返回 None；余量空手返回占位奖品)")
+
+    # ---------- 6. 概率全为 0 时视为没配奖品 ----------
+    zero = LotteryConfig(enable=True, cost=10, prizes=parse_prizes([
+        {"name": "零概率", "weight": 0.0},
+    ])[0])
+    assert "概率都是 0" in can_draw(zero, points=999, drawn_today=0).reason
+    print("PROB_ALL_ZERO_OK (概率全 0 视为未配置，拒绝抽奖)")
+
+    # ---------- 7. 概率清单可读 ----------
+    lines = chance_summary(lot)
+    assert any("小奖" in x for x in lines), lines
+    assert any("合计中奖概率" in x for x in lines), lines
+    print(f"PROB_SUMMARY_OK ({lines[-1]})")
+
+
+def test_points_switch():
+    """按群总开关：关掉这个群就不启用积分系统。
+
+    用户要求「积分系统也有一个总开关，关闭此群就不启用」。
+    这里验证：默认取全局、按群覆盖生效、关掉后商城/抽奖/扣分全部停。
+    """
+    import asyncio
+    import os
+    import tempfile
+
+    from astrbot_plugin_panshi.config import PluginConfig
+    from astrbot_plugin_panshi.core.guard import GuardHandle
+    from astrbot_plugin_panshi.core.shop_handle import ShopHandle
+    from astrbot_plugin_panshi.data import Storage
+    from astrbot_plugin_panshi.main import PanshiPlugin
+
+    GID, UID = "1077250302", "2226175932"
+
+    class _Ev:
+        def __init__(self):
+            self.message_obj = types.SimpleNamespace(raw_message={})
+            self.message_str = ""
+
+        def get_group_id(self):
+            return GID
+
+        def get_sender_id(self):
+            return UID
+
+        def get_self_id(self):
+            return "3823105457"
+
+        def get_sender_name(self):
+            return "小明"
+
+        def get_messages(self):
+            return []
+
+        def get_message_str(self):
+            return ""
+
+        def is_admin(self):
+            return True
+
+        def plain_result(self, t):
+            return {"text": t}
+
+    tmp = tempfile.mkdtemp(prefix="panshi_switch_")
+    cfg = PluginConfig({
+        "basic": {"default_ban_time": 60},
+        "shop": {"enable": True, "items": [
+            {"id": "x", "name": "测试商品", "cost": 10},
+        ], "lottery": {"enable": True, "cost": 10, "daily_limit": 0,
+                       "prizes": [{"name": "奖", "weight": 1.0,
+                                   "reward": "points", "value": "5"}]},
+                 "penalties": {"刷屏": {"points": 20}}},
+    })
+    db = Storage(os.path.join(tmp, "d.json"))
+    # 必须绑定存储：按群覆盖（for_group）靠它读取，不绑定就会静默退化成全局值，
+    # 表现就是"按群开关点了没反应"。主程序里是在 __init__ 调 bind_storage。
+    cfg.bind_storage(db)
+    shop = ShopHandle(cfg, db)
+    ev = _Ev()
+
+    # 全局开着 → 本群也是开
+    assert shop.points_enabled(ev) is True
+    print("SWITCH_GLOBAL_ON_OK")
+
+    async def go():
+        # 关掉本群
+        msg = await shop.toggle(ev, "off")
+        assert "关闭" in msg, msg
+
+        # 现在本群应当关着，但全局仍是开的（不影响别的群）
+        assert shop.points_enabled(ev) is False, "按群覆盖没生效"
+        other = cfg.for_group("999999")
+        assert other.shop.get("enable") is True, "不该改到全局"
+
+        # 商城 / 抽奖 / 记录 都应当拒绝
+        for fn, args in ((shop.show_shop, ()), (shop.draw, ()),
+                         (shop.my_records, ())):
+            r = await fn(ev, *args)
+            assert "已关闭" in r, f"{fn.__name__} 未受总开关约束: {r!r}"
+        r_buy = await shop.buy(ev, "测试商品")
+        assert "已关闭" in r_buy, r_buy
+
+        # 违规扣分也应当停
+        guard = GuardHandle(cfg, db)
+        db.add_points(GID, UID, 100)
+        out = guard._apply_points_penalty(ev, "刷屏", cfg)
+        assert out == "", f"关了积分系统却还在扣分: {out!r}"
+        assert db.get_points(GID, UID) == 100, db.get_points(GID, UID)
+
+        # 不带参数 = 查询，不应改动状态
+        q = await shop.toggle(ev, "")
+        assert "关闭" in q and "用法" in q, q
+        assert shop.points_enabled(ev) is False, "查询不该改动状态"
+
+        # 再打开
+        msg2 = await shop.toggle(ev, "on")
+        assert "开启" in msg2, msg2
+        assert shop.points_enabled(ev) is True
+        r2 = await shop.show_shop(ev)
+        assert "已关闭" not in r2, r2
+
+    asyncio.run(go())
+    print("SWITCH_PER_GROUP_OK (关闭本群 / 不影响全局 / 商城抽奖扣分全停 / 查询不改状态)")
+
+    # 非法参数不误改
+    ev2 = _Ev()
+    out = asyncio.run(shop.toggle(ev2, "随便写的"))
+    assert "用法" in out, out
+    print("SWITCH_BAD_ARG_OK (非法参数只回用法，不改状态)")
+
+    # 插件层面：指令存在且是管理指令
+    import inspect
+    cmd = getattr(PanshiPlugin, "cmd_points_switch", None)
+    assert cmd is not None, "缺少 /积分开关 指令"
+    params = list(inspect.signature(cmd).parameters)
+    assert "arg" in params, params
+    assert getattr(PanshiPlugin, "cmd_chances", None) is not None, "缺少 /抽奖概率 指令"
+    print("SWITCH_COMMANDS_OK (/积分开关 + /抽奖概率)")
 
 
 def test_shop_logic():
@@ -292,8 +526,8 @@ def test_shop_logic():
         "lottery": {
             "enable": True, "cost": 10, "daily_limit": 3, "pity": 5,
             "prizes": [
-                {"id": "p1", "name": "谢谢参与", "weight": 60, "reward": "none"},
-                {"id": "p2", "name": "稀有", "weight": 1, "rare": True,
+                {"id": "p1", "name": "谢谢参与", "weight": 0.7, "reward": "points", "value": "1"},
+                {"id": "p2", "name": "稀有", "weight": 0.01, "rare": True,
                  "reward": "points", "value": "100"},
             ],
         },

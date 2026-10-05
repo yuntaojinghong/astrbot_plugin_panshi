@@ -755,6 +755,19 @@ class PanshiPlugin(Star):
         """抽一次奖：/抽奖"""
         yield event.plain_result(await self.shop.draw(event))
 
+    @filter.command("积分开关", alias={"积分系统"})
+    async def cmd_points_switch(self, event: AstrMessageEvent, arg: str = ""):
+        """按群开关积分系统：/积分开关 [on|off]"""
+        if not await self._check(event):
+            yield event.plain_result(self._no_perm())
+            return
+        yield event.plain_result(await self.shop.toggle(event, arg))
+
+    @filter.command("抽奖概率", alias={"奖池"})
+    async def cmd_chances(self, event: AstrMessageEvent):
+        """查看本群奖池概率：/抽奖概率"""
+        yield event.plain_result(await self.shop.show_chances(event))
+
     # ========== 指令：互动工具 ==========
     @filter.command("投票", alias={"vote"})
     async def cmd_vote(self, event: AstrMessageEvent, arg: str = ""):

@@ -13,6 +13,7 @@ from .shop import (
     apply_points_floor,
     can_buy,
     can_draw,
+    chance_summary,
     draw_prize,
     find_item,
     listable_items,
@@ -22,8 +23,77 @@ from .shop import (
 )
 
 
+def _parse_switch(arg: str) -> bool | None:
+    """把开关参数解析成 True/False；认不出来返回 None（表示"只是查询"）。
+
+    只认明确的开关词。空字符串返回 None，这样「/积分开关」不带参数
+    就是查询当前状态，而不是误改成关闭。
+    """
+    t = str(arg or "").strip().lower()
+    if not t:
+        return None
+    if t in ("on", "开", "开启", "启用", "true", "1", "yes", "是"):
+        return True
+    if t in ("off", "关", "关闭", "停用", "false", "0", "no", "否"):
+        return False
+    return None
+
+
 class ShopHandle(BaseHandle):
     """积分消费与惩罚。"""
+
+    # ------------------------------------------------------------------ #
+    #  按群总开关
+    # ------------------------------------------------------------------ #
+
+    def points_enabled(self, event=None, group_id=None) -> bool:
+        """本群是否启用积分系统。
+
+        总开关就是 ``shop.enable``，但读取时走**按群视角**——于是管理员
+        既可以在全局配置里开关，也可以用「/积分开关 off」只关掉某个群。
+        关掉后：商城、购买、抽奖、违规扣分全部不生效。
+        """
+        if event is not None:
+            raw = self.cfg_for(event).shop
+        elif group_id not in (None, ""):
+            raw = self.cfg.for_group(group_id).shop
+        else:
+            raw = self.cfg.shop
+        cfg, _ = parse_config(raw or {})
+        return bool(cfg.enable)
+
+    async def toggle(self, event, arg: str = "") -> str:
+        """查看或设置本群的积分系统开关。"""
+        group_id = self.group_id(event)
+        want = _parse_switch(arg)
+        current = self.points_enabled(event)
+
+        if want is None:
+            state = "开启" if current else "关闭"
+            return (f"💎 本群积分系统当前**{state}**\n"
+                    f"用法：/积分开关 on|off（只影响本群，不改全局配置）")
+
+        if want == current:
+            return f"💎 本群积分系统已经是{'开启' if current else '关闭'}状态，未改动。"
+
+        # 写的是本群的 override，不动全局——这样"只关这个群"才是真的只关这个群
+        self.db.set_group_override(str(group_id), "shop", {"enable": bool(want)})
+        return (f"✅ 已{'开启' if want else '关闭'}本群积分系统"
+                f"（只影响本群）。\n"
+                f"{'群友现在可以签到、逛商城、抽奖了。' if want else '商城、抽奖与违规扣分在本群都不再生效。'}")
+
+    async def show_chances(self, event) -> str:
+        """展示奖池概率，便于管理员核对配置。"""
+        cfg = self._config(event)
+        if not cfg.lottery.prizes:
+            return "🎰 奖池还没有配置奖品。"
+        lines = ["🎰 本群抽奖概率"]
+        lines += chance_summary(cfg.lottery)
+        lines.append("")
+        lines.append(f"每次消耗 {cfg.lottery.cost} 积分，"
+                     f"每日 {cfg.lottery.daily_limit or '不限'} 次"
+                     + (f"，{cfg.lottery.pity} 次保底" if cfg.lottery.pity else ""))
+        return "\n".join(lines)
 
     # ------------------------------------------------------------------ #
     #  配置
@@ -47,6 +117,9 @@ class ShopHandle(BaseHandle):
     # ------------------------------------------------------------------ #
 
     async def show_shop(self, event) -> str:
+        if not self.points_enabled(event):
+            return "💎 本群积分系统已关闭。（管理员可用「/积分开关 on」开启）"
+
         cfg = self._config(event)
         if not cfg.enable:
             return "🛒 积分商城未开启。（管理员可在配置里打开「积分商城 → 启用」）"
@@ -92,6 +165,9 @@ class ShopHandle(BaseHandle):
         return int(item.stock) - self.db.sold_count(item.item_id)
 
     async def buy(self, event, key: str) -> str:
+        if not self.points_enabled(event):
+            return "💎 本群积分系统已关闭。（管理员可用「/积分开关 on」开启）"
+
         cfg = self._config(event)
         if not cfg.enable:
             return "🛒 积分商城未开启。"
@@ -141,6 +217,9 @@ class ShopHandle(BaseHandle):
     # ------------------------------------------------------------------ #
 
     async def draw(self, event) -> str:
+        if not self.points_enabled(event):
+            return "💎 本群积分系统已关闭。（管理员可用「/积分开关 on」开启）"
+
         cfg = self._config(event)
         lot = cfg.lottery
         group_id = self.group_id(event)
@@ -206,6 +285,9 @@ class ShopHandle(BaseHandle):
     # ------------------------------------------------------------------ #
 
     async def my_records(self, event) -> str:
+        if not self.points_enabled(event):
+            return "💎 本群积分系统已关闭。（管理员可用「/积分开关 on」开启）"
+
         group_id = self.group_id(event)
         user_id = self.sender_id(event)
         points = self.db.get_points(group_id, user_id)

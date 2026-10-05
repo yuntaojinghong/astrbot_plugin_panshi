@@ -261,6 +261,16 @@ class GuardHandle(BaseHandle):
         """
         from .shop import apply_points_floor, parse_penalties
 
+        # 本群关了积分系统就连扣分也不做——「关闭此群就不启用积分系统」
+        # 必须是整体关闭，不能只关商城却还在扣分。
+        try:
+            from .shop_handle import ShopHandle
+
+            if not ShopHandle(self.cfg, self.db).points_enabled(event):
+                return ""
+        except Exception as e:
+            logger.debug(f"[磐石] 检查积分总开关失败，按开启处理: {e}")
+
         raw = cfg.shop if isinstance(cfg.shop, dict) else {}
         rules = parse_penalties(raw.get("penalties", raw.get("惩罚", {})))
         rule = rules.get(str(reason))
