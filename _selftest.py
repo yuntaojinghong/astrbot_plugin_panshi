@@ -816,6 +816,52 @@ def test_shop_editing():
         "删空后配置里的商品又冒回来了"
     print("SHOP_SEED_ONCE_OK (配置只灌一次；删空后不会复活)")
 
+    # ---------- 12. 落盘往返：写进文件、换实例还能读出来 ----------
+    #
+    # 用户反馈「保存后刷新又回默认值」。本地复现不出来，所以把
+    # 「写文件 → 新实例读文件」这条链路钉住：只要它绿，
+    # 就说明存储层没问题，问题在别处（路由、版本没生效等）。
+    tmp4 = tempfile.mkdtemp(prefix="panshi_disk_")
+    db4 = Storage(os.path.join(tmp4, "d.json"))
+    db4.set_shop_items([{"name": "奶茶", "cost": 50, "stock": 3}])
+    db4.set_shop_settings({"enable": True, "lottery_cost": 25})
+    db4.set_prizes([{"name": "谢谢参与", "weight": 0.7}])
+
+    import json as _json3
+    assert os.path.exists(db4.file), f"写完之后文件不存在: {db4.file}"
+    with open(db4.file, encoding="utf-8") as _f:
+        _raw = _json3.load(_f)
+    assert _raw["shop"]["items"], _raw.get("shop")
+    assert _raw["shop"]["settings"]["lottery_cost"] == 25, _raw["shop"]
+
+    # 换一个实例读同一份文件（等同于插件重载后再读）
+    db5 = Storage(os.path.join(tmp4, "d.json"))
+    assert [i["name"] for i in (db5.get_shop_items() or [])] == ["奶茶"], \
+        db5.get_shop_items()
+    assert db5.get_shop_settings().get("lottery_cost") == 25, \
+        db5.get_shop_settings()
+    assert [p["name"] for p in (db5.get_prizes() or [])] == ["谢谢参与"], \
+        db5.get_prizes()
+
+    # 用 ShopHandle 再读一遍，确认面板看到的就是存下的
+    sh6 = ShopHandle(cfg3, db5)
+    assert [i["name"] for i in sh6.editable_items()] == ["奶茶"], \
+        sh6.editable_items()
+    assert sh6.editable_settings()["lottery_cost"] == 25, sh6.editable_settings()
+    assert sh6.editable_settings()["enable"] is True, sh6.editable_settings()
+    print("SHOP_DISK_ROUNDTRIP_OK (写文件 → 新实例读出，值都还在)")
+
+    # 页面上的「保存商品」走的是 save_items -> set_shop_items -> save()，
+    # 这里确认面板读出来的和刚存的一致（用户看到的就是这个）
+    r = sh6.save_items([{"name": "头像框", "cost": 88, "stock": 1}])
+    assert r["ok"], r
+    db6 = Storage(os.path.join(tmp4, "d.json"))
+    sh7 = ShopHandle(cfg3, db6)
+    assert [i["name"] for i in sh7.editable_items()] == ["头像框"], \
+        sh7.editable_items()
+    print("SHOP_SAVE_THEN_REOPEN_OK (保存后重新打开，商品没有复位)")
+
+
 
 
 def test_schema_loadable():
@@ -3002,6 +3048,31 @@ def test_config_layer():
         _raw_schema = _json2.load(_f)
     assert "shop" in _raw_schema, "schema 里必须保留 shop 组（默认值来源）"
     print("SCHEMA_HIDDEN_SHOP_OK (面板不显示 shop 组；schema 仍保留)")
+
+    # 三个版本号必须一致。
+    #
+    # 回归背景：__init__.py 一直停在 1.6.2，而 metadata.yaml 已经到 v1.9.8，
+    # 没人发现——因为 CI 只查了 metadata 和 pages_service 两处。
+    # 三处都表示「插件版本」，不一致时排查问题会先被误导。
+    import pathlib as _pl
+    import re as _re
+    _repo = _pl.Path(_schema_path).parent
+
+    def _grab(fname, pattern):
+        t = (_repo / fname).read_text(encoding="utf-8")
+        m = _re.search(pattern, t, _re.M)
+        return m.group(1) if m else None
+
+    _versions = {
+        "metadata.yaml": _grab("metadata.yaml", r"^version:\s*v?(\S+)\s*$"),
+        "pages_service.py": _grab("pages_service.py",
+                                  r'FALLBACK_VERSION\s*=\s*"v?([^"]+)"'),
+        "__init__.py": _grab("__init__.py", r'__version__\s*=\s*"([^"]+)"'),
+    }
+    assert None not in _versions.values(), f"读不到版本号：{_versions}"
+    assert len(set(_versions.values())) == 1, (
+        f"三处版本号必须一致，改一处就要全改：{_versions}")
+    print(f"VERSION_CONSISTENT_OK (三处都是 v{_versions['metadata.yaml']})")
 
     # 意图闸门的两个新配置项必须存在（v1.6.0）
     smart_fields = {

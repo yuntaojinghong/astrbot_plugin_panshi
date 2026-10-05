@@ -21,20 +21,27 @@ jobs:
       # 版本号要三处一致：metadata.yaml（面板实际显示的那个）、
       # pages_service 的兜底值、以及 tag。之前没有这条检查，
       # 只改一处也不会报错，面板上的版本号就会和实际装的版本对不上。
-      - name: 版本号一致性（metadata.yaml / pages_service.py）
+      - name: 版本号一致性（metadata.yaml / pages_service.py / __init__.py）
         run: |
           python - <<'PY'
           import re, sys, pathlib
-          meta = pathlib.Path("metadata.yaml").read_text(encoding="utf-8")
-          m = re.search(r"^version:\s*(\S+)\s*$", meta, re.M)
-          svc = pathlib.Path("pages_service.py").read_text(encoding="utf-8")
-          s = re.search(r'FALLBACK_VERSION\s*=\s*"([^"]+)"', svc)
-          got = {"metadata.yaml": m.group(1) if m else None,
-                 "pages_service.py": s.group(1) if s else None}
+          def grab(path, pattern):
+              t = pathlib.Path(path).read_text(encoding="utf-8")
+              m = re.search(pattern, t, re.M)
+              return m.group(1) if m else None
+          got = {
+              "metadata.yaml": grab("metadata.yaml", r"^version:\s*v?(\S+)\s*$"),
+              "pages_service.py": grab("pages_service.py",
+                                       r'FALLBACK_VERSION\s*=\s*"v?([^"]+)"'),
+              "__init__.py": grab("__init__.py", r'__version__\s*=\s*"([^"]+)"'),
+          }
+          # __init__.py 以前一直停在 1.6.2，没人发现。
+          # 三处都是「插件版本」，必须同步——面板显示的版本和实际装的
+          # 对不上时，排查问题会先被误导。
           if None in got.values() or len(set(got.values())) != 1:
-              print("版本号不一致（两处必须相同，改一处就要改另一处）:", got)
+              print("版本号不一致（三处必须相同，改一处就要全改）:", got)
               sys.exit(1)
-          print(f"版本号一致：{got['metadata.yaml']}")
+          print(f"版本号一致：v{got['metadata.yaml']}")
           PY
 
       - name: 面板前端测试（jsdom）

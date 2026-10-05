@@ -1237,36 +1237,32 @@ function bounceButton(btn) {
  * ================================================================== */
 
 /**
- * 把品牌位的「磐」字换成插件自己的 logo.png。
+ * 把品牌位的「磐」字换成插件图标。
  *
  * 为什么逐个试候选路径：这个页面由 AstrBot 的插件页面服务托管，静态资源路径
  * 与插件目录的对应关系随版本不同（可能是 ./ 也可能是 ../），写死一个路径
  * 在某些版本上就是 404。候选全部失败就保留「磐」字，不留白。
  */
+/**
+ * 品牌位的图标：直接用内嵌的 svg，不发网络请求。
+ *
+ * 以前是用 JS 把 src 换成 ./logo.png，线上会 401：
+ * AstrBot 的插件页面服务只给 HTML 里**静态写死**的资源地址补 asset_token，
+ * 动态换 src 拿不到那个 token，于是被拦。
+ * 内嵌成 data URI 之后浏览器根本不用请求，也就没有鉴权问题。
+ */
+const BRAND_LOGO_SVG =
+  "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNTYgMjU2IiB3aWR0aD0iMjU2IiBoZWlnaHQ9IjI1NiI+PGRlZnM+PGxpbmVhckdyYWRpZW50IGlkPSJiZyIgeDE9IjAlIiB5MT0iMCUiIHgyPSIxMDAlIiB5Mj0iMTAwJSI+PHN0b3Agb2Zmc2V0PSIwJSIgc3RvcC1jb2xvcj0iIzdCNkNGRiIvPjxzdG9wIG9mZnNldD0iMTAwJSIgc3RvcC1jb2xvcj0iIzNBMkVCQSIvPjwvbGluZWFyR3JhZGllbnQ+PHJhZGlhbEdyYWRpZW50IGlkPSJnbG93IiBjeD0iNTAlIiBjeT0iNDglIiByPSI1MCUiPjxzdG9wIG9mZnNldD0iMCUiIHN0b3AtY29sb3I9IiNBQ0EwRkYiIHN0b3Atb3BhY2l0eT0iMC41Ii8+PHN0b3Agb2Zmc2V0PSIxMDAlIiBzdG9wLWNvbG9yPSIjQUNBMEZGIiBzdG9wLW9wYWNpdHk9IjAiLz48L3JhZGlhbEdyYWRpZW50PjwvZGVmcz48cmVjdCB3aWR0aD0iMjU2IiBoZWlnaHQ9IjI1NiIgcng9IjU4IiBmaWxsPSJ1cmwoI2JnKSIvPjxwb2x5Z29uIHBvaW50cz0iMCwwIDI1NiwwIDAsMjU2IiBmaWxsPSIjRkZGRkZGIiBvcGFjaXR5PSIwLjA1NSIvPjxwb2x5Z29uIHBvaW50cz0iMjU2LDEwMCAyNTYsMjU2IDEwMCwyNTYiIGZpbGw9IiMxMjA4NEMiIG9wYWNpdHk9IjAuMTMiLz48Y2lyY2xlIGN4PSIxMjgiIGN5PSIxMjQiIHI9IjEwMCIgZmlsbD0idXJsKCNnbG93KSIvPjxwb2x5Z29uIHBvaW50cz0iMTI4LDM4IDUyLDg0IDEyOCwxMDQiIGZpbGw9IiNFQkU3RkYiLz48cG9seWdvbiBwb2ludHM9IjEyOCwzOCAyMDQsODQgMTI4LDEwNCIgZmlsbD0iI0ZGRkZGRiIvPjxwb2x5Z29uIHBvaW50cz0iNTIsODQgMTI4LDEwNCAxMjgsMjA4IDkwLDE5MCA1MiwxNTYiIGZpbGw9IiNDRUM4RjMiLz48cG9seWdvbiBwb2ludHM9IjEyOCwxMDQgMjA0LDg0IDIwNCwxNTYgMTY2LDE5MCAxMjgsMjA4IiBmaWxsPSIjQThBMEUwIi8+PHBvbHlsaW5lIHBvaW50cz0iMTI4LDEwNCAxMjgsMjA4IiBzdHJva2U9IiNGRkZGRkYiIHN0cm9rZS1vcGFjaXR5PSIwLjI0IiBzdHJva2Utd2lkdGg9IjIiIGZpbGw9Im5vbmUiLz48cG9seWdvbiBwb2ludHM9IjEyOCw4MiAxNjMsMTAzIDE2MywxNDEgMTI4LDE3MiA5MywxNDEgOTMsMTAzIiBmaWxsPSIjNTQ0NUNDIi8+PHBvbHlnb24gcG9pbnRzPSIxMjgsODIgMTYzLDEwMyAxMjgsMTIyIDkzLDEwMyIgZmlsbD0iIzc4NkFFNiIvPjxwb2x5bGluZSBwb2ludHM9IjEwNiwxMjYgMTIyLDE0MSAxNTEsMTA4IiBmaWxsPSJub25lIiBzdHJva2U9IiNGRkZGRkYiIHN0cm9rZS13aWR0aD0iMTMiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIvPjxnIGZpbGw9IiNGRkZGRkYiPjxwb2x5Z29uIHBvaW50cz0iNDYsMzcgNDguOCw0OSA2MSw1MiA0OC44LDU1IDQ2LDY3IDQzLjIsNTUgMzEsNTIgNDMuMiw0OSIgb3BhY2l0eT0iMC45MiIvPjxwb2x5Z29uIHBvaW50cz0iMjExLDE3NSAyMTMuNiwxODQuNCAyMjMsMTg3IDIxMy42LDE4OS42IDIxMSwxOTkgMjA4LjQsMTg5LjYgMTk5LDE4NyAyMDguNCwxODQuNCIgb3BhY2l0eT0iMC44Ii8+PHBvbHlnb24gcG9pbnRzPSIyMDcsNTIgMjA4LjYsNTYuNCAyMTMsNTggMjA4LjYsNTkuNiAyMDcsNjQgMjA1LjQsNTkuNiAyMDEsNTggMjA1LjQsNTYuNCIgb3BhY2l0eT0iMC42MyIvPjwvZz48L3N2Zz4=";
+
 function loadBrandLogo() {
   const host = $("#brandLogo");
   if (!host) return;
-  const candidates = String(host.dataset.candidates || "")
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
-  if (!candidates.length) return;
-
-  const tryNext = (idx) => {
-    if (idx >= candidates.length) return; // 全失败：保留「磐」字
-    const probe = new Image();
-    probe.onload = () => {
-      const img = el("img", {
-        class: host.className + " logo-img",
-        src: candidates[idx],
-        alt: "磐石",
-      });
-      if (host.parentNode) host.parentNode.replaceChild(img, host);
-    };
-    probe.onerror = () => tryNext(idx + 1);
-    probe.src = candidates[idx];
-  };
-  tryNext(0);
+  const img = el("img", {
+    class: host.className + " logo-img",
+    src: BRAND_LOGO_SVG,
+    alt: "磐石",
+  });
+  if (host.parentNode) host.parentNode.replaceChild(img, host);
 }
 
 /* ==================================================================

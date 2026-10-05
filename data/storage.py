@@ -184,10 +184,31 @@ class Storage:
         v = self._shop_table().get("items")
         return list(v) if isinstance(v, list) else None
 
+    def debug_shop_state(self) -> str:
+        """一行说清当前存了什么、存在哪个文件。
+
+        排查「保存后刷新又回默认值」用：把它打进日志，
+        就能区分「没写进去」和「读回来失败」。
+        """
+        t = self._shop_table()
+        return (
+            f"文件={self.file} 存在={os.path.exists(self.file)} "
+            f"items={len(t.get('items') or [])} "
+            f"prizes={len(t.get('prizes') or [])} "
+            f"settings={t.get('settings') or {}}"
+        )
+
     def set_shop_items(self, items: list) -> None:
         with self._lock:
             self._shop_table()["items"] = list(items or [])
             self.save()
+        # 记一条读得懂的日志。线上出现过「保存后刷新又回默认值」，
+        # 单看界面分不清是没写下去、还是读回来失败。
+        # 这条 + get_shop_items 那条日志能直接对上：
+        # 保存时写了什么、下次读的时候文件里有什么。
+        logger.info(
+            "[磐石] 已保存商品 %s 件 -> %s", len(items or []), self.file,
+        )
 
     def get_prizes(self) -> list | None:
         """用户在面板里编辑过的奖池。``None`` = 从未编辑，用配置默认值。"""
@@ -226,6 +247,9 @@ class Storage:
             cur.update(values or {})
             t["settings"] = cur
             self.save()
+        logger.info(
+            "[磐石] 已保存商城设置 %s -> %s", dict(values or {}), self.file,
+        )
 
     def clear_shop_settings(self) -> None:
         with self._lock:

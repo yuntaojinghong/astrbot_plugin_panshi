@@ -135,13 +135,27 @@ window.AstrBotPluginPage = {
   }
 
   // ---- 3. 品牌图标 ----
-  const logoLoads = imageLoads.filter((u) => /logo\.png/.test(u));
-  assert("品牌图标尝试了候选路径", logoLoads.length >= 1, JSON.stringify(imageLoads));
+  //
+  // 改成内嵌 svg 之后不再发网络请求。
+  // 线上用 ./logo.png 会 401：AstrBot 的插件页面服务只给 HTML 里静态写死的
+  // 资源地址补 asset_token，JS 动态换 src 拿不到那个 token。
+  // 所以这里断言「没有为图标发请求」，并且品牌位确实换成了内嵌图。
+  const logoRequests = imageLoads.filter((u) => /logo\.(png|svg)/.test(u));
+  assert("品牌图标不再发网络请求（内嵌 svg，避开 401）",
+    logoRequests.length === 0, JSON.stringify(imageLoads));
 
-  // 全部失败时应保留「磐」字（jsdom 不加载图片，等价于全部失败）
-  const brand = window.document.querySelector("#brandLogo");
-  assert("候选全失败时保留「磐」字", !!brand && brand.textContent === "磐",
-    brand ? brand.textContent : "(已被替换)");
+  const brandImg = window.document.querySelector("#brandLogo, .logo-img");
+  assert("品牌位已换成内嵌图",
+    !!brandImg, brandImg ? brandImg.tagName : "(无)");
+  assert("内嵌图用的是 data URI",
+    !!brandImg && String(brandImg.getAttribute("src") || "").startsWith("data:image/svg+xml"),
+    brandImg ? String(brandImg.getAttribute("src") || "").slice(0, 40) : "(无)");
+
+  // 脚本没跑起来时要能看到「磐」字兜底
+  const brandSpan = window.document.querySelector("span#brandLogo");
+  assert("兜底仍保留「磐」字（脚本未跑时不空白）",
+    !brandSpan || brandSpan.textContent === "磐",
+    brandSpan ? brandSpan.textContent : "(已替换为图)")
 
   // ---- 4. 切换加载态 ----
   window.__t.setSelectionLoading(true);

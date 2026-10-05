@@ -217,6 +217,14 @@ class ShopHandle(BaseHandle):
         cfg, notes = parse_config(raw)
         for n in notes:
             logger.info(f"[磐石] 商城配置提示：{n}")
+        # 读的时候也记一条：和 set_shop_items / set_shop_settings 的日志对上，
+        # 就能判断「保存后刷新回默认值」是没写进去还是没读回来。
+        # 用 info 而不是 debug——排查线上问题时用户默认看不到 debug。
+        logger.info(
+            "[磐石] 读取商城配置：%s（本次 items=%s prizes=%s）",
+            self.db.debug_shop_state(),
+            len(raw["items"]), len(raw["lottery_prizes"]),
+        )
         return cfg
 
     def editable_settings(self) -> dict:
