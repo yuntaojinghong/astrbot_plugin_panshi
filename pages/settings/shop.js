@@ -49,13 +49,13 @@ function apiGet(endpoint, params) {
   const qs = new URLSearchParams(
     Object.entries(params || {}).filter(([, v]) => v !== undefined && v !== null)
   ).toString();
-  return b.apiGet(PLUGIN + "/" + endpoint + (qs ? "?" + qs : ""));
+  return b.apiGet(endpoint + (qs ? "?" + qs : ""));
 }
 
 function apiPost(endpoint, body) {
   const b = bridge();
   if (!b) throw new Error("未检测到页面通信接口，请从「插件管理」里打开本插件页面。");
-  return b.apiPost(PLUGIN + "/" + endpoint, body || {});
+  return b.apiPost(endpoint, body || {});
 }
 
 function toast(text, type = "ok") {
@@ -374,7 +374,7 @@ function settingsSection(kind, settings, onSaved) {
         class: "btn primary", type: "button", text: "保存设置",
         onClick: async () => {
           try {
-            await apiPost("shop/settings", { settings: read() });
+            await apiPost("shop/save-settings", { settings: read() });
             toast("设置已保存");
             if (onSaved) await onSaved();
           } catch (e) {
@@ -465,7 +465,7 @@ async function renderItemsView(host, onBack) {
         class: "btn primary", type: "button", text: "保存商品",
         onClick: async () => {
           try {
-            const r = await apiPost("shop/items", { items: items.read() });
+            const r = await apiPost("shop/save-items", { items: items.read() });
             toast(`已保存 ${r.saved} 件商品`);
             await renderItemsView(host, onBack);
           } catch (e) {
@@ -575,7 +575,7 @@ async function renderPrizesView(host, onBack) {
         class: "btn primary", type: "button", text: "保存奖池",
         onClick: async () => {
           try {
-            const r = await apiPost("shop/prizes", { prizes: prizes.read() });
+            const r = await apiPost("shop/save-prizes", { prizes: prizes.read() });
             toast(`已保存 ${r.saved} 个奖品，中奖合计 `
               + `${((r.total_chance || 0) * 100).toFixed(2)}%`);
             await renderPrizesView(host, onBack);

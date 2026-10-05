@@ -100,43 +100,44 @@ class PanshiWebController:
             ("/shop/settings", self.api_shop_save_settings, ["POST"], "保存商城与抽奖参数"),
         ]
 
-        # 注册的路径**同时提供两种形式**：带插件名前缀 / 不带。
+        # 注册路径形式。
         #
-        # 为什么要两种都注册：这一处的约定我反复搞错过两次，代价都是
-        # 面板全部接口失效（「未找到该路由」），所以不再赌单一种写法。
+        # 这一处我来回错过三次，每次都是面板全部接口失效（「未找到该路由」），
+        # 所以不再赌某一种写法，改成**只按后缀识别端点**。
         #
-        # AstrBot 4.28.2 上读到的链路（Python 3.12 dis 出的字节码）：
+        # 真实 URL（用户实测）：
+        #   /api/v1/plugins/extensions/astrbot_plugin_panshi/astrbot_plugin_panshi/shop/items
+        #                            └────────── plugin_path 参数（整条） ──────────┘
         #
-        #   路由声明   /plugins/extensions/{plugin_path:path}
-        #   plugin_path = "astrbot_plugin_panshi/shop/items"      # 含插件名
-        #   _match_registered_web_api(registered_web_apis, plugin_path, method)
-        #       request_path = "/" + subpath.lstrip("/")          # 整条 plugin_path
-        #       re.fullmatch(pattern, request_path)               # 用注册路径匹配整条
+        # 路由声明是 /plugins/extensions/{plugin_path:path}，plugin_path 取整条剩余路径；
+        # _match_registered_web_api 再拿它去 fullmatch 注册路径。
+        # 这条 URL 里插件名出现了两次——外部 SDK 补了一层，调用方又拼了一层。
+        # 与其去赌到底补几层，不如用通配匹配、靠后缀认端点：
         #
-        # 按这个读法，注册路径**要带**插件名（v1.9.3 那样）。
-        # 但不同 AstrBot 版本/分支可能把插件名剥掉后再匹配，
-        # 那时就要用不带前缀的形式。两种都注册，哪边被匹配到都能用：
-        # 多注册一份只是占一点内存，不匹配的那份永远不会被命中。
+        #   /<path:rest>          匹配任何深度，rest 就是整条 plugin_path
+        #
+        # 这样无论 URL 里插件名出现 0 次、1 次还是 2 次，都能命中。
+        rest_routes: list[tuple[str, Callable, list[str], str]] = [
+            ("/<path:rest>", self.api_dispatch, ["GET"], "磐石面板接口（GET）"),
+            ("/<path:rest>", self.api_dispatch, ["POST"], "磐石面板接口（POST）"),
+            ("/<path:rest>", self.api_dispatch, ["DELETE"], "磐石面板接口（DELETE）"),
+        ]
+
         ok_count = 0
         registered_paths: list[str] = []
-        for path, handler, methods, desc in routes:
-            sub = path if path.startswith("/") else f"/{path}"
-            wrapped = self._wrap(handler)
-            for candidate in (f"/{PLUGIN_NAME}{sub}", sub):
-                try:
-                    register(candidate, wrapped, methods, desc)
-                    ok_count += 1
-                    registered_paths.append(candidate)
-                except Exception as e:
-                    logger.debug(f"[磐石] 注册路由 {candidate} 未成功: {e}")
+        for path, handler, methods, desc in rest_routes:
+            try:
+                register(path, self._wrap(handler), methods, desc)
+                ok_count += 1
+                registered_paths.append(path)
+            except Exception as e:
+                logger.error(f"[磐石] 注册路由 {path} 失败: {e}")
 
         self._registered = ok_count > 0
         if self._registered:
-            # 把实际注册的路径打出来。再遇到「未找到该路由」，
-            # 这条日志能立刻看出接口注册成了什么形式。
             logger.info(
-                f"[磐石] 配置面板已注册 {ok_count} 个接口（两种路径形式），"
-                f"示例: {', '.join(registered_paths[:4])}"
+                f"[磐石] 配置面板已注册 {ok_count} 条通配接口"
+                f"（按后缀识别端点，共 {len(routes)} 个端点）"
             )
         else:
             logger.warning(
@@ -145,6 +146,86 @@ class PanshiWebController:
                 f"Web 请求模块: {'可用' if request is not None else _WEB_IMPORT_ERROR}"
             )
         return self._registered
+
+    #: 端点表：后缀 -> (处理函数名, 允许的方法)
+    def _endpoint_table(self) -> dict[str, tuple[str, set[str]]]:
+        return {
+            "bootstrap": ("api_bootstrap", {"GET"}),
+            "overview": ("api_overview", {"GET"}),
+            "connection": ("api_connection", {"GET"}),
+            "export": ("api_export", {"GET"}),
+            "import": ("api_import", {"POST"}),
+            "groups": ("api_groups", {"GET"}),
+            "groups/refresh": ("api_groups_refresh", {"POST"}),
+            "global": ("api_get_global", {"GET"}),
+            "group": ("api_get_group", {"GET"}),
+            "group/reset": ("api_reset_group", {"POST"}),
+            "shop/items": ("api_shop_items", {"GET"}),
+            "shop/prizes": ("api_shop_prizes", {"GET"}),
+            "shop/settings": ("api_shop_settings", {"GET"}),
+            "shop/reset": ("api_shop_reset", {"POST"}),
+            "shop/save-items": ("api_shop_save_items", {"POST"}),
+            "shop/save-prizes": ("api_shop_save_prizes", {"POST"}),
+            "shop/save-settings": ("api_shop_save_settings", {"POST"}),
+        }
+
+    def _tail_of(self, request_: Any) -> str:
+        """从请求里取出「端点后缀」，形如 ``"shop/items"``。
+
+        优先用 FastAPI 解析出的通配参数；取不到再从完整路径里按
+        **已知端点后缀**定位——这样与 URL 前头有多少层前缀无关。
+        """
+        params = getattr(request_, "path_params", None)
+        if isinstance(params, dict) and params.get("rest"):
+            return str(params["rest"]).strip("/")
+
+        raw_path = ""
+        for src in (request_, getattr(request_, "_request", None)):
+            p = getattr(src, "path", None)
+            if isinstance(p, str) and p:
+                raw_path = p
+                break
+        if not raw_path:
+            return ""
+        raw_path = raw_path.split("?", 1)[0].strip("/")
+
+        # 已知端点里选最长的那个后缀匹配，避免 "items" 之类的短名字误命中
+        best = ""
+        for ep in self._endpoint_table():
+            if raw_path == ep or raw_path.endswith("/" + ep):
+                if len(ep) > len(best):
+                    best = ep
+        if best:
+            return best
+        # 都不认识，返回最后两段，交给调用方报 404
+        parts = raw_path.split("/")
+        return "/".join(parts[-2:]) if len(parts) >= 2 else raw_path
+
+    async def api_dispatch(self):
+        """通配入口：按 URL 后缀把请求分派到具体处理函数。
+
+        为什么这样做：插件 API 的真实 URL 形状在不同调用方下不一致
+        （插件名可能出现 0~2 次），写死任何一种注册路径都可能全部失配。
+        用通配匹配、按后缀认端点，就与 URL 前缀无关了。
+
+        方法不符返回 405，端点不认识返回 404，都带可读说明。
+        """
+        endpoint = self._tail_of(request)
+        req_obj = getattr(request, "_request", None) or request
+        method = str(getattr(req_obj, "method", "GET") or "GET").upper()
+
+        table = self._endpoint_table()
+        hit = table.get(endpoint)
+        if hit is None:
+            logger.warning(f"[磐石] 面板请求了未知端点: {endpoint!r}")
+            return _err(f"未知接口 {endpoint!r}，请更新插件", 404)
+
+        handler_name, allowed = hit
+        if method not in allowed:
+            return _err(
+                f"{endpoint} 不接受 {method}（允许 {'/'.join(sorted(allowed))}）", 405)
+
+        return await getattr(self, handler_name)()
 
     def _wrap(self, handler: Callable) -> Callable:
         """统一异常处理：把 ValueError 转成 400，其余转 500。"""

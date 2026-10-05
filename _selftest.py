@@ -214,28 +214,52 @@ def main():
     # 校验 WebUI 面板路由注册
     assert inst.web is not None, "面板控制器未创建"
     #
-    # 每条路由注册**两种路径形式**：带插件名前缀 / 不带。
+    # 注册的是**通配路径**，靠 URL 后缀认端点。
     #
-    # 这一处的约定我搞错过两次，两次都让面板全部接口失效
-    # （「未找到该路由」）。按 AstrBot 4.28.2 的字节码读，
-    # `_match_registered_web_api` 收到的 subpath 就是完整的 plugin_path
-    # （含插件名），所以带前缀那份才会被命中；但不同版本可能先剥掉插件名，
-    # 那时就要用不带前缀的。两种都注册，不匹配的那份永远不会被命中。
-    #
-    # 断言方式：两种形式必须**都有**，缺一种就等于赌一种约定。
+    # 这一处我来回错过三次，每次都是面板全部接口失效（「未找到该路由」）：
+    #   1. 只注册 /{插件名}/{子路径}
+    #   2. 只注册 /{子路径}
+    #   3. 两种都注册
+    # 都不对，因为真实 URL 里插件名可能出现 0~2 次 —— 用户实测的那条是：
+    #   /api/v1/plugins/extensions/astrbot_plugin_panshi/astrbot_plugin_panshi/shop/items
+    #                             └────────── plugin_path 参数（整条）──────────┘
+    # 前缀层数不可控，所以改成 /<path:rest> 匹配一切，用后缀定位端点。
     raw_paths = [r[0] for r in ctx.routes]
-    from astrbot_plugin_panshi.pages_api import PLUGIN_NAME
-    required_routes = [
-        "/bootstrap", "/overview", "/global", "/group", "/group/reset",
-        "/shop/items", "/shop/prizes", "/shop/reset",
-    ]
-    for r in required_routes:
-        assert r in raw_paths, f"缺少不带前缀的路由 {r}"
-        assert f"/{PLUGIN_NAME}{r}" in raw_paths, f"缺少带前缀的路由 {r}"
-
+    assert raw_paths, "一条路由都没注册"
     for path in raw_paths:
         assert path.startswith("/"), f"路由应以 / 开头: {path}"
-    print(f"WEB_ROUTES_OK ({len(raw_paths)} 条 = {len(required_routes)} × 两种形式)")
+    wildcard = [p for p in raw_paths if "<path:" in p]
+    assert wildcard, f"应当注册通配路由，实际 {raw_paths}"
+    print(f"WEB_ROUTES_OK ({len(raw_paths)} 条通配路由，按后缀识别端点)")
+
+    # 端点表与真实处理函数必须对得上——写错名字会在运行时才炸
+    from astrbot_plugin_panshi.pages_api import PanshiWebController
+    table = inst.web._endpoint_table()
+    for ep, (fname, methods) in table.items():
+        assert hasattr(PanshiWebController, fname), \
+            f"端点 {ep} 指向不存在的处理函数 {fname}"
+        assert methods, f"端点 {ep} 没有允许的方法"
+        assert methods <= {"GET", "POST", "DELETE", "PUT", "PATCH"}, (ep, methods)
+    print(f"WEB_ENDPOINTS_OK ({len(table)} 个端点都指向真实处理函数)")
+
+    # 后缀识别：真实 URL 的三种前缀层数都要能定位到同一个端点
+    class _PathReq:
+        def __init__(self, path):
+            self.path = path
+
+    cases = [
+        ("/api/v1/plugins/extensions/astrbot_plugin_panshi/astrbot_plugin_panshi/shop/items",
+         "shop/items"),
+        ("/api/v1/plugins/extensions/astrbot_plugin_panshi/shop/items", "shop/items"),
+        ("/plugins/extensions/shop/items", "shop/items"),
+        ("/x/y/astrbot_plugin_panshi/global", "global"),
+        ("/x/y/astrbot_plugin_panshi/shop/save-items", "shop/save-items"),
+        ("/x/y/astrbot_plugin_panshi/groups/refresh", "groups/refresh"),
+    ]
+    for url, want in cases:
+        got = inst.web._tail_of(_PathReq(url))
+        assert got == want, f"{url} 应当识别为 {want}，实际 {got}"
+    print("WEB_TAIL_MATCH_OK (URL 前缀层数不同也能定位到同一端点)")
 
     for route, _h, methods, _d in ctx.routes:
         print("   ", ",".join(methods).ljust(4), route)
