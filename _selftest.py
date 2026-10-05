@@ -375,6 +375,7 @@ def main():
 
     test_config_layer()
     test_group_cache()
+    test_group_role_and_evict()
     test_errors()
     test_role_precheck()
     test_guard_punish_reports_failure()
@@ -3193,6 +3194,74 @@ def test_config_layer():
     cfg.apply_payload({"guard": {"spam_count": 8}})
     assert cfg.get("guard", "spam_count") == 8
     print("VALIDATE_OK")
+
+
+def test_group_role_and_evict():
+    """群列表：补齐机器人身份 + 退群立刻摘除。
+
+    回归背景：
+      1. OneBot 的 ``get_group_list`` **不返回**机器人自己在群里的角色，
+         所以面板上"我在这个群是不是管理员"一直显示不出来——只能逐群问
+         ``get_group_member_info``；
+      2. 机器人退群后群缓存还会挂最多 60 秒，面板上留着一个已经不存在的群。
+    """
+    import asyncio
+
+    from astrbot_plugin_panshi.data import GroupInfoCache
+
+    calls = {"list": 0, "member": 0}
+
+    class _Client:
+        #: 让候选带上 self_id=99（查成员信息时要显式带账号）
+        _wsr_api_clients = {"99": object()}
+
+        async def call_action(self, action, **kw):
+            if action == "get_group_list":
+                calls["list"] += 1
+                return [
+                    {"group_id": 1, "group_name": "甲群", "member_count": 10},
+                    {"group_id": 2, "group_name": "乙群", "member_count": 20},
+                ]
+            if action == "get_group_member_info":
+                calls["member"] += 1
+                assert str(kw.get("user_id")) == "99", kw
+                role = {1: "owner", 2: "member"}.get(
+                    int(kw.get("group_id")), "member")
+                return {"status": "ok", "retcode": 0, "data": {"role": role}}
+            raise AssertionError(f"意外的接口 {action}")
+
+    class _Platform:
+        @staticmethod
+        def get_client():
+            return _Client()
+
+    class _PM:
+        def get_insts(self):
+            return [_Platform()]
+
+    class _C:
+        platform_manager = _PM()
+
+    cache = GroupInfoCache(_C())
+    groups = asyncio.run(cache.list_groups(force=True))
+    by_id = {g["group_id"]: g for g in groups}
+    assert by_id["1"]["bot_role"] == "owner", by_id["1"]
+    assert by_id["2"]["bot_role"] == "member", by_id["2"]
+    print("GROUP_ROLE_FILLED_OK "
+          f"(甲群={by_id['1']['bot_role']}，乙群={by_id['2']['bot_role']})")
+
+    # 身份有独立缓存：再刷群列表不该重复问成员信息
+    before = calls["member"]
+    asyncio.run(cache.list_groups(force=True))
+    assert calls["member"] == before, (before, calls["member"])
+    print("GROUP_ROLE_CACHED_OK (身份单独缓存，不跟着群列表反复查)")
+
+    # 机器人退群：立刻摘掉，且可重复调用
+    assert cache.evict("2") is True
+    assert [g["group_id"] for g in cache.snapshot()] == ["1"], cache.snapshot()
+    assert cache.evict("2") is False
+    assert cache.evict("") is False
+    print("GROUP_EVICT_OK (退群立即从缓存摘掉，重复调用安全)")
 
 
 def test_group_cache():

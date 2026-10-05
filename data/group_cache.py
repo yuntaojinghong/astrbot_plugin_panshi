@@ -32,6 +32,17 @@ DEFAULT_TTL = 60
 # 面板不能跟着卡死，这里用更短的兜底超时。
 CALL_TIMEOUT = 20
 
+# 「机器人在群里的身份」缓存时长（秒）。
+# 角色变化很慢，没必要跟着群列表（60s）一起刷；单独给个更长的有效期。
+ROLE_TTL = 300
+
+# 查机器人身份的单次超时（秒）。比拉群列表更短：它只是锦上添花的展示信息，
+# 查不到就显示「身份未知」，绝不能让它把面板拖慢。
+ROLE_TIMEOUT = 8
+
+# 查询机器人身份时的并发上限。群很多时一次性打几十个请求会把协议端压垮。
+ROLE_CONCURRENCY = 5
+
 # 连接状态常量（供面板渲染诊断信息）
 ST_CONNECTED = "connected"  # 至少一个账号的 API 通道可用
 ST_NO_ADAPTER = "no_adapter"  # 一个平台适配器都没有
@@ -69,6 +80,10 @@ class GroupInfoCache:
         self._groups: list[dict] = []
         self._updated_at: float = 0.0
         self._last_error: str = ""
+        #: 机器人在各群的身份缓存：{group_id: (role, ts)}
+        self._roles: dict[str, tuple[str, float]] = {}
+        #: 最近一次成功拉群列表用的机器人账号（查身份时要用同一个）
+        self._active_sid: str = ""
 
     # ---------- 对外接口 ----------
     @property
@@ -82,6 +97,29 @@ class GroupInfoCache:
     def invalidate(self) -> None:
         """强制下次调用时重新拉取。"""
         self._updated_at = 0.0
+
+    def evict(self, group_id: Any) -> bool:
+        """把某个群从缓存里摘掉（机器人退群 / 被踢时立即调用）。
+
+        为什么需要它：``get_group_list`` 返回的是"机器人所在的群"，
+        但缓存有 60 秒有效期——机器人刚退群时，面板在这个窗口里还会挂着
+        一个已经不在的群。退群通知到达时立刻摘掉，用户看到的就是实时的。
+
+        Returns:
+            是否真的摘掉了一个（没在缓存里返回 False）。
+        """
+        gid = str(group_id or "").strip()
+        if not gid:
+            return False
+        before = len(self._groups)
+        self._groups = [
+            g for g in self._groups if str(g.get("group_id")) != gid
+        ]
+        self._roles.pop(gid, None)
+        removed = len(self._groups) != before
+        if removed:
+            logger.info(f"[磐石] 群 {gid} 已移出群列表缓存（机器人已不在该群）")
+        return removed
 
     def snapshot(self) -> list[dict]:
         """返回当前缓存（不触发网络请求）。"""
@@ -126,6 +164,9 @@ class GroupInfoCache:
 
         if raw:
             groups = [self._normalize(g) for g in raw]
+            # 补齐"机器人在这个群是什么身份"。get_group_list 不返回这个字段，
+            # 只能逐群问 get_group_member_info（见 _fill_bot_roles）。
+            await self._fill_bot_roles(groups)
             groups.sort(key=lambda g: _num(g.get("member_count")), reverse=True)
             self._groups = groups
             self._updated_at = time.time()
@@ -134,6 +175,77 @@ class GroupInfoCache:
             self._updated_at = time.time()
 
         return self.snapshot()
+
+    async def _fill_bot_roles(self, groups: list[dict]) -> None:
+        """补齐机器人在每个群里的身份（owner / admin / member）。
+
+        为什么要单独查：OneBot 的 ``get_group_list`` **不返回**机器人自己在群里的
+        角色——只有 ``get_group_member_info`` 才有。所以"我在这个群是不是管理员"
+        这件事，只能逐群问一次。
+
+        代价控制（群多时必须考虑）：
+        * 角色变化很慢 → 每个群的结果缓存 ``ROLE_TTL`` 秒，不必每次刷新都问；
+        * 并发上限 + 短超时 → 不会把协议端压垮，也不会把面板拖死；
+        * 查不到就保持 ``unknown``，**绝不假报身份**：面板上写「管理员」而实际
+          动不了手，比什么都不写更糟。
+        """
+        sid = self._active_sid
+        if not sid or not groups:
+            return
+        clients = self.iter_clients()
+        if not clients:
+            return
+        client = clients[0][1]
+        now = time.time()
+
+        todo: list[dict] = []
+        for g in groups:
+            cached = self._roles.get(g.get("group_id", ""))
+            if cached and now - cached[1] < ROLE_TTL:
+                g["bot_role"] = cached[0]
+                continue
+            try:
+                int(g.get("group_id", ""))
+            except (TypeError, ValueError):
+                continue
+            todo.append(g)
+        if not todo:
+            return
+
+        sem = asyncio.Semaphore(ROLE_CONCURRENCY)
+
+        async def one(g: dict) -> None:
+            async with sem:
+                role = await self._query_role(client, g["group_id"], sid)
+            if role:
+                g["bot_role"] = role
+                self._roles[g["group_id"]] = (role, now)
+
+        await asyncio.gather(*(one(g) for g in todo))
+
+    async def _query_role(self, client: Any, group_id: str, sid: str) -> str:
+        """问一次「机器人在某群里是什么身份」；查不到返回空串。
+
+        先试 ``no_cache=True``（避免协议端把过期的角色缓存给你——刚被提成
+        管理员却显示"普通成员"就是这么来的），协议端不认这个参数就退回默认调用。
+        """
+        for kwargs in ({"no_cache": True}, {}):
+            try:
+                resp = await asyncio.wait_for(
+                    client.call_action(
+                        "get_group_member_info",
+                        group_id=int(group_id), user_id=int(sid), **kwargs),
+                    timeout=ROLE_TIMEOUT,
+                )
+            except Exception:
+                continue
+            data = resp.get("data") if isinstance(resp, dict) else None
+            data = data if isinstance(data, dict) else resp
+            if isinstance(data, dict):
+                role = str(data.get("role") or "").strip().lower()
+                if role in ("owner", "admin", "member"):
+                    return role
+        return ""
 
     def connection_status(self) -> dict:
         """诊断当前与协议端（NapCat / OneBot v11）的连接状态。
@@ -315,12 +427,22 @@ class GroupInfoCache:
 
             groups = _extract_list(resp)
             if groups is not None:
+                # 记住是哪个账号拉到的，查"我在这个群的身份"要用同一个账号
+                self._active_sid = str(sid or "") or self._guess_self_id()
                 return groups, ""
             last_err = last_err or "协议端返回了无法识别的数据"
 
         if not last_err:
             last_err = "未能从协议端获取群列表"
         return [], last_err
+
+    def _guess_self_id(self) -> str:
+        """猜一下机器人账号：取第一个已建立 API 通道的 self_id。"""
+        try:
+            ids = self._probe().get("self_ids") or []
+        except Exception:
+            ids = []
+        return str(ids[0]) if ids else ""
 
     def _iter_platforms(self) -> list[Any]:
         """枚举所有平台实例。

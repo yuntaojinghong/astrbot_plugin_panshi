@@ -728,7 +728,6 @@ function renderGroups() {
   const list = $("#groupList");
   list.innerHTML = "";
   const defaultId = state.meta.default_group_id || "__default__";
-
   const countEl = $("#groupCount");
   if (countEl) {
     countEl.textContent = state.groups.length
@@ -765,27 +764,66 @@ function renderGroups() {
   }
 
   for (const g of items) {
+    const tags = [];
+    const rt = roleTag(g.bot_role);
+    if (rt) tags.push(rt);
+    if (!g.enabled) tags.push({ text: "未启用", cls: "tag-off" });
+    else if (g.has_override) tags.push({ text: "独立配置", cls: "tag-custom" });
     list.appendChild(
       groupItem({
         group_id: g.group_id,
         group_name: g.group_name,
         sub: `${g.group_id} · ${g.member_count} 人`,
-        tags: g.enabled
-          ? g.has_override
-            ? [{ text: "独立配置", cls: "tag-custom" }]
-            : []
-          : [{ text: "未启用", cls: "tag-off" }],
+        tags,
         active: state.selected && state.selected.group_id === g.group_id,
       })
     );
   }
 }
 
+/**
+ * 机器人在本群的身份徽章。
+ *
+ * 为什么要显示它：机器人不是管理员时，插件照样能"看"（检测、记警告、扣分），
+ * 但所有"动手"的操作（禁言、撤回、踢人、全体禁言、群公告）都会失败。
+ * 以前面板上完全没有这个信息，用户只能靠"点了没反应"去猜。
+ *
+ * 普通成员那档特意用警示色：那是最需要用户立刻知道的状态。
+ */
+const ROLE_TAGS = {
+  owner: { text: "群主", cls: "tag-role-owner", title: "机器人是本群群主" },
+  admin: { text: "管理员", cls: "tag-role-admin", title: "机器人是本群管理员，禁言/撤回/踢人等操作可用" },
+  member: {
+    text: "普通成员",
+    cls: "tag-role-member",
+    title: "机器人只是普通成员：禁言 / 撤回 / 踢人 / 全体禁言 / 群公告都会失败。建议把它设为管理员。",
+  },
+  unknown: {
+    text: "身份未知",
+    cls: "tag-role-unknown",
+    title: "还没查到机器人在本群的身份。点上方「同步」重试；若一直未知，说明协议端拿不到成员信息。",
+  },
+};
+
+function roleTag(role) {
+  return ROLE_TAGS[role] || ROLE_TAGS.unknown;
+}
+
+/** 面板正文标题里那句「我是 XXX」——选中某个群时一眼看清自己的身份。 */
+function roleHint(role) {
+  if (role === "owner") return " · 我是群主";
+  if (role === "admin") return " · 我是管理员";
+  if (role === "member") return " · 我只是普通成员（禁言/撤回/踢人会失败）";
+  return " · 我的身份未知";
+}
+
 function groupItem({ group_id, group_name, sub, tags = [], isDefault, active }) {
   const subNode = el("span", { class: "group-sub" });
   subNode.appendChild(document.createTextNode(sub || ""));
   for (const t of tags) {
-    subNode.appendChild(el("span", { class: `tag ${t.cls}`, text: t.text }));
+    subNode.appendChild(
+      el("span", { class: `tag ${t.cls}`, text: t.text, title: t.title || "" })
+    );
   }
 
   return el(
@@ -869,7 +907,8 @@ function renderContent() {
         class: "panel-sub",
         text: sel.is_default
           ? "这里的设置会作为所有群的默认模板"
-          : `群号 ${sel.group_id}${sel.member_count ? ` · ${sel.member_count} 人` : ""}`,
+          : `群号 ${sel.group_id}${sel.member_count ? ` · ${sel.member_count} 人` : ""}`
+            + roleHint(sel.bot_role),
       }),
     ]),
   ]);

@@ -70,7 +70,10 @@ const resp = {
   bootstrap: {
     schema: [],
     groups: [
-      { group_id: "123456", group_name: "示例群", member_count: 128, enabled: true, has_override: false },
+      { group_id: "123456", group_name: "示例群", member_count: 128, enabled: true,
+        has_override: false, bot_role: "admin" },
+      { group_id: "654321", group_name: "普通群", member_count: 20, enabled: true,
+        has_override: false, bot_role: "member" },
     ],
     global: { config: { basic: {} } },
     meta: { default_group_id: "__default__", plugin_name: "astrbot_plugin_panshi" },
@@ -133,6 +136,26 @@ window.AstrBotPluginPage = {
       !!fallback && fallback.textContent === "示",
       fallback ? fallback.textContent : "(无回退)");
   }
+
+  // ---- 2.5 机器人在群里的身份徽章 ----
+  //
+  // 回归背景：机器人不是管理员时，插件照样能"看"（检测/记警告/扣分），
+  // 但所有"动手"的操作都会失败。面板以前完全不显示身份，用户只能靠
+  // "点了没反应"去猜。所以这几条要一直守着。
+  const lis = [...(list ? list.children : [])];
+  const adminLi = lis.find((li) => li.textContent.includes("示例群"));
+  const memberLi = lis.find((li) => li.textContent.includes("普通群"));
+  const adminTag = adminLi ? adminLi.querySelector(".tag-role-admin") : null;
+  const memberTag = memberLi ? memberLi.querySelector(".tag-role-member") : null;
+  assert("管理员群显示「管理员」徽章",
+    !!adminTag && adminTag.textContent === "管理员",
+    adminLi ? adminLi.textContent : "(没找到这个群)");
+  assert("普通成员群显示「普通成员」徽章",
+    !!memberTag && memberTag.textContent === "普通成员",
+    memberLi ? memberLi.textContent : "(没找到这个群)");
+  assert("普通成员徽章带「会失败」的说明（鼠标悬停可见）",
+    !!memberTag && /会失败/.test(memberTag.getAttribute("title") || ""),
+    memberTag ? memberTag.getAttribute("title") : "(无 title)");
 
   // ---- 3. 品牌图标 ----
   //

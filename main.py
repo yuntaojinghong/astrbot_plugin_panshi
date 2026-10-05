@@ -649,6 +649,18 @@ class PanshiPlugin(Star):
                         logger.info("[磐石] 入群欢迎未产生内容（可能已关闭欢迎且未启用验证）")
                 elif notice_type == "group_decrease":
                     user_id = str(raw.get("user_id", ""))
+                    sub_type = str(raw.get("sub_type", "") or "")
+                    me = str(safe_int(self.normal.safe_self_id(event)) or "")
+                    # 机器人自己退群 / 被踢：**立刻**把它从群列表缓存里摘掉。
+                    #
+                    # 不处理的话，面板上会一直挂着一个"机器人已经不在的群"——
+                    # 缓存有效期是 60 秒，用户在这个窗口里看到的就是错的；
+                    # 而且群多时刷新一次要等很久，更容易被当成 bug。
+                    # 这里只动缓存，不碰任何配置与数据。
+                    if (me and user_id == me) or sub_type == "kick_me":
+                        self.group_cache.evict(group_id)
+                        logger.info(f"[磐石] 机器人已离开群 {group_id}（{sub_type or 'leave'}）")
+                        return
                     result = await self.welcome.on_member_decrease(event, user_id)
                     if result:
                         yield event.plain_result(result)

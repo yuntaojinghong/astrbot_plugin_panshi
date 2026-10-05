@@ -918,6 +918,29 @@ img.logo-img {
   background: var(--accent-soft);
   color: var(--accent);
 }
+
+/* ---------- 机器人在群里的身份 ----------
+   群主/管理员用中性或正面色（正常状态，不需要提醒）；
+   普通成员用警示色 —— 那是最需要用户立刻知道、去处理的档位。 */
+.tag-role-owner {
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+}
+.tag-role-admin {
+  background: var(--ok-soft);
+  color: var(--ok);
+}
+.tag-role-member {
+  background: var(--warn-soft);
+  color: var(--warn);
+  font-weight: 600;
+}
+.tag-role-unknown {
+  background: var(--bg-soft);
+  color: var(--fg-3);
+  border: 1px dashed var(--border-strong);
+}
 .group-empty {
   padding: 26px 14px;
   font-size: 12.5px;

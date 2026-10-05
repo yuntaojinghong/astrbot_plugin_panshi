@@ -17,7 +17,7 @@ FOLLOW_DEFAULT_KEY = "follow_default"
 PLUGIN_NAME = "astrbot_plugin_panshi"
 
 # 与 metadata.yaml 保持一致的插件版本（读取失败时的兜底值）
-FALLBACK_VERSION = "v1.12.0"
+FALLBACK_VERSION = "v1.13.0"
 
 # 按群可覆盖的配置分组（与 _conf_schema.json 的分组保持一致）
 OVERRIDABLE_GROUPS = [
@@ -329,6 +329,9 @@ class PageService:
             "group_id": gid,
             "group_name": (info or {}).get("group_name", f"群 {gid}"),
             "member_count": (info or {}).get("member_count", 0),
+            # 机器人在本群的身份（群主/管理员/普通成员/未知）。
+            # 面板要把它显示出来——不然用户只能靠"点了没反应"才发现机器人不是管理员。
+            "bot_role": (info or {}).get("bot_role", "unknown"),
             "is_default": False,
             "follow_default": follow,
             "override": override,
