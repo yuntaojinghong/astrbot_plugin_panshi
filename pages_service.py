@@ -17,7 +17,7 @@ FOLLOW_DEFAULT_KEY = "follow_default"
 PLUGIN_NAME = "astrbot_plugin_panshi"
 
 # 与 metadata.yaml 保持一致的插件版本（读取失败时的兜底值）
-FALLBACK_VERSION = "v1.15.0"
+FALLBACK_VERSION = "v1.16.0"
 
 # 按群可覆盖的配置分组（与 _conf_schema.json 的分组保持一致）
 OVERRIDABLE_GROUPS = [
@@ -26,6 +26,8 @@ OVERRIDABLE_GROUPS = [
     "warning",
     "smart",
     "activity",
+    "game",
+    "contract",
     "automate",
     "interact",
     "basic",
@@ -61,7 +63,14 @@ OVERRIDABLE_FIELDS = {
         "chat_points_min_len",
         "chat_first_bonus",
         "newbie_bonus",
+        # 负积分踢人阈值：天然与群相关（严一点的群设严一点）。
+        # 允许按群覆盖后要确认**没有**第二处硬编码假设它是全局的。
+        "negative_kick_at",
     },
+    # game（小游戏）与 contract（卖身契）整组放行：里面每个字段都是
+    # "这个群玩不玩、玩多大"的问题，没有插件级全局项。
+    # 三公五的每日净亏账本本来就按群记（_lost[(group_id, uid)]），
+    # 所以按群开启不同限额不会互相干扰。
 }
 
 

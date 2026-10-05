@@ -46,10 +46,18 @@ function bridge() {
 function apiGet(endpoint, params) {
   const b = bridge();
   if (!b) throw new Error("未检测到页面通信接口，请从「插件管理」里打开本插件页面。");
-  const qs = new URLSearchParams(
-    Object.entries(params || {}).filter(([, v]) => v !== undefined && v !== null)
-  ).toString();
-  return b.apiGet(endpoint + (qs ? "?" + qs : ""));
+  // 参数必须走 bridge 的第二个形参，**不能**自己拼成 "endpoint?a=b"。
+  //
+  // 官方文档明确要求：endpoint 不能包含 query。新版 bridge 会直接拒绝
+  // 带 "?" 的端点，抛 "Plugin bridge endpoint is invalid"——而这正是
+  // 订单页整页读不出数据的原因（线上截图）。bridge 会替我们把 params
+  // 正确编码成查询串，后端 request.query 照常能读到。
+  const clean = {};
+  for (const [k, v] of Object.entries(params || {})) {
+    if (v === undefined || v === null || v === "") continue;
+    clean[k] = v;
+  }
+  return b.apiGet(endpoint, clean);
 }
 
 function apiPost(endpoint, body) {

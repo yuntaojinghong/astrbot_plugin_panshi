@@ -31,6 +31,8 @@ from .core import (
     LocalIntentParser,
     NormalHandle,
     PanelHandle,
+    SanguanwuHandle,
+    ContractHandle,
     WarningHandle,
     WelcomeHandle,
     DefenseState,
@@ -95,6 +97,16 @@ class PanshiPlugin(Star):
         self.interact = InteractHandle(self.cfg, self.db)
         # 群内小游戏（猜数字 / 摇骰子 / 猜拳 / 可选押注）
         self.games = GamesHandle(self.cfg, self.db)
+        # 三公五（机器人坐庄的积分牌局）
+        self.sanguanwu = SanguanwuHandle(self.cfg, self.db)
+        # 卖身契（输光后的身份玩法，纯娱乐）
+        self.contract = ContractHandle(self.cfg, self.db)
+        # 卖身契要能把人卖给"三公五最近赢家"，需要一个后门引用。
+        # 用 setattr 而不是构造参数：两个模块彼此不该互相 import（会成环）。
+        self.contract._sanguanwu = self.sanguanwu
+        # 积分分成钩子：加分时自动给契约主人抽成。
+        # 挂在存储层而不是各个加分点，才能保证"签到/发言/买商品"行为一致。
+        self.db._points_tribute_hook = self.contract.tribute
         # 面板 / 自检 / 配置向导
         self.panel = PanelHandle(self.cfg, self.db)
 
@@ -1196,6 +1208,85 @@ class PanshiPlugin(Star):
         if result:
             yield event.plain_result(result)
 
+    # ========== 指令：三公五 ==========
+    #
+    # 机器人坐庄发牌，赢家在**闲家之间**通吃，机器人不抽水。
+    # 默认关闭（游戏 → 启用三公五），有单局封顶与每日净亏上限。
+    @filter.command("三公五", alias={"三公", "sanguanwu"})
+    async def cmd_sanguanwu(self, event: AstrMessageEvent, arg: str = ""):
+        """三公五：/三公五 [入座 N|看牌|不要|状态|散桌|帮助]"""
+        gid = get_group_id(event)
+        cfg = self.cfg.for_group(gid).game
+        text = arg.strip()
+
+        # 收桌与状态不限管理员（桌是自己开的，谁都能催）
+        if text in ("状态", "情况", "status"):
+            yield event.plain_result(await self.sanguanwu.status(event))
+            return
+        if text in ("帮助", "玩法", "help", "?"):
+            yield event.plain_result(await self.sanguanwu.help())
+            return
+        if text in ("散桌", "收桌", "结束"):
+            yield event.plain_result(await self.sanguanwu.close_table(event))
+            return
+
+        m = re.match(r"^(?:入座|坐|上|join)\s*(\d+)?$", text)
+        if m:
+            amount = int(m.group(1) or 0)
+            cfg_entry = int(cfg.get("sanguanwu_entry", 10) or 10)
+            yield event.plain_result(
+                await self.sanguanwu.sit(event, amount or cfg_entry, cfg))
+            return
+
+        if text in ("看牌", "看", "peek"):
+            yield event.plain_result(await self.sanguanwu.look(event, cfg))
+            return
+        if text in ("不要", "弃牌", "fold", "放弃"):
+            yield event.plain_result(await self.sanguanwu.fold(event, cfg))
+            return
+
+        # 其余（含空参数）都是开桌
+        if text and not re.match(r"^\d+$", text):
+            yield event.plain_result(await self.sanguanwu.help())
+            return
+        yield event.plain_result(await self.sanguanwu.open_table(event, cfg))
+
+    # ========== 指令：卖身契（纯娱乐） ==========
+    @filter.command("卖身契", alias={"签约", "卖身"})
+    async def cmd_sign_contract(self, event: AstrMessageEvent, arg: str = ""):
+        """签卖身契：/卖身契 [主人QQ或@某人]"""
+        target = ""
+        text = arg.strip()
+        if text:
+            parsed = parse_target(event, text)
+            target = str(parsed[0]) if isinstance(parsed, tuple) else str(parsed)
+        yield event.plain_result(await self.contract.sign(event, target))
+
+    @filter.command("赎回", alias={"解除卖身契", "解约"})
+    async def cmd_redeem(self, event: AstrMessageEvent, arg: str = ""):
+        """赎回奴隶：/赎回 @某人（主人或超管可用）"""
+        target = ""
+        text = arg.strip()
+        if text:
+            parsed = parse_target(event, text)
+            target = str(parsed[0]) if isinstance(parsed, tuple) else str(parsed)
+        yield event.plain_result(await self.contract.redeem(event, target))
+
+    @filter.command("我的卖身契", alias={"卖身契状态", "查卖身契"})
+    async def cmd_my_contract(self, event: AstrMessageEvent, arg: str = ""):
+        """查看卖身契：/我的卖身契 [@某人]"""
+        target = ""
+        text = arg.strip()
+        if text:
+            parsed = parse_target(event, text)
+            target = str(parsed[0]) if isinstance(parsed, tuple) else str(parsed)
+        yield event.plain_result(await self.contract.my_status(event, target))
+
+    @filter.command("卖身契榜单", alias={"卖身契列表"})
+    async def cmd_contract_list(self, event: AstrMessageEvent):
+        """本群生效中的卖身契：/卖身契榜单"""
+        yield event.plain_result(await self.contract.list_contracts(event))
+
     # ========== 指令：宵禁 ==========
     @filter.command("宵禁", alias={"夜间禁言"})
     async def cmd_curfew(self, event: AstrMessageEvent, arg: str = ""):
@@ -1611,6 +1702,18 @@ class PanshiPlugin(Star):
             return await self.interact.self_query(event, "全部")
         if action == "help":
             return HELP_TEXT
+        # 赌博 / 卖身契：默认关闭，开关在「小游戏」「卖身契」里。
+        # 这里不做任何静默——没开就如实告诉用户去哪儿开。
+        if action == "sanguanwu":
+            gid = get_group_id(event)
+            cfg = self.cfg.for_group(gid).game
+            if not bool(cfg.get("sanguanwu_enable", False)):
+                return "🃏 三公五没开启。管理员可在「小游戏 → 启用三公五」里打开。"
+            return await self.sanguanwu.open_table(event, cfg)
+        if action == "contract":
+            return await self.contract.sign(event)
+        if action == "my_contract":
+            return await self.contract.my_status(event)
         return ""
 
     def _split_target_duration(self, event, arg: str) -> tuple[str | None, str]:
@@ -1731,6 +1834,27 @@ HELP_TEXT = """🪨 磐石 · 智能群管
  「猜拳石头/剪刀/布」— 和机器人猜拳
  「押注 10」        — 与机器人比骰子大小（默认关闭，可在「小游戏」里开）
 猜数字有开局冷却与每日发奖上限；押注有单次与每日净输上限。
+
+【三公五】（默认关闭，需管理员在「小游戏」里打开）
+/三公五            — 我坐庄开一桌
+/三公五 入座 50    — 坐下并下注（机器人只发牌算牌，不抽水）
+/三公五 看牌       — 私聊看自己的牌并确认保留
+/三公五 不要       — 弃牌（已下注不退）
+/三公五 状态|散桌  — 看桌况 / 强制收桌
+牌型：豹子 > 顺子 > 对子 > 散牌，同型比点数（QKA 算顺子）。
+有单局封顶与每日净亏上限，不会一局清空。
+
+【卖身契】（纯娱乐玩笑，不涉及任何现实约束）
+/卖身契 [主人]    — 积分见底时可签，卖给三公五赢家（不写就卖积分最多的人）
+/我的卖身契       — 查看当前契约与剩余时间
+/赎回 @某人       — 主人或超管提前解除
+/卖身契榜单       — 本群生效中的契约（趣味看）
+签契约会拿到一笔「卖身钱」；契约期内获得的积分按比例分给主人，
+到期自动解除。输了不至于彻底玩不下去。
+
+【积分惩罚】
+风控扣分默认不会扣成负数；把「群积分 → 负积分踢人阈值」设成负数
+（如 -100），就变成「扣到 -100 分自动移出群」。
 
 【管理面板】
 /面板        — 一屏总览本群已开启能力与参数

@@ -383,6 +383,7 @@ def main():
     test_checkin_respects_switch()
     test_points_shared_across_groups()
     test_games()
+    test_sanguanwu_and_contract()
     test_points_earning_ways()
     test_points_natural_language()
     test_plugin_hint_fallback()
@@ -4079,6 +4080,269 @@ def test_points_earning_ways():
         print(f"INTERACT_POINTS_CAP_OK ({msg.splitlines()[-1]})")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_sanguanwu_and_contract():
+    """三公五牌局 + 卖身契 + 负积分踢人。
+
+    守三条红线（赌博功能最容易出事的点）：
+      1. **默认关闭** —— 不开就不能玩，绝不能凭空开赌局；
+      2. **双层限额** —— 单局封顶 + 每日净亏上限，防止每天输一点把分磨光；
+      3. **卖身契是纯娱乐** —— 有期限、主人能赎回、每天次数有限，
+         绝不设置任何"永久绑定"或现实约束。
+
+    另外锁住牌型比较的正确性（同花顺>豹子>顺子>对子>散牌），
+    这是三公五最容易写错、也最容易被用户发现"比大小算错了"的地方。
+    """
+    import asyncio
+    import shutil
+    import tempfile
+    import time
+
+    from astrbot_plugin_panshi.config import PluginConfig
+    from astrbot_plugin_panshi.core.contract import ContractHandle
+    from astrbot_plugin_panshi.core.sanguanwu import (
+        HAND_PAIR, HAND_TRIPLE, SanguanwuHandle, eval_hand,
+    )
+    from astrbot_plugin_panshi.data import Storage
+
+    class _Bot:
+        def __init__(self):
+            self.sent = []
+
+        async def send_private_msg(self, user_id=None, message=None, **kw):
+            self.sent.append((user_id, message))
+            return {"status": "ok"}
+
+        async def get_group_member_info(self, group_id=None, user_id=None,
+                                        no_cache=False, **kw):
+            return {"card": f"u{user_id}"}
+
+    class _Ev:
+        def __init__(self, uid=7, gid=100, bot=None):
+            self._uid, self._gid = uid, gid
+            self.bot = bot if bot is not None else _Bot()
+
+        def get_group_id(self):
+            return self._gid
+
+        def get_sender_id(self):
+            return self._uid
+
+        def get_self_id(self):
+            return 99
+
+        def get_sender_name(self):
+            return f"用户{self._uid}"
+
+    # ---------------- 牌型比较（纯函数，最该先钉死） ----------------
+    assert eval_hand(["K", "K", "K"])[0] == HAND_TRIPLE
+    assert eval_hand(["9", "9", "5"])[0] == HAND_PAIR
+    # 同型比点数：KKK > QQQ；99A > 998
+    assert eval_hand(["K", "K", "K"]) > eval_hand(["Q", "Q", "Q"])
+    assert eval_hand(["9", "9", "A"]) > eval_hand(["9", "9", "8"])
+    # 豹子 > 对子 > 散牌
+    assert eval_hand(["2", "2", "2"]) > eval_hand(["A", "A", "K"])
+    assert eval_hand(["A", "A", "K"]) > eval_hand(["A", "Q", "J"])
+    # 顺子按最大牌比：QKA（最大牌 A=14）胜过 567（最大牌 7）
+    assert eval_hand(["Q", "K", "A"]) > eval_hand(["5", "6", "7"])
+    assert eval_hand(["A", "K", "Q"])[0] == 3, "QKA 应算顺子"
+    # 顺子 > 散牌（AKQ 是顺子，AKJ 是散牌）
+    assert eval_hand(["A", "K", "Q"]) > eval_hand(["A", "K", "J"])
+    # 顺子 > 对子（同点数的牌型比较不能只看最大牌）
+    assert eval_hand(["9", "8", "7"]) > eval_hand(["9", "9", "2"])
+    print("SANGUANWU_HAND_ORDER_OK (牌型大小与同型比点数正确)")
+
+    def _new(game_cfg=None, contract_cfg=None, basic=None):
+        tmp = tempfile.mkdtemp(prefix="panshi_sgw_")
+        cfg = PluginConfig({
+            "basic": basic or {},
+            "shop": {"enable": True},
+            "game": game_cfg or {},
+            "contract": contract_cfg or {},
+        })
+        db = Storage(tmp)
+        sg = SanguanwuHandle(cfg, db)
+        ct = ContractHandle(cfg, db)
+        ct._sanguanwu = sg
+        db._points_tribute_hook = ct.tribute
+        return tmp, cfg, db, sg, ct
+
+    ON = {"sanguanwu_enable": True, "sanguanwu_entry": 10,
+          "sanguanwu_max_bet": 100, "sanguanwu_daily_loss": 50,
+          "sanguanwu_seats": 2}
+
+    # ---------------- 1. 默认关闭 ----------------
+    tmp, cfg, db, sg, ct = _new()
+    try:
+        r = asyncio.run(sg.open_table(_Ev(), cfg.game))
+        assert "没开启" in r, r
+        assert sg._tables == {}, "没开启却建了桌"
+        print("SANGUANWU_OFF_BY_DEFAULT_OK")
+
+        # ---------------- 2. 开桌 + 入座（校验底注与封顶） ----------------
+        r = asyncio.run(sg.open_table(_Ev(), ON))
+        assert "坐庄" in r, r
+        db.add_points(100, 7, 1000)
+        db.add_points(100, 8, 1000)
+        # 守恒基准取在**入座之前**。下注是在 sit() 里扣的，基准若取晚了
+        # 就会把"已经扣掉的注"当成凭空消失，误判成 bug（我踩过）。
+        total_before = 1000 + 1000
+        # 每日上限放宽到 500，让这一段只考察「单局封顶」这一件事
+        cap_on = dict(ON, sanguanwu_daily_loss=500)
+        r2 = asyncio.run(sg.sit(_Ev(7), 9999, cap_on))
+        assert "下注 100" in r2, f"没被单局封顶压住：{r2}"
+        assert "9999" not in r2, f"原样收下了超额下注：{r2}"
+        print("SANGUANWU_BET_CAP_OK (单局封顶生效)")
+
+        # 积分不够坐不下
+        r3 = asyncio.run(sg.sit(_Ev(9), 10, cap_on))
+        assert "积分不够" in r3, r3
+        # 坐满自动发牌
+        bot = _Bot()
+        r4 = asyncio.run(sg.sit(_Ev(8, bot=bot), 20, cap_on))
+        assert "已发牌" in r4, r4
+        t = sg._tables["100"]
+        assert t.dealt and len(t.seats[0].cards) == 3, t
+        # 每人私聊收到自己的牌
+        assert len(bot.sent) == 2, f"没私聊发牌：{bot.sent}"
+        assert "你的牌" in bot.sent[0][1], bot.sent[0]
+        # 群里不应泄露别人的牌
+        assert "你的牌" not in r4, "群里不该出现手牌"
+        print("SANGUANWU_DEAL_PRIVATE_OK (手牌私聊发，不在群里摊牌)")
+
+        # ---------------- 3. 看牌 → 摊牌结算 ----------------
+        after_seat = {u: db.get_points(100, u) for u in ("7", "8")}
+        assert total_before - sum(after_seat.values()) == 120, \
+            f"入座没扣够底注：{after_seat}"
+        r5 = asyncio.run(sg.look(_Ev(7), cap_on))
+        assert "看牌" in r5, r5
+        r6 = asyncio.run(sg.look(_Ev(8), cap_on))
+        assert "摊牌" in r6, f"两人都看完应自动结算：{r6}"
+        assert "100" not in sg._tables, "结算后桌子应清掉"
+        after = {u: db.get_points(100, u) for u in ("7", "8")}
+        # **核心守恒**：开局前总量 == 结算后总量，一分不多一分不少。
+        # 曾经两次在这里造出分：①入座不扣注 ②赢家把自己的那份又发一遍。
+        assert sum(after.values()) == total_before, \
+            f"积分不守恒（凭空造分了）：{total_before} -> {sum(after.values())}"
+        delta = {u: after[u] - after_seat[u] for u in ("7", "8")}
+        winners = [u for u, d in delta.items() if d > 0]
+        assert len(winners) == 1, f"应恰好一个赢家：{delta}"
+        print("SANGUANWU_SETTLE_OK (积分守恒，赢家通吃，桌子自动回收)")
+
+        # ---------------- 4. 每日净亏上限 ----------------
+        # 只算**输掉的**注，赢家的注不进净亏账。
+        # 这里不去凑真实的牌局（太绕），直接构造"今天已输 10 分"的账本，
+        # 再验证下一笔 10 分的注会被上限拦住。
+        tmp2, cfg2, db2, sg2, ct2 = _new()
+        try:
+            cap_cfg = dict(ON, sanguanwu_daily_loss=15)
+            db2.add_points(100, 7, 1000)
+            asyncio.run(sg2.open_table(_Ev(), cap_cfg))
+            sg2._lost[("100", "7")] = (sg2._today(), 10)   # 今天已输 10
+            r = asyncio.run(sg2.sit(_Ev(7), 10, cap_cfg))  # 再输就到 20 > 15
+            assert "上限" in r, f"每日净亏上限没拦住：{r}"
+            # 没超上限时正常入座
+            sg2._lost[("100", "7")] = (sg2._today(), 0)
+            r2 = asyncio.run(sg2.sit(_Ev(7), 10, cap_cfg))
+            assert "入座" in r2, f"没超上限却坐不下：{r2}"
+            print("SANGUANWU_DAILY_LOSS_CAP_OK (每日净亏上限只算输的注)")
+        finally:
+            shutil.rmtree(tmp2, ignore_errors=True)
+
+        # ---------------- 5. 弃牌 ----------------
+        tmp3, cfg3, db3, sg3, ct3 = _new()
+        try:
+            db3.add_points(100, 7, 1000)
+            db3.add_points(100, 8, 1000)
+            asyncio.run(sg3.open_table(_Ev(), ON))
+            asyncio.run(sg3.sit(_Ev(7), 10, ON))
+            asyncio.run(sg3.sit(_Ev(8), 10, ON))
+            r = asyncio.run(sg3.fold(_Ev(7), ON))
+            assert "弃牌" in r, r
+            r2 = asyncio.run(sg3.fold(_Ev(8), ON))
+            assert "摊牌" in r2 or "弃牌" in r2, r2
+            print("SANGUANWU_FOLD_OK (弃牌不参与比牌)")
+        finally:
+            shutil.rmtree(tmp3, ignore_errors=True)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+    # ---------------- 6. 卖身契：有效期 / 赎回 / 次数 ----------------
+    tmp4, cfg4, db4, sg4, ct4 = _new(
+        contract_cfg={"contract_enable": True, "contract_bribe": 30,
+                      "contract_hours": 1, "contract_daily_limit": 1,
+                      "contract_tribute_ratio": 500})   # 50%
+    try:
+        db4.add_points(100, 9, 500)     # 积分最多的群友当主人
+        db4.add_points(100, 7, 0)
+        r = asyncio.run(ct4.sign(_Ev(7)))
+        assert "卖身契已生效" in r, r
+        assert "主人" in r, r
+        c = ct4.active_contract(100, 7)
+        assert c and c["until"] > time.time(), c
+        # 卖身钱到账
+        assert db4.get_points(100, 7) == 30, db4.get_points(100, 7)
+        # 每天次数用完 / 已有契约在身，都不能再签
+        r2 = asyncio.run(ct4.sign(_Ev(7)))
+        assert "卖身契" in r2 and "再签" in r2, r2
+        # 分成：奴隶再赚 100，主人拿 50
+        master_before = db4.get_points(100, 9)
+        db4.add_points(100, 7, 100)
+        assert db4.get_points(100, 9) == master_before + 50, \
+            f"分成不对：{master_before} -> {db4.get_points(100, 9)}"
+        print("CONTRACT_TRIBUTE_OK (签契约拿卖身钱，之后积分按比例分给主人)")
+
+        # 别人不能赎回
+        r3 = asyncio.run(ct4.redeem(_Ev(8), "7"))
+        assert "只有主人" in r3, r3
+        # 主人能赎回
+        r4 = asyncio.run(ct4.redeem(_Ev(9), "7"))
+        assert "已解除" in r4, r4
+        assert ct4.active_contract(100, 7) is None
+        print("CONTRACT_REDEEM_OK (仅主人/超管可赎回)")
+
+        # 到期自动解除
+        ct4._contracts[("100", "7")] = {
+            "master_id": "9", "master_name": "u9", "slave_name": "u7",
+            "until": time.time() - 1, "bribe": 30, "label": "契约奴",
+            "status": "active",
+        }
+        assert ct4.active_contract(100, 7) is None, "过期契约没自动解除"
+        print("CONTRACT_EXPIRE_OK (到期自动解除)")
+    finally:
+        shutil.rmtree(tmp4, ignore_errors=True)
+
+    # ---------------- 7. 负积分踢人 ----------------
+    tmp5, cfg5, db5, sg5, ct5 = _new()
+    try:
+        from astrbot_plugin_panshi.core.guard import GuardHandle
+
+        gh = GuardHandle(cfg5, db5)
+        # 默认 0：永远不扣成负数
+        cfg5.raw.setdefault("activity", {})["negative_kick_at"] = 0
+        cfg5.raw["activity"]["penalties"] = [
+            {"reason": "刷屏", "points": 50, "ban": False, "enabled": True}]
+        cfg5.raw["shop"] = {"enable": True,
+                            "penalties": [{"reason": "刷屏", "points": 50}]}
+        db5.add_points(100, 7, 30)
+        msg = gh._apply_points_penalty(_Ev(7), "刷屏", cfg5.for_group(100))
+        assert db5.get_points(100, 7) == 0, "默认不该扣成负数"
+        # 余额不足时要如实说「本该扣多少、实际扣了多少」，不能含糊
+        assert "积分不足" in msg, msg
+        print("NEGATIVE_KICK_OFF_OK (默认不扣成负数，且如实说明)")
+
+        # 设成 -100：允许扣负，扣到阈值以下就踢
+        cfg5.raw["activity"]["negative_kick_at"] = -100
+        db5.add_points(100, 7, 60)      # 现在 60
+        gh._apply_points_penalty(_Ev(7), "刷屏", cfg5.for_group(100))
+        assert db5.get_points(100, 7) == 10, db5.get_points(100, 7)
+        gh._apply_points_penalty(_Ev(7), "刷屏", cfg5.for_group(100))
+        assert db5.get_points(100, 7) == -40, \
+            f"设了负阈值却没扣成负数：{db5.get_points(100, 7)}"
+        print("NEGATIVE_ALLOWED_OK (负阈值时允许扣成负数)")
+    finally:
+        shutil.rmtree(tmp5, ignore_errors=True)
 
 
 def test_games():

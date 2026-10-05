@@ -81,15 +81,29 @@ let settings = {
 const calls = [];
 
 window.AstrBotPluginPage = {
-  apiGet: async (endpoint) => {
-    calls.push(["GET", endpoint]);
-    const ep = String(endpoint).split("?")[0].toLowerCase();
+  apiGet: async (endpoint, params) => {
+    calls.push(["GET", endpoint, params]);
+    // 严格按官方 bridge 规则校验：endpoint 里带 query 一律拒绝。
+    // 这条校验是回归测试的核心——曾经前端把参数手工拼成
+    // "shop/orders?status=pending"，bridge 直接抛
+    // 「Plugin bridge endpoint is invalid」，订单页整页读不出数据。
+    if (/[?#\\]/.test(String(endpoint))) {
+      throw new Error("Plugin bridge endpoint is invalid");
+    }
+    if (!String(endpoint) || /^[a-z][a-z0-9+.-]*:/i.test(String(endpoint))) {
+      throw new Error("Plugin bridge endpoint is invalid");
+    }
+    const q = params || {};
+    const ep = String(endpoint).replace(/^\/+/, "").toLowerCase();
     if (ep.endsWith("shop/items")) return { items: JSON.parse(JSON.stringify(items)) };
     if (ep.endsWith("shop/prizes")) return { prizes: JSON.parse(JSON.stringify(prizes)) };
     if (ep.endsWith("shop/settings")) return JSON.parse(JSON.stringify(settings));
+    if (ep.endsWith("group")) {
+      return { effective: { guard: {} }, override: {},
+               follow_default: true, bot_role: "admin" };
+    }
     if (ep.endsWith("shop/orders")) {
-      const want = new URLSearchParams(String(endpoint).split("?")[1] || "")
-        .get("status") || "";
+      const want = String(q.status || "");
       const list = want
         ? orders.filter((o) => o.status === want)
         : orders.slice();
@@ -597,9 +611,14 @@ async function renderBoth() {
 
     const get = calls.filter((c) =>
       c[0] === "GET" && String(c[1]).includes("shop/orders")).pop();
-    check("订单页读 shop/orders（默认看待发放）",
-          !!get && String(get[1]).includes("status=pending"),
-          get ? get[1] : null);
+    // 回归：endpoint 必须**干净**（不含 ? / # / \），参数走第二个形参。
+    // 旧实现自己拼成 "shop/orders?status=pending"，bridge 报
+    // 「Plugin bridge endpoint is invalid」，订单页整页读不出数据。
+    check("订单页的 endpoint 干净（没有把参数拼进 URL）",
+          !!get && !/[?#\\]/.test(String(get[1])), get ? get[1] : null);
+    check("status 作为查询参数单独传（不是拼在 URL 里）",
+          !!get && get[2] && get[2].status === "pending",
+          get ? get[2] : null);
     check("提示有 1 单等着发放",
           (host.textContent || "").includes("有 1 单等着人工发放"),
           (host.textContent || "").slice(0, 120));
@@ -615,6 +634,10 @@ async function renderBoth() {
     if (allTab) { click(allTab); await settle(); }
     check("切到「全部」后已核销的单也出现",
           (host.textContent || "").includes("奶茶哥"));
+    const allGet = calls.filter((c) =>
+      c[0] === "GET" && String(c[1]).includes("shop/orders")).pop();
+    check("切到「全部」时 endpoint 依然干净",
+          !!allGet && !/[?#\\]/.test(String(allGet[1])), allGet ? allGet[1] : null);
 
     // 核销：先确认框，再 POST
     const doneBtn = btn(host, "核销");

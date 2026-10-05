@@ -41,6 +41,10 @@ _BARE_ACTIONS: dict[str, str] = {
     "我的记录": "records", "消费记录": "records", "积分记录": "records",
     "我的": "self", "我的信息": "self", "我的档案": "self", "我的群档案": "self",
     "群管帮助": "help", "帮助": "help", "菜单": "help",
+    # 赌博与卖身契（默认关闭，需管理员在面板里打开）
+    "三公五": "sanguanwu", "开桌": "sanguanwu", "三公": "sanguanwu",
+    "卖身契": "contract", "签约": "contract", "卖身": "contract",
+    "我的卖身契": "my_contract",
 }
 
 #: 自定义裸词时允许填的动作名 -> 说明（面板上照这个填）
@@ -54,6 +58,9 @@ BARE_ACTIONS: dict[str, str] = {
     "records": "消费记录",
     "self": "我的群档案",
     "help": "帮助",
+    "sanguanwu": "开一桌三公五（需先开启三公五）",
+    "contract": "签卖身契（纯娱乐）",
+    "my_contract": "查看我的卖身契",
 }
 
 #: 归一化：开头的 @某人、空白、中英文标点

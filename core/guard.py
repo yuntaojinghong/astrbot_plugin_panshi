@@ -267,13 +267,29 @@ class GuardHandle(BaseHandle):
         except Exception as e:
             logger.warning(f"[磐石] 积分惩罚失败（已忽略）: {e}")
 
+        # 负积分踢人：扣到 activity.negative_kick_at（负数）就移出本群。
+        # 放在扣分之后判断，因为正是这次扣分可能把人扣到阈值以下。
+        # 失败也要如实说出来——不能让人以为已经被踢了。
+        try:
+            kicked = await self._kick_if_negative(event, cfg)
+            if kicked:
+                msg += f"\n{kicked}"
+        except Exception as e:
+            logger.warning(f"[磐石] 负积分踢人失败（已忽略）: {e}")
+
         return msg
 
     def _apply_points_penalty(self, event, reason: str, cfg) -> str:
         """按配置扣积分。返回给用户看的说明；没配或没分可扣时返回空串。
 
-        扣分**不会把积分扣成负数**——负积分会让排行榜和商城都变得难以解释，
-        用户也容易当成 bug。想表达"欠着"的话应该用警告次数，不是负积分。
+        扣分下限由 ``activity.negative_kick_at`` 决定：
+
+        - **默认 0** —— 积分不会被扣成负数（排行榜/商城好解释，也不会像 bug）；
+        - **配成负数（如 -100）** —— 允许扣成负数，扣到该阈值就触发踢人。
+          这就是「刷屏扣分，扣到 -100 直接踢出群」。
+
+        踢人由 :meth:`_kick_if_negative` 单独执行（需要 API 调用），
+        这里只负责把分扣到位。
         """
         from .shop import apply_points_floor, parse_penalties
 
@@ -295,8 +311,12 @@ class GuardHandle(BaseHandle):
 
         group_id = self.group_id(event)
         user_id = self.sender_id(event)
+        # 负积分踢人阈值（<= 0 表示永远不扣成负数）
+        kick_at = self._int(cfg.activity.get("negative_kick_at", 0))
+        floor = kick_at if kick_at < 0 else 0
+
         cur = self.db.get_points(group_id, user_id)
-        new_points, actual = apply_points_floor(cur, -rule.points)
+        new_points, actual = apply_points_floor(cur, -rule.points, floor=floor)
         if actual <= 0:
             return f"💎 当前积分为 {cur}，不再扣除（不会扣成负数）。"
         self.db.add_points(group_id, user_id, -actual)
@@ -306,6 +326,42 @@ class GuardHandle(BaseHandle):
             return (f"💎 扣除 {actual} 积分（积分不足，本该扣 {rule.points}，"
                     f"{cur} → {new_points}）")
         return f"💎 同时扣除 {actual} 积分（{cur} → {new_points}）"
+
+    @staticmethod
+    def _int(value, default: int = 0) -> int:
+        try:
+            if isinstance(value, bool):
+                return default
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+
+    async def _kick_if_negative(self, event, cfg) -> str:
+        """负积分踢人：扣到 ``activity.negative_kick_at`` 就踢出群。
+
+        Returns:
+            给用户看的说明；没触发或没踢成时返回空串 / 失败说明。
+        """
+        kick_at = self._int(cfg.activity.get("negative_kick_at", 0))
+        if kick_at >= 0:
+            return ""            # 未开启负积分踢人
+
+        group_id = self.group_id(event)
+        user_id = self.sender_id(event)
+        points = self.db.get_points(group_id, user_id)
+        if points > kick_at:
+            return ""            # 还没扣到阈值
+
+        ok, err = await self.call_api(
+            event, "set_group_kick",
+            group_id=group_id, user_id=user_id, reject_add_request=False,
+        )
+        if ok:
+            self.db.add_warning(group_id, user_id, "负积分踢出", 30)
+            return (f"💥 积分已扣到 {points}（阈值 {kick_at}），"
+                    f"已被移出本群。")
+        return (f"⚠️ 积分已扣到 {points}（阈值 {kick_at}），本应移出本群，"
+                f"但踢人失败：{self.failure_text('set_group_kick', err)}")
 
     async def _recall_last(self, event, user_id) -> str:
         """撤回该用户最近一条消息（若有缓存）。

@@ -466,7 +466,23 @@ class Storage:
             u = self._user(self._points_group(group_id), user_id)
             u["points"] = int(u.get("points", 0)) + amount
             self.save()
-            return u["points"]
+            remaining = u["points"]
+        # 卖身契分成：只在**加分**时抽成，扣分不抽。
+        #
+        # 放在 add_points 里统一处理，而不是在每个加分点（签到/发言/互动/
+        # 商城/小游戏…）各挂一次——那些点散在四五个文件里，漏一个就会出现
+        # 「签到能抽成、买商品抽不到」这种诡异的不一致。
+        #
+        # 钩子由 main 注入（指向 ContractHandle.tribute），存储层因此完全
+        # 不需要知道"卖身契"这个概念，分层保持干净。扣分（amount<0）不抽。
+        if amount > 0:
+            hook = getattr(self, "_points_tribute_hook", None)
+            if callable(hook):
+                try:
+                    hook(str(group_id), str(user_id), int(amount))
+                except Exception as e:      # 分成失败绝不能影响加分本身
+                    logger.info(f"[磐石] 积分分成钩子异常（已忽略）: {e}")
+        return remaining
 
     def get_points(self, group_id, user_id) -> int:
         return int(self._user(self._points_group(group_id), user_id).get("points", 0))

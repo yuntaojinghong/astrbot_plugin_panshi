@@ -580,8 +580,12 @@ def parse_penalties(raw) -> dict[str, PenaltyRule]:
 def apply_points_floor(current: int, delta: int, *, floor: int = 0) -> tuple[int, int]:
     """计算扣分后的积分，并施加下限。
 
-    扣分**不允许把积分扣成负数**（默认下限 0）：
-    负积分会让排行榜和商城都变得难以解释，用户也容易觉得是 bug。
+    ``floor`` 默认 0 —— 常规扣分**不允许把积分扣成负数**：负积分会让排行榜和
+    商城都变得难以解释，用户也容易觉得是 bug。
+
+    但「扣到 X 分就踢出群」这类玩法需要能扣成负数，此时由调用方把
+    ``floor`` 传成负阈值（见 ``activity.negative_kick_at``）。想表达
+    "欠着"而**不**打算踢人的话，应该用警告次数，不要用负积分。
 
     Returns:
         ``(扣减后的积分, 实际扣掉的数量)``。

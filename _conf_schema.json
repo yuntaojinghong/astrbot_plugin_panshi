@@ -522,6 +522,17 @@
           "step": 5
         },
         "hint": "每人只发一次，鼓励新人冒泡。设 0 关闭。"
+      },
+      "negative_kick_at": {
+        "description": "负积分踢人阈值（积扣到该分数就移出群，0=不踢）",
+        "type": "int",
+        "default": 0,
+        "slider": {
+          "min": -1000,
+          "max": 0,
+          "step": 10
+        },
+        "hint": "默认 0：积分不会被扣成负数。想做「刷屏扣分，扣到 -100 直接踢群」就填 -100（负数）。填 0 表示不启用负积分，扣分最低到 0 分。"
       }
     },
     "hint": "签到与积分规则。积分商城、抽奖、违规扣分在顶栏的「🛒 商品」和「🎰 抽奖」两个页面里配置。"
@@ -603,6 +614,66 @@
           "max": 10000,
           "step": 10
         }
+      },
+      "sanguanwu_enable": {
+        "description": "启用三公五（机器人坐庄的积分牌局）",
+        "type": "bool",
+        "default": false,
+        "hint": "默认关闭。开启后发「三公五」开桌，2~3 名群友入座，机器人坐庄发牌比大小，赢家通吃。纯积分娱乐，有单局与每日亏损上限。"
+      },
+      "sanguanwu_entry": {
+        "description": "三公五底注（每人每局最少投入）",
+        "type": "int",
+        "default": 10,
+        "slider": {
+          "min": 1,
+          "max": 500,
+          "step": 1
+        }
+      },
+      "sanguanwu_max_bet": {
+        "description": "三公五单局封顶（每人每局最多投入）",
+        "type": "int",
+        "default": 200,
+        "slider": {
+          "min": 1,
+          "max": 5000,
+          "step": 10
+        },
+        "hint": "防止一局把 someone's 积分全部押进去。"
+      },
+      "sanguanwu_daily_loss": {
+        "description": "三公五每人每日净亏上限",
+        "type": "int",
+        "default": 300,
+        "slider": {
+          "min": 0,
+          "max": 10000,
+          "step": 50
+        },
+        "hint": "当天累计输到上限后就不能再入座，设 0 表示不限制。"
+      },
+      "sanguanwu_seats": {
+        "description": "三公五每局闲家人数（不含机器人庄家）",
+        "type": "int",
+        "default": 2,
+        "slider": {
+          "min": 1,
+          "max": 3,
+          "step": 1
+        },
+        "hint": "1=单挑机器人；2=三公五标准局（机器人庄 + 2 闲）；3=再加一个人。"
+      },
+      "sanguanwu_turn_seconds": {
+        "description": "三公五每步操作时限（秒）",
+        "type": "int",
+        "default": 60,
+        "slider": {
+          "min": 15,
+          "max": 300,
+          "step": 5
+        },
+        "hint": "超时自动按当前状态结算，避免一桌人挂着不退。"
       }
     },
     "hint": "群内小游戏。所有触发词都是整句精确匹配，不会抢群里的正常聊天；猜数字只在有局进行中时才吃数字。"
@@ -765,6 +836,80 @@
         "type": "text",
         "default": "",
         "hint": "动作名：points 查积分、checkin 签到、rank 积分排行、rank_msg 发言排行、shop 商城、lottery 抽奖、records 消费记录、self 我的档案、help 帮助。例：宝石 => points"
+      }
+    }
+  },
+  "contract": {
+    "description": "卖身契（输光后的身份玩法）",
+    "type": "object",
+    "hint": "纯娱乐身份标记：积分见底时可把自己「卖」给赢家，到期自动解除或由主人赎回。**不涉及任何现实约束**。",
+    "items": {
+      "contract_enable": {
+        "description": "启用卖身契",
+        "type": "bool",
+        "default": true,
+        "hint": "关闭后「/卖身契」不可用。默认开启。"
+      },
+      "contract_bribe": {
+        "description": "卖身钱（签契约时一次性给的启动积分）",
+        "type": "int",
+        "default": 50,
+        "slider": {
+          "min": 0,
+          "max": 1000,
+          "step": 10
+        },
+        "hint": "输了才签的人给一笔启动积分，不至于彻底玩不动。设 0 则不给。"
+      },
+      "contract_hours": {
+        "description": "卖身契有效期（小时）",
+        "type": "int",
+        "default": 24,
+        "slider": {
+          "min": 1,
+          "max": 168,
+          "step": 1
+        },
+        "hint": "到期自动解除。最多 168 小时（7 天）。"
+      },
+      "contract_daily_limit": {
+        "description": "每人每日签卖身契次数上限",
+        "type": "int",
+        "default": 1,
+        "slider": {
+          "min": 1,
+          "max": 10,
+          "step": 1
+        },
+        "hint": "防止有人反复签卖身契刷存在感。"
+      },
+      "contract_min_points": {
+        "description": "签卖身契所需最低积分（积分见底才允许）",
+        "type": "int",
+        "default": 0,
+        "slider": {
+          "min": 0,
+          "max": 100,
+          "step": 5
+        },
+        "hint": "默认 0：积分不够付三公五底注时就能签。"
+      },
+      "contract_tribute_ratio": {
+        "description": "契约期内上缴比例（千分数，1000=全额）",
+        "type": "int",
+        "default": 100,
+        "slider": {
+          "min": 0,
+          "max": 1000,
+          "step": 50
+        },
+        "hint": "奴隶每次获得积分时，按此比例分给主人（默认 10%）。设 0 则不分成。"
+      },
+      "contract_label": {
+        "description": "卖身契身份标签",
+        "type": "string",
+        "default": "契约奴",
+        "hint": "会显示在「/我的卖身契」与群公告里，纯玩笑性质。"
       }
     }
   }

@@ -18,7 +18,7 @@ from astrbot.api import logger
 
 # 配置分组的展示顺序（与 _conf_schema.json 的 key 一致）
 GROUP_ORDER = ["basic", "guard", "welcome", "warning", "smart", "activity",
-               "game", "automate", "interact"]
+               "game", "contract", "automate", "interact"]
 
 #: 不显示在插件面板上的分组。目前为空。
 #:
@@ -36,6 +36,7 @@ GROUP_ICONS = {
     "smart": "🧠",
     "activity": "📊",
     "game": "🎮",
+    "contract": "📜",
     "shop": "🛒",
     "automate": "🌙",
     "interact": "🎯",
@@ -178,8 +179,13 @@ class PluginConfig:
 
     @property
     def game(self) -> dict:
-        """群内小游戏（猜数字 / 摇骰子 / 猜拳 / 押注）。"""
+        """群内小游戏（猜数字 / 摇骰子 / 猜拳 / 押注 / 三公五）。"""
         return self._group("game")
+
+    @property
+    def contract(self) -> dict:
+        """卖身契（输光后的身份玩法，纯娱乐）。"""
+        return self._group("contract")
 
     @property
     def shop(self) -> dict:
