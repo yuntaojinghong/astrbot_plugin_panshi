@@ -382,7 +382,7 @@
     }
   },
   "activity": {
-    "description": "群活跃",
+    "description": "群积分",
     "type": "object",
     "items": {
       "checkin_enable": {
@@ -410,7 +410,8 @@
           "step": 1
         }
       }
-    }
+    },
+    "hint": "签到与积分规则。积分商城、抽奖、违规扣分在顶栏的「🛒 商品」和「🎰 抽奖」两个页面里配置。"
   },
   "shop": {
     "description": "积分商城与抽奖",

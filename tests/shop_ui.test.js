@@ -431,6 +431,68 @@ async function renderBoth() {
   check("写死一层前缀：重复前缀的 URL 也能中（通配把多余前缀吃进 rest）",
         !!routeMatches(single, REAL_PATHS[1]), null);
 
+  /* ---------- 12. 保存后再打开页面，内容还在（不复位） ---------- */
+  //
+  // 用户反馈「保存后又返回默认值」。把「保存」和「重新加载页面」
+  // 当成两次独立操作来做：保存走 POST，随后重新渲染视图——
+  // 渲染时会重新 GET，如果后端没真的存下，页面就会显示回默认值。
+  resetFixtures();
+  const save1 = doc.createElement("div");
+  $("#content").innerHTML = "";
+  $("#content").append(save1);
+  await window.PanshiShop.renderItemsView(save1, () => {});
+  await settle();
+
+  const addBtn = btn(save1, "＋ 添加商品");
+  if (addBtn) {
+    click(addBtn);
+    await settle();
+    const row = [...save1.querySelectorAll("tr.shop-row")].pop();
+    const ins = [...row.querySelectorAll('input[type="text"], input[type="number"]')];
+    ins[0].value = "限时头像框";
+    ins[1].value = "88";
+    ins[2].value = "3";
+    await settle();
+
+    const sw = save1.querySelector(".shop-switch-box");
+    if (sw) sw.checked = true;
+
+    const saveBtn = btn(save1, "保存商品");
+    if (saveBtn) {
+      click(saveBtn);
+      await settle();
+    }
+  }
+
+  // 重新打开页面（全新容器，等同于刷新后再点一次「商品」）
+  const reopened = doc.createElement("div");
+  $("#content").innerHTML = "";
+  $("#content").append(reopened);
+  await window.PanshiShop.renderItemsView(reopened, () => {});
+  await settle();
+
+  const texts = [...reopened.querySelectorAll('input[type="text"]')]
+    .map((i) => i.value);
+  check("重新打开商品页后，保存的商品还在（没有复位）",
+        texts.includes("限时头像框"), texts);
+
+  // 同样的往返，测设置
+  const setBtn = btn(reopened, "保存设置");
+  const setSwitch = reopened.querySelector(".shop-switch-box");
+  if (setBtn && setSwitch) {
+    setSwitch.checked = true;
+    click(setBtn);
+    await settle();
+  }
+  const reopened2 = doc.createElement("div");
+  $("#content").innerHTML = "";
+  $("#content").append(reopened2);
+  await window.PanshiShop.renderItemsView(reopened2, () => {});
+  await settle();
+  const sw2 = reopened2.querySelector(".shop-switch-box");
+  check("重新打开商品页后，启用开关仍是开的（没有复位）",
+        !!sw2 && sw2.checked === true, sw2 ? sw2.checked : null);
+
   console.log(out.join("\n"));
   console.log(`\n结果: ${pass} 通过, ${fail} 失败`);
   process.exit(fail ? 1 : 0);

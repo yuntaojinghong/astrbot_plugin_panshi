@@ -2978,7 +2978,7 @@ def test_config_layer():
     groups = cfg.schema_snapshot()
     keys = [g["key"] for g in groups]
     required = ["basic", "guard", "welcome", "warning", "smart",
-                "activity", "shop", "automate", "interact"]
+                "activity", "automate", "interact"]
     missing = [k for k in required if k not in keys]
     assert not missing, f"缺少配置分组 {missing}，实际 {keys}"
     assert keys[:2] == ["basic", "guard"], keys
@@ -2986,6 +2986,22 @@ def test_config_layer():
     total_fields = sum(len(g["fields"]) for g in groups)
     assert total_fields >= 40, total_fields
     print(f"SCHEMA_OK ({len(groups)} 组 / {total_fields} 项)")
+
+    # shop 组**不在面板里显示**：它的设置已经搬到顶栏的「🛒 商品」与
+    # 「🎰 抽奖」两个页面，避免两处各有一套、用户不知道哪个生效。
+    # 但 schema 里必须保留——AstrBot 原生配置页还能改，
+    # parse_config 的默认值也从那儿来。
+    from astrbot_plugin_panshi.config.plugin_config import HIDDEN_GROUPS
+    assert "shop" in HIDDEN_GROUPS, HIDDEN_GROUPS
+    assert "shop" not in keys, f"shop 组不该出现在面板里：{keys}"
+    import json as _json2
+    import os as _os2
+    _schema_path = _os2.path.join(
+        _os2.path.dirname(_os2.path.abspath(__file__)), "_conf_schema.json")
+    with open(_schema_path, encoding="utf-8") as _f:
+        _raw_schema = _json2.load(_f)
+    assert "shop" in _raw_schema, "schema 里必须保留 shop 组（默认值来源）"
+    print("SCHEMA_HIDDEN_SHOP_OK (面板不显示 shop 组；schema 仍保留)")
 
     # 意图闸门的两个新配置项必须存在（v1.6.0）
     smart_fields = {

@@ -17,7 +17,16 @@ from typing import Any
 from astrbot.api import logger
 
 # 配置分组的展示顺序（与 _conf_schema.json 的 key 一致）
-GROUP_ORDER = ["basic", "guard", "welcome", "warning", "smart", "activity", "shop", "automate", "interact"]
+GROUP_ORDER = ["basic", "guard", "welcome", "warning", "smart", "activity", "automate", "interact"]
+
+#: 不显示在插件面板上的分组。
+#:
+#: ``shop`` 的设置（商品、奖池、开关、消耗）已经搬到顶栏的「🛒 商品」与
+#: 「🎰 抽奖」两个页面，在那儿改更直观；这里不再重复一份，
+#: 免得两处各有一套、用户不知道哪个生效。
+#: schema 里仍然保留该组——AstrBot 原生配置页还能改，
+#: 而且默认值要从 schema 里取。
+HIDDEN_GROUPS = {"shop"}
 
 GROUP_ICONS = {
     "basic": "⚙️",
@@ -366,6 +375,17 @@ class PluginConfig:
         groups: list[dict] = []
         ordered = GROUP_ORDER + [k for k in schema if k not in GROUP_ORDER]
         for gkey in ordered:
+            # shop 组不在插件面板里显示。
+            #
+            # 它的内容（商品、奖池、开关、消耗）已经全部搬到顶栏的
+            # 「🛒 商品」和「🎰 抽奖」两个页面里，在那儿改更直观。
+            # 但 _conf_schema.json 里仍然保留这个组：
+            #   · AstrBot 原生配置页还能改（高级用户习惯从那儿进）
+            #   · parse_config 读的是配置里的值，schema 定义了默认值，
+            #     删掉会让没配过的用户拿不到 enable / cost 这些默认
+            # 只是不再重复显示在插件面板上，避免两个地方各有一套设置。
+            if gkey in HIDDEN_GROUPS:
+                continue
             node = schema.get(gkey)
             if not isinstance(node, dict) or node.get("type") != "object":
                 continue
@@ -388,10 +408,17 @@ class PluginConfig:
         return groups
 
     def config_snapshot(self) -> dict:
-        """导出当前所有配置值（按分组），缺失项用 schema 默认值补齐。"""
+        """导出当前所有配置值（按分组），缺失项用 schema 默认值补齐。
+
+        与 :meth:`schema_snapshot` 一样跳过 ``HIDDEN_GROUPS``——
+        面板是按 schema 快照渲染的，这里多带一组没意义，
+        测试里也会因为两者 key 不一致而报错。
+        """
         schema = self.load_schema()
         out: dict[str, Any] = {}
         for gkey, gnode in schema.items():
+            if gkey in HIDDEN_GROUPS:
+                continue
             if not isinstance(gnode, dict) or gnode.get("type") != "object":
                 # 展开型字段（非 object 的顶层项）暂不单独处理
                 continue
