@@ -296,25 +296,52 @@ def _pick_id(raw: dict, index: int, prefix: str) -> str:
 
 
 def parse_config(raw: dict) -> tuple[ShopConfig, list[str]]:
-    """从配置字典解析出商城 + 抽奖设置。"""
+    """从配置字典解析出商城 + 抽奖设置。
+
+    抽奖字段接受**两种键名**：
+
+    * 扁平带前缀的 ``lottery_cost`` / ``lottery_prizes`` …
+      （v1.9.2 起的主用写法，为的是不在配置页里出现 object 嵌套）
+    * 嵌套的 ``lottery: {cost: …}``（旧写法，继续兼容）
+
+    之所以要兼容：AstrBot 原生配置页遇到 ``type: object`` 的字段会去找
+    ``items`` 子结构递归渲染，没有就整个字符串化显示成 ``[object Object]``。
+    所以把抽奖字段摊平成带前缀的叶子字段。但老配置里已经有嵌套写法，
+    不能直接不认。
+    """
     raw = raw if isinstance(raw, dict) else {}
     notes: list[str] = []
 
     items, s1 = parse_shop_items(raw.get("items", raw.get("商品", [])))
     notes += [f"商品：{x}" for x in s1]
 
-    lot_raw = raw.get("lottery", raw.get("抽奖", {})) or {}
+    # 嵌套写法优先取嵌套，没有再取扁平
+    lot_raw = raw.get("lottery", raw.get("抽奖"))
     if not isinstance(lot_raw, dict):
         lot_raw = {}
-        notes.append("抽奖配置不是对象，已按默认处理")
-    prizes, s2 = parse_prizes(lot_raw.get("prizes", lot_raw.get("奖池", [])))
+
+    def lot(key: str, *aliases, default=None):
+        """按 嵌套 -> 扁平 -> 别名 的顺序取值。"""
+        if key in lot_raw and lot_raw[key] is not None:
+            return lot_raw[key]
+        flat = f"lottery_{key}"
+        if flat in raw and raw[flat] is not None:
+            return raw[flat]
+        for a in aliases:
+            if a in lot_raw and lot_raw[a] is not None:
+                return lot_raw[a]
+            if a in raw and raw[a] is not None:
+                return raw[a]
+        return default
+
+    prizes, s2 = parse_prizes(lot("prizes", "奖池", default=[]))
     notes += [f"奖池：{x}" for x in s2]
 
     lottery = LotteryConfig(
-        enable=_as_bool(lot_raw.get("enable", lot_raw.get("启用", False)), False),
-        cost=max(0, _as_int(lot_raw.get("cost", lot_raw.get("消耗", 10)), 10)),
-        daily_limit=max(0, _as_int(lot_raw.get("daily_limit", lot_raw.get("每日次数", 3)), 3)),
-        pity=max(0, _as_int(lot_raw.get("pity", lot_raw.get("保底", 10)), 10)),
+        enable=_as_bool(lot("enable", "启用", default=False), False),
+        cost=max(0, _as_int(lot("cost", "消耗", default=10), 10)),
+        daily_limit=max(0, _as_int(lot("daily_limit", "每日次数", default=3), 3)),
+        pity=max(0, _as_int(lot("pity", "保底", default=10), 10)),
         prizes=prizes,
     )
     return ShopConfig(

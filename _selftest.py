@@ -279,9 +279,135 @@ def main():
     test_points_switch()
     test_simple_points_commands()
     test_schema_loadable()
+    test_schema_renders_in_ui()
     test_shop_editing()
 
     print("ALL_SELFTEST_PASS")
+
+
+def test_schema_renders_in_ui():
+    """配置页里不能出现 [object Object]。
+
+    **回归背景（v1.9.1 线上）**：`shop.items` / `lottery.prizes` /
+    `shop.penalties` 的默认值我写成了**对象数组**：
+
+        "default": [{"id": "tea", "name": "奶茶", "cost": 50}, ...]
+
+    AstrBot 原生配置页把 list 的 default 逐项转成字符串显示，
+    每一项就变成字面量 ``[object Object]``；几个字段叠起来，
+    用户看到的是一屏看不懂的方块。
+
+    另外 ``type: object`` 且没有 ``items`` 子结构的字段也会被直接字符串化 ——
+    `lottery` 就是这种情况，同样显示成 ``[object Object]``。
+
+    这两点和「合法 JSON」「合规 schema」都不冲突，所以之前那两条校验
+    都放行了。这条专门盯**渲染结果**：
+
+    * default 不得是 dict，也不得是含 dict/list 的 list
+    * type=object 必须有 items（否则会被字符串化）
+    """
+    import json as _json
+    import os as _os
+
+    repo = _os.path.dirname(_os.path.abspath(__file__))
+    with open(_os.path.join(repo, "_conf_schema.json"), encoding="utf-8") as f:
+        schema = _json.load(f)
+
+    problems: list[str] = []
+
+    def walk(node, path: str) -> None:
+        if not isinstance(node, dict):
+            return
+        t = node.get("type")
+        d = node.get("default")
+
+        if isinstance(d, dict):
+            problems.append(
+                f"{path}: default 是对象 —— 配置页会显示成 [object Object]")
+        elif isinstance(d, list) and any(isinstance(x, (dict, list)) for x in d):
+            problems.append(
+                f"{path}: default 是对象数组 —— 配置页会逐项显示成 "
+                f"[object Object]（共 {len(d)} 项）")
+
+        if t == "object":
+            if "items" not in node:
+                problems.append(
+                    f"{path}: type=object 没有 items —— 会被整个字符串化成 "
+                    f"[object Object]")
+            else:
+                for k, v in node["items"].items():
+                    walk(v, f"{path}.{k}" if path else k)
+        else:
+            for k, v in node.items():
+                if k in ("items", "default", "slider", "options", "templates"):
+                    continue
+                if isinstance(v, dict) and ("type" in v or "default" in v):
+                    walk(v, f"{path}.{k}" if path else k)
+
+    walk(schema, "")
+
+    assert not problems, (
+        "这些配置项在 AstrBot 配置页里会显示成 [object Object]：\n  "
+        + "\n  ".join(problems)
+        + "\n\n内容型字段请把 default 留空（string），示例 JSON 写进 hint；"
+          "复杂结构改由插件自己的面板页或指令填写。")
+    print("SCHEMA_RENDERS_OK (没有 default 是对象/对象数组的配置项)")
+
+    # 抽奖字段不该再有 object 外壳
+    shop = schema["shop"]["items"]
+    assert "lottery" not in shop, (
+        "shop.lottery 又变回 object 嵌套了 —— 它会显示成 [object Object]")
+    for key in ("lottery_enable", "lottery_cost", "lottery_daily_limit",
+                "lottery_pity", "lottery_prizes"):
+        assert key in shop, f"缺少摊平后的抽奖字段 {key}"
+    print("SCHEMA_FLAT_LOTTERY_OK (抽奖字段已摊平，无 object 外壳)")
+
+    # 内容型字段必须是 string 且默认为空
+    for key in ("items", "lottery_prizes", "penalties"):
+        f = shop[key]
+        assert f.get("type") == "string", (key, f.get("type"))
+        assert f.get("default") == "", (key, f.get("default"))
+    print("SCHEMA_CONTENT_EMPTY_OK (商品/奖池/扣分默认留空，由面板填写)")
+
+    # 摊平后的键名必须真的被读取——只改 schema 不改代码的话，
+    # 用户在配置页填了抽奖设置却完全不生效，而且不会有任何报错。
+    from astrbot_plugin_panshi.core.shop import parse_config
+
+    flat, _ = parse_config({
+        "enable": True,
+        "lottery_enable": True,
+        "lottery_cost": 25,
+        "lottery_daily_limit": 7,
+        "lottery_pity": 33,
+        "lottery_prizes": [{"name": "甲", "weight": 0.5}],
+    })
+    assert flat.lottery.enable is True, flat.lottery
+    assert flat.lottery.cost == 25, flat.lottery
+    assert flat.lottery.daily_limit == 7, flat.lottery
+    assert flat.lottery.pity == 33, flat.lottery
+    assert [p.name for p in flat.lottery.prizes] == ["甲"], flat.lottery.prizes
+    print("SCHEMA_FLAT_KEYS_OK (摊平后的 lottery_* 键真的生效)")
+
+    # 旧嵌套写法仍要认（已写过这种配置的用户不能被弄坏）
+    nested, _ = parse_config({
+        "enable": True,
+        "lottery": {"enable": True, "cost": 25, "daily_limit": 7,
+                    "pity": 33, "prizes": [{"name": "甲", "weight": 0.5}]},
+    })
+    assert nested.lottery.enable is True, nested.lottery
+    assert nested.lottery.cost == 25, nested.lottery
+    assert nested.lottery.daily_limit == 7, nested.lottery
+    assert nested.lottery.pity == 33, nested.lottery
+    assert [p.name for p in nested.lottery.prizes] == ["甲"]
+    print("SCHEMA_NESTED_KEYS_OK (旧的 lottery:{...} 嵌套写法仍兼容)")
+
+    # 空字符串（新的默认值）不能被当成坏数据
+    empty, _ = parse_config({"items": "", "lottery_prizes": "",
+                            "penalties": ""})
+    assert empty.items == [], empty.items
+    assert empty.lottery.prizes == [], empty.lottery.prizes
+    assert empty.lottery.cost == 10, empty.lottery
+    print("SCHEMA_EMPTY_STR_OK (默认的空字符串按「未配置」处理，不报错)")
 
 
 def test_shop_editing():
