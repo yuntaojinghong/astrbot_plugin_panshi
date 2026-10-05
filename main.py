@@ -36,6 +36,7 @@ from .core import (
     DefenseState,
     allow,
     is_self_defense,
+    is_plugin_query,
     looks_like_command,
 )
 from .core.at_chain import at_chain
@@ -43,8 +44,8 @@ from .core.intent_executor import _as_bool, _as_int
 from .core.shop_handle import ShopHandle
 from .data import GroupInfoCache, Storage
 from .utils import (PermLevel, check_permission, check_permission_async,
-                   parse_amount, parse_duration, parse_target, safe_int,
-                   strip_amount)
+                   get_ats, parse_amount, parse_duration, parse_target,
+                   safe_int, strip_amount)
 from .utils.helpers import get_group_id
 
 # 内置事件子类型常量（aiocqhttp / OneBot v11）
@@ -278,6 +279,33 @@ class PanshiPlugin(Star):
             self._enabled_groups = [str(g.get("group_id")) for g in groups if g.get("group_id")]
         except Exception as e:
             logger.warning(f"[磐石] 获取群列表失败: {e}")
+
+    def _plugin_hint_enabled(self, group_id) -> bool:
+        """是否启用「插件功能兜底应答」（默认开）。
+
+        留个开关是因为它会把未识别的斜杠消息也接管掉，万一和别家插件的
+        指令撞上，用户能自己关掉。
+        """
+        try:
+            return bool(
+                self.cfg.for_group(group_id).smart.get("plugin_hint_enable", True))
+        except Exception:
+            return True
+
+    def _addressed_to_bot(self, event) -> bool:
+        """这条消息是不是在跟机器人说话（@ 了它，或正文里叫了它的名字）。"""
+        try:
+            me = str(safe_int(self.normal.safe_self_id(event)) or "")
+            if me and me in (get_ats(event) or []):
+                return True
+        except Exception:
+            pass
+        try:
+            text = getattr(event, "message_str", "") or ""
+            names = self.cfg.for_group(get_group_id(event)).smart.get("bot_names") or []
+            return any(str(n).strip() and str(n).strip() in text for n in names)
+        except Exception:
+            return False
 
     def _points_shared(self) -> bool:
         """积分是否跨群共用。
@@ -518,6 +546,27 @@ class PanshiPlugin(Star):
                         yield event.plain_result(result)
                         return
                 return
+
+            # 6b.5 插件功能兜底：像指令、或明确在问插件功能，但本地没认出具体动作
+            #      —— 让插件自己回答，别让模型接话。
+            #
+            # 回归背景：线上出现过机器人一本正经地说「积分插件还没启用，相关指令
+            # 没注册到我这」，而同一条消息后面 /加分 500 明明成功了。原因是
+            # `/减分` 当时不是插件的已注册指令，消息漏给了模型，模型就照着字面
+            # 把插件状态编了一遍。这类"编出来的平台事实"比不回答更糟。
+            #
+            # 这里回的就是 `/面板` 那一屏——**插件自己报的实情**。
+            try:
+                if is_plugin_query(text, addressed=self._addressed_to_bot(event)) \
+                        and self._plugin_hint_enabled(group_id):
+                    logger.info(f"[磐石] 插件功能兜底应答（不交给模型）：{text[:30]}")
+                    yield event.plain_result(
+                        "📋 这是插件的真实状态（插件自己报的，不是模型猜的）：\n\n"
+                        + self.panel.dashboard(event))
+                    self._consume(event)
+                    return
+            except Exception as e:
+                logger.warning(f"[磐石] 插件兜底应答异常: {e}")
 
             # 6c. 闸门：只有通过本地解析仍不明确时，才判断是否值得调用模型
             if not self.intent.should_trigger(event, text):
@@ -880,7 +929,7 @@ class PanshiPlugin(Star):
         """签到：/签到"""
         yield event.plain_result(await self.activity.checkin(event))
 
-    @filter.command("积分", alias={"查积分"})
+    @filter.command("积分", alias={"查积分", "我的积分"})
     async def cmd_points(self, event: AstrMessageEvent):
         """查积分：/积分 [@某人 或 引用消息]"""
         target, _ = parse_target(event)
@@ -915,7 +964,7 @@ class PanshiPlugin(Star):
         yield event.plain_result(
             await self.activity.adjust_points(event, target, abs(amount), reason))
 
-    @filter.command("扣分", alias={"减积分", "罚分"})
+    @filter.command("扣分", alias={"减分", "扣积分", "减积分", "罚分"})
     async def cmd_sub_points(self, event: AstrMessageEvent, arg: str = ""):
         """扣积分：/扣分 @某人 <数量> [理由]"""
         if not await self._check(event):
@@ -934,7 +983,7 @@ class PanshiPlugin(Star):
         yield event.plain_result(
             await self.activity.adjust_points(event, target, -abs(amount), reason))
 
-    @filter.command("排行", alias={"排行榜"})
+    @filter.command("排行", alias={"排行榜", "积分榜", "积分排行"})
     async def cmd_rank(self, event: AstrMessageEvent, arg: str = ""):
         """排行：/排行 [积分|发言]"""
         if arg.strip() in ("发言", "message", "msg"):
@@ -943,12 +992,12 @@ class PanshiPlugin(Star):
             yield event.plain_result(await self.activity.rank_points(event))
 
     # ========== 指令：积分商城 / 抽奖 ==========
-    @filter.command("商城", alias={"积分商城", "shop"})
+    @filter.command("商城", alias={"积分商城", "积分商店", "商店", "shop"})
     async def cmd_shop(self, event: AstrMessageEvent):
         """查看积分商城：/商城"""
         yield event.plain_result(await self.shop.show_shop(event))
 
-    @filter.command("购买", alias={"兑换", "buy"})
+    @filter.command("购买", alias={"兑换", "积分兑换", "buy"})
     async def cmd_buy(self, event: AstrMessageEvent, arg: str = ""):
         """购买商品：/购买 <商品名>"""
         key = arg.strip()
@@ -970,7 +1019,7 @@ class PanshiPlugin(Star):
             return
         yield event.plain_result(await self.shop.toggle(event, arg))
 
-    @filter.command("抽奖概率", alias={"奖池"})
+    @filter.command("抽奖概率", alias={"奖池", "奖池概率", "中奖概率"})
     async def cmd_chances(self, event: AstrMessageEvent):
         """查看本群奖池概率：/抽奖概率"""
         yield event.plain_result(await self.shop.show_chances(event))

@@ -4,13 +4,13 @@
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0.html)
 [![AstrBot](https://img.shields.io/badge/AstrBot-4.24.2%2B-orange.svg)](https://github.com/AstrBotDevs/AstrBot)
-[![Version](https://img.shields.io/badge/version-v1.14.0-green.svg)](https://github.com/yuntaojinghong/astrbot_plugin_panshi/releases)
+[![Version](https://img.shields.io/badge/version-v1.14.1-green.svg)](https://github.com/yuntaojinghong/astrbot_plugin_panshi/releases)
 
 一个为 [AstrBot](https://github.com/AstrBotDevs/AstrBot) 打造的 QQ 群管理插件，基于 NapCat / OneBot v11（`aiocqhttp`）协议。
 
 **🌐 项目主页：** https://yuntaojinghong.github.io/astrbot_plugin_panshi/
 
-> **当前版本 v1.14.0** · 48 个指令 · 8 个 LLM 工具 · 10 类功能 · 9 组配置
+> **当前版本 v1.14.1** · 48 个指令 · 8 个 LLM 工具 · 10 类功能 · 9 组配置
 
 
 ## ✨ 特色
@@ -352,6 +352,20 @@ python _selftest.py
 ## 📝 更新日志
 
 完整历史见 [Releases 页面](https://github.com/yuntaojinghong/astrbot_plugin_panshi/releases)。
+
+### v1.14.1 — 不让模型替插件「编状态」
+- **新增插件功能兜底应答**（`智能识别 → 插件功能兜底应答`，默认开）：
+  像指令（斜杠开头）、或在叫机器人并问插件功能，但插件没认出具体动作时，
+  **由插件自己回一屏真实状态**（就是 `/面板` 的内容），而不是把消息丢给模型。
+  - 起因：聊天记录里机器人一本正经地说「积分插件还没启用，相关指令没注册到我这」，
+    而同一条消息后面 `/加分 500` 明明成功了 —— 因为 `/减分` 当时不是插件的
+    已注册指令，消息漏给了模型，模型就照着字面把插件状态编了一遍。
+  - 判定刻意保守：只有**斜杠开头**，或**正在叫机器人且消息很短/带疑问语气**才接管，
+    所以「帮我总结一下大家对积分的看法」这类正常提问不会被抢。
+  - 与别家插件的指令撞车时可以关掉这个开关。
+- **补齐常用指令别名**：`扣分` 增加 `减分 / 扣积分`；`商城` 增加 `积分商店 / 商店`；
+  `购买` 增加 `积分兑换`；`积分` 增加 `我的积分`；`排行` 增加 `积分榜 / 积分排行`；
+  `抽奖概率` 增加 `奖池概率 / 中奖概率`。
 
 ### v1.14.0 — 加减分支持自然语言与「我」
 - **不打斜杠也能加减分**，直接用自然语言：

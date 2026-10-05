@@ -385,6 +385,7 @@ def main():
     test_games()
     test_points_earning_ways()
     test_points_natural_language()
+    test_plugin_hint_fallback()
     test_curfew_intent()
     test_curfew_lift_reporting()
     test_per_group_runtime()
@@ -3537,6 +3538,35 @@ def test_guard_punish_reports_failure():
         print(f"GUARD_PUNISH_NO_RECALL_HONEST_OK ({no_recall})")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_plugin_hint_fallback():
+    """插件功能兜底应答：像指令 / 在问插件时由插件回答，不让模型编。
+
+    回归背景（用户实测截图）：机器人一本正经地说
+        「积分插件还没启用，相关指令没注册到我这」
+    而同一条消息后面 /加分 500 明明成功了——因为 `/减分` 当时不是插件的
+    已注册指令，消息漏给了模型，模型就照着字面把插件状态编了一遍。
+    """
+    from astrbot_plugin_panshi.core.intent_gate import is_plugin_query
+
+    # 斜杠开头 + 提到插件功能 → 接管
+    for t in ["/减分 10", "/积分兑换", "/积分商店在哪", "／签到"]:
+        assert is_plugin_query(t), t
+    print("PLUGIN_QUERY_SLASH_OK (斜杠 + 功能词就接管)")
+
+    # 正在叫机器人 + 提到功能 + 短句/疑问 → 接管
+    for t in ["积分系统启用了吗", "积分怎么没反应", "抽奖能用吗"]:
+        assert is_plugin_query(t, addressed=True), t
+    print("PLUGIN_QUERY_ADDRESSED_OK (叫了机器人、像在问就接管)")
+
+    # 关键：不能抢正常聊天
+    for t in ["积分", "我积分怎么还没到", "这个商城的东西有点贵啊",
+              "签到功能坏了吧我试试", "积分排行第一是谁"]:
+        assert not is_plugin_query(t), f"普通聊天被接管：{t}"
+    assert not is_plugin_query("帮我总结一下大家对积分的看法和意见",
+                              addressed=True), "长句提问被抢走了"
+    print("PLUGIN_QUERY_NO_HIJACK_OK (普通聊天与长句提问都不会被抢)")
 
 
 def test_points_natural_language():

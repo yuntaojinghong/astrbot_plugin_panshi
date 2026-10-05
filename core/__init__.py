@@ -15,7 +15,7 @@ from .shop_handle import ShopHandle
 from .automate import AutomateHandle
 from .context import ContextCollector
 from .intent import IntentParser
-from .intent_gate import IntentGate, looks_like_command
+from .intent_gate import IntentGate, is_plugin_query, looks_like_command
 from .local_intent import LocalIntentParser
 from .interact import InteractHandle
 from .games import GamesHandle
@@ -48,6 +48,7 @@ __all__ = [
     "IntentParser",
     "IntentGate",
     "looks_like_command",
+    "is_plugin_query",
     "LocalIntentParser",
     "IntentExecutor",
     "InteractHandle",
