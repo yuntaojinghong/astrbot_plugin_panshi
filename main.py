@@ -65,7 +65,10 @@ class PanshiPlugin(Star):
 
         # 数据目录：AstrBot 的 data 目录下
         data_dir = self._resolve_data_dir()
-        self.db = Storage(data_dir)
+        # 积分的「跨群共用」模式在存储层实现：打开后所有群的积分（含签到日期）
+        # 都落到同一个保留键上，于是天然跨群共享。开与关只改一个标志位，
+        # 不动任何数据——历史分留在原处，切回来还能看到。
+        self.db = Storage(data_dir, points_shared=self._points_shared())
 
         # 打通按群配置：让 PluginConfig 能读取每群 override（修复「独立配置不生效」）
         try:
@@ -162,6 +165,8 @@ class PanshiPlugin(Star):
             self.automate.bind_groups_provider(self._current_group_ids)
             await self.automate.apply_now()
             self._clean_legacy_shop_config()
+            # 配置可能在插件加载后又被改过，这里再同步一次积分共用模式
+            self._sync_points_mode()
         except Exception as e:
             logger.warning(f"[磐石] 初始化后置任务异常: {e}")
 
@@ -270,8 +275,32 @@ class PanshiPlugin(Star):
         except Exception as e:
             logger.warning(f"[磐石] 获取群列表失败: {e}")
 
+    def _points_shared(self) -> bool:
+        """积分是否跨群共用。
+
+        从**全局**配置读，不看按群覆盖：这是个插件级开关，
+        允许按群覆盖会变成「这个群共用、那个群不共用」，没法解释。
+        """
+        try:
+            return bool(self.cfg.activity.get("points_shared", False))
+        except Exception:
+            return False
+
+    def _sync_points_mode(self) -> None:
+        """把「积分跨群共用」开关同步给存储层。
+
+        面板里一改就该立刻生效，所以挂在"配置保存后"的同步钩子里，
+        不用重载插件。
+        """
+        try:
+            self.db.set_points_shared(self._points_shared())
+        except Exception as e:
+            logger.warning(f"[磐石] 同步积分共用模式失败: {e}")
+
     async def _apply_automate_sync(self):
         """配置保存后即时同步宵禁状态（面板保存 / 智能设置共用）。"""
+        # 积分共用模式也是「保存即生效」，顺手一起同步
+        self._sync_points_mode()
         try:
             state = await self.automate.apply_now()
             if state != "off":
@@ -1485,6 +1514,8 @@ HELP_TEXT = """🪨 磐石 · 智能群管
 💡 不打斜杠也能用：直接发「积分」「签到」「积分排行」「积分商城」「抽奖」
    等词即可（整句精确匹配，不会抢群里的正常聊天）。
    想关掉或自定义，见「互动工具 → 裸词快捷触发」。
+💡 想让所有群共用一份积分（签到每天只算一次、扣分跨群生效），
+   见「群积分 → 积分跨群共用」。
 
 【自动化】
 /宵禁 状态          — 查看宵禁设置

@@ -40,10 +40,18 @@ from astrbot.api import logger
 class Storage:
     """线程安全的 JSON 存储。"""
 
-    def __init__(self, data_dir: str):
+    #: 「积分跨群共用」模式下所有群共用的保留群号。
+    #:
+    #: 用双下划线包住，和真实 QQ 群号（纯数字）不可能撞车；
+    #: 也方便 ``overview()`` 之类的地方一眼认出"这不是一个真实的群"。
+    SHARED_GROUP = "__shared__"
+
+    def __init__(self, data_dir: str, points_shared: bool = False):
         self.data_dir = data_dir
         self.file = os.path.join(data_dir, "panshi_data.json")
         self._lock = threading.RLock()
+        #: 积分（含签到日期）是否跨群共用；由插件按配置同步（set_points_shared）
+        self.points_shared = bool(points_shared)
         self._data: dict[str, Any] = {
             "groups": {},
             "users": {},
@@ -331,28 +339,66 @@ class Storage:
         return [r for r in recs if isinstance(r, dict)][-max(1, int(limit)):][::-1]
 
     # ---------- 积分 / 签到 ----------
+    #
+    # 积分支持「跨群共用」：打开后所有群的积分（含签到日期）都落到
+    # :attr:`SHARED_GROUP` 这个保留群号上，于是天然就是同一份。
+    #
+    # 注意只有积分与签到走这个映射；违规记录、发言数、购买/抽奖记录、
+    # 限购计数**仍然按各自的群走**。「一个群的违规不该跨群累计」和
+    # 「积分可以跨群花」是两件事，不能一起合并。
+
+    def set_points_shared(self, enabled: bool) -> None:
+        """切换「积分跨群共用」。
+
+        只改一个标志位，**不动任何数据**：
+
+        * 打开 → 之后的读写都落到 ``SHARED_GROUP`` 上，所有群看到同一份积分；
+        * 关闭 → 回到「每个群各算各的」。
+
+        按用户的要求，切换后积分**从零重算**：不去把各群历史分求和搬过来，
+        那样会合成一个谁都看不懂的数字，也容易把限购/保底之类的计数算穿。
+        历史数据仍留在原处，切回来还能看到。
+        """
+        enabled = bool(enabled)
+        if enabled == self.points_shared:
+            return
+        self.points_shared = enabled
+        logger.info(
+            f"[磐石] 积分跨群共用已{'开启（所有群共用一份积分，签到每天只算一次）' if enabled else '关闭（每群各算各的）'}")
+
+    def _points_group(self, group_id) -> str:
+        """积分（含签到日期）归属的「群号」。"""
+        if getattr(self, "points_shared", False):
+            return self.SHARED_GROUP
+        return str(group_id)
+
     def add_points(self, group_id, user_id, amount: int) -> int:
         with self._lock:
-            u = self._user(group_id, user_id)
+            u = self._user(self._points_group(group_id), user_id)
             u["points"] = int(u.get("points", 0)) + amount
             self.save()
             return u["points"]
 
     def get_points(self, group_id, user_id) -> int:
-        return int(self._user(group_id, user_id).get("points", 0))
+        return int(self._user(self._points_group(group_id), user_id).get("points", 0))
 
     def has_checked_in(self, group_id, user_id) -> bool:
         today = time.strftime("%Y-%m-%d")
-        return self._user(group_id, user_id).get("checkin_date") == today
+        return self._user(self._points_group(group_id), user_id).get("checkin_date") == today
 
     def set_checkin(self, group_id, user_id) -> None:
         with self._lock:
-            self._user(group_id, user_id)["checkin_date"] = time.strftime("%Y-%m-%d")
+            u = self._user(self._points_group(group_id), user_id)
+            u["checkin_date"] = time.strftime("%Y-%m-%d")
             self.save()
 
     def top_points(self, group_id, limit: int = 10) -> list[tuple[str, int]]:
-        """返回群内积分排行 [(user_id, points), ...]。"""
-        prefix = f"{group_id}_"
+        """返回积分排行 [(user_id, points), ...]。
+
+        共用模式下 ``_points_group`` 会把所有群映射到同一个键上，
+        所以这里自然就是「全服榜」——这正是"共用"该有的样子。
+        """
+        prefix = f"{self._points_group(group_id)}_"
         rows = []
         for key, u in self._data["users"].items():
             if key.startswith(prefix):

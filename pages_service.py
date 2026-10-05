@@ -17,7 +17,7 @@ FOLLOW_DEFAULT_KEY = "follow_default"
 PLUGIN_NAME = "astrbot_plugin_panshi"
 
 # 与 metadata.yaml 保持一致的插件版本（读取失败时的兜底值）
-FALLBACK_VERSION = "v1.9.16"
+FALLBACK_VERSION = "v1.10.0"
 
 # 按群可覆盖的配置分组（与 _conf_schema.json 的分组保持一致）
 OVERRIDABLE_GROUPS = [
@@ -43,6 +43,14 @@ OVERRIDABLE_FIELDS = {
         "anon_nicknames",
         "default_ban_time",
         "operation_notice",
+    },
+    # activity 里也有一个插件级全局开关：`points_shared`（积分跨群共用）。
+    # 允许按群覆盖会变成「这个群共用、那个群不共用」——同一份积分两种归属，
+    # 没法解释也没法排查，所以逐字段放行，把它挡在按群覆盖之外。
+    "activity": {
+        "checkin_enable",
+        "checkin_points",
+        "checkin_random_bonus",
     },
 }
 
@@ -406,9 +414,14 @@ class PageService:
         warn_total = 0
         active_users = 0
         for key in users:
-            if "_" not in str(key):
+            ks = str(key)
+            if "_" not in ks:
                 continue
-            gid = str(key).split("_", 1)[0]
+            gid = ks.split("_", 1)[0]
+            # 共用积分模式用的是保留键（``__shared___QQ``），它不是真实群号，
+            # 不能算进「纳管群聊」——否则这个数字会平白多 1。
+            if not gid or gid.startswith("_"):
+                continue
             group_ids.add(gid)
         for value in users.values():
             if not isinstance(value, dict):

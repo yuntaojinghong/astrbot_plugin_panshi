@@ -380,6 +380,7 @@ def main():
     test_guard_punish_reports_failure()
     test_bare_word_shortcuts()
     test_checkin_respects_switch()
+    test_points_shared_across_groups()
     test_curfew_intent()
     test_curfew_lift_reporting()
     test_per_group_runtime()
@@ -3462,6 +3463,82 @@ def test_guard_punish_reports_failure():
         assert "已撤回" not in no_recall, no_recall
         assert "禁言" in no_recall, no_recall
         print(f"GUARD_PUNISH_NO_RECALL_HONEST_OK ({no_recall})")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_points_shared_across_groups():
+    """积分跨群共用。
+
+    用户确认的四条语义：
+      ① 共用一份积分  ② 签到每天只能签一次  ③ 违规扣分跨群生效  ④ 历史从零重算
+    另外守住一条：**只有积分和签到跨群，违规记录/发言/购买记录仍按群隔离**
+    ——「一个群的违规不该跨群累计」和「积分可以跨群花」是两件事。
+    """
+    import shutil
+    import tempfile
+
+    from astrbot_plugin_panshi.data import Storage
+
+    tmp = tempfile.mkdtemp(prefix="panshi_shared_")
+    try:
+        db = Storage(tmp)
+        # 默认行为不能被改坏：每群各算各的
+        db.add_points(100, 7, 30)
+        db.add_points(200, 7, 5)
+        assert db.get_points(100, 7) == 30, db.get_points(100, 7)
+        assert db.get_points(200, 7) == 5, db.get_points(200, 7)
+        print("POINTS_PER_GROUP_DEFAULT_OK (默认仍是每群各算各的)")
+
+        # ④ 打开共用后从零重算
+        db.set_points_shared(True)
+        assert db.get_points(100, 7) == 0, "切换共用后应当从零重算"
+        assert db.get_points(200, 7) == 0
+        print("POINTS_SHARED_RESET_OK (切换后从零重算)")
+
+        # ① 共用一份：A 群加分 B 群可见，B 群扣分 A 群同步
+        db.add_points(100, 7, 50)
+        assert db.get_points(100, 7) == 50
+        assert db.get_points(200, 7) == 50, "在 A 群加的分 B 群没看到"
+        db.add_points(200, 7, -20)
+        assert db.get_points(100, 7) == 30, "在 B 群扣的分 A 群没同步"
+        print("POINTS_SHARED_SAME_POOL_OK (A/B 群是同一份积分)")
+
+        # ② 签到每天只算一次
+        assert not db.has_checked_in(100, 7)
+        db.set_checkin(100, 7)
+        assert db.has_checked_in(200, 7), "在 A 群签到后 B 群还能再签"
+        print("POINTS_SHARED_CHECKIN_ONCE_OK (签到每天全局只算一次)")
+
+        # ③ 违规扣分跨群生效
+        before = db.get_points(200, 7)
+        db.add_points(100, 7, -10)
+        assert db.get_points(200, 7) == before - 10, "扣分没有跨群生效"
+        print("POINTS_SHARED_PENALTY_CROSS_OK (扣分跨群生效)")
+
+        # 共用模式下排行为全服榜
+        db.add_points(300, 8, 999)
+        top = dict(db.top_points(100, 10))
+        assert top.get("8") == 999, top
+        assert top.get("7") == before - 10, top
+        print(f"POINTS_SHARED_GLOBAL_RANK_OK (全服榜 {top})")
+
+        # 其它数据仍按群隔离
+        db.add_warning(100, 7, "刷屏")
+        assert len(db.get_warnings(100, 7)) == 1
+        assert len(db.get_warnings(200, 7)) == 0, "违规记录被跨群合并了"
+        print("POINTS_SHARED_OTHER_DATA_PER_GROUP_OK (违规等仍按群隔离)")
+
+        # 关掉后回到各自的分，历史没丢
+        db.set_points_shared(False)
+        assert db.get_points(100, 7) == 30, db.get_points(100, 7)
+        assert db.get_points(200, 7) == 5, db.get_points(200, 7)
+        print("POINTS_SHARED_OFF_RESTORES_OK (关掉后回到各自的分)")
+
+        # 落盘往返：共用分本身要能读回来（共用模式由插件重新同步）
+        db2 = Storage(tmp, points_shared=True)
+        assert db2.get_points(100, 7) == 20, db2.get_points(100, 7)
+        print("POINTS_SHARED_PERSIST_OK (重启后共用分仍在)")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
