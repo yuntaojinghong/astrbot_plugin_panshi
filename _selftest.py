@@ -213,37 +213,39 @@ def main():
 
     # 校验 WebUI 面板路由注册
     assert inst.web is not None, "面板控制器未创建"
-    # 断言"必需路由都在"而不是写死数量——每加一个接口都要改测试的话，
-    # 这条断言迟早会被随手改成一个更大的数字，失去意义。
     #
-    # 注意：现在每条路由会注册**两种路径形式**（带前导斜杠 / 不带），
-    # 因为 AstrBot 内部 `_normalize_plugin_api_route` 对前导斜杠的处理方向
-    # 我无法在本地实测，两种都注册可以避免"页面渲染出来但接口 404"。
-    # 所以这里统一按"去掉前导斜杠"后比对。
-    def _norm(route: str) -> str:
-        return route.lstrip("/")
-
-    paths = {_norm(r[0]) for r in ctx.routes}
-    required_routes = [
-        "astrbot_plugin_panshi/bootstrap",
-        "astrbot_plugin_panshi/overview",
-        "astrbot_plugin_panshi/global",
-        "astrbot_plugin_panshi/group",
-        "astrbot_plugin_panshi/group/reset",
-        "astrbot_plugin_panshi/shop/items",
-        "astrbot_plugin_panshi/shop/prizes",
-        "astrbot_plugin_panshi/shop/reset",
-    ]
-    missing = [r for r in required_routes if r not in paths]
-    assert not missing, f"缺少路由 {missing}"
-    # 两种形式都要有：只有一种的话，遇到另一种匹配方式就会 404
+    # **这里必须断言「路径不带插件名前缀」。**
+    #
+    # 回归背景（v1.9.3 线上，所有面板接口一起报「未找到该路由」）：
+    # 我按 `/{PLUGIN_NAME}{path}` 注册，也就是
+    # `/astrbot_plugin_panshi/shop/items`。但 AstrBot 4.28.2 的匹配是：
+    #
+    #   路由声明   /plugins/extensions/{plugin_path:path}
+    #   plugin_path = "astrbot_plugin_panshi/shop/items"
+    #   _match_registered_web_api 用**整条** plugin_path 去 fullmatch 注册路径
+    #
+    # 插件名并没有被剥掉，所以注册路径也不该带插件名。
+    # 差一个前缀的结果是**每一条**路由都匹配不上——单段路径同样失效，
+    # 因为前缀对所有路由都多了一段。
+    #
+    # 而页面本身照旧能加载（HTML 是静态文件，不走路由表），
+    # 表现就是"界面出来了、点什么都提示未找到该路由"。
     raw_paths = [r[0] for r in ctx.routes]
-    for r in required_routes:
-        assert f"/{r}" in raw_paths, f"缺少带斜杠的 {r}"
-        assert r in raw_paths, f"缺少不带斜杠的 {r}"
-    for route, _h, _m, _d in ctx.routes:
-        assert route.lstrip("/").startswith("astrbot_plugin_panshi/"), route
-    print(f"WEB_ROUTES_OK ({len(raw_paths)} 条 = 必需路由 × 两种路径形式)")
+    required_routes = [
+        "/bootstrap", "/overview", "/global", "/group", "/group/reset",
+        "/shop/items", "/shop/prizes", "/shop/reset",
+    ]
+    missing = [r for r in required_routes if r not in raw_paths]
+    assert not missing, f"缺少路由 {missing}，实际 {raw_paths}"
+
+    prefixed = [p for p in raw_paths if "astrbot_plugin_panshi" in p]
+    assert not prefixed, (
+        "路由路径不能带插件名前缀——AstrBot 匹配时用的是完整的 plugin_path，"
+        f"带前缀会全部匹配不上：{prefixed}")
+
+    for path in raw_paths:
+        assert path.startswith("/"), f"路由应以 / 开头: {path}"
+    print(f"WEB_ROUTES_OK ({len(raw_paths)} 条，均不带插件名前缀)")
     for route, _h, methods, _d in ctx.routes:
         print("   ", ",".join(methods).ljust(4), route)
 

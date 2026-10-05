@@ -98,36 +98,38 @@ class PanshiWebController:
             ("/shop/reset", self.api_shop_reset, ["POST"], "恢复商品与奖池的默认值"),
         ]
 
-        # 两条路径形式都注册一遍。
+        # 注册的路径**不带插件名前缀**。
         #
-        # AstrBot 内部会把「插件名 + 子路径」拼成真实 URL，同时有一个
-        # `_normalize_plugin_api_route` 在注册与匹配两侧各做一次归一化。
-        # 我没能确定它对前导斜杠的处理方向（字节码读不准，本地也没有
-        # 可运行的 AstrBot 来实测），所以两条都注册：
-        # 带斜杠（既有约定）和不带斜杠。哪条被匹配到都能用，
-        # 不会出现"页面渲染出来了但接口 404"。
+        # 这一点搞错了就是「未找到该路由」，而且所有路由一起失效（单段也失效）。
+        # 真实链路（读自 AstrBot 4.28.2 的 plugins.cpython-312.pyc）：
+        #
+        #   路由声明   /plugins/extensions/{plugin_path:path}
+        #   plugin_path = "astrbot_plugin_panshi/shop/items"
+        #   _match_registered_web_api(registered_web_apis, plugin_path, method)
+        #     request_path = "/" + subpath.lstrip("/")     -> "/astrbot_plugin_panshi/shop/items"
+        #     re.fullmatch(pattern, request_path)          -> 拿注册路径去匹配**整条**
+        #
+        # 也就是说匹配时用的就是完整 plugin_path，插件名没有被剥掉。
+        # 所以注册 "/shop/items" 才会命中；注册带前缀的
+        # "/astrbot_plugin_panshi/shop/items" 则永远匹配不上。
+        #
+        # 前端 bridge 那边是 apiGet("shop/items")，由 SDK 自己补插件名，
+        # 与这里的约定一致。
         ok_count = 0
         registered_paths: list[str] = []
-        failed: list[str] = []
         for path, handler, methods, desc in routes:
-            wrapped = self._wrap(handler)
-            for candidate in (f"/{PLUGIN_NAME}{path}",
-                              f"{PLUGIN_NAME}{path}"):
-                try:
-                    register(candidate, wrapped, methods, desc)
-                    ok_count += 1
-                    registered_paths.append(candidate)
-                except Exception as e:
-                    # 同一路由的两种写法，其中一条失败很正常（取决于版本），
-                    # 两条都失败才算真失败
-                    if not candidate.startswith("/"):
-                        failed.append(f"{candidate}: {e}")
-                    logger.debug(f"[磐石] 注册路由 {candidate} 未成功: {e}")
+            candidate = path if path.startswith("/") else f"/{path}"
+            try:
+                register(candidate, self._wrap(handler), methods, desc)
+                ok_count += 1
+                registered_paths.append(candidate)
+            except Exception as e:
+                logger.error(f"[磐石] 注册路由 {candidate} 失败: {e}")
 
         self._registered = ok_count > 0
         if self._registered:
-            # 把实际注册的路径打出来。线上遇到「未找到该路由」时，
-            # 这条日志能立刻看出接口到底有没有注册上、注册成了什么形式。
+            # 把实际注册的路径打出来。线上再遇到「未找到该路由」，
+            # 这条日志能立刻看出接口注册成了什么形式。
             logger.info(
                 f"[磐石] 配置面板已注册 {ok_count} 个接口，"
                 f"子路径示例: {', '.join(registered_paths[:4])}"
@@ -138,8 +140,6 @@ class PanshiWebController:
                 f"register_web_api 是否可用: {callable(register)}；"
                 f"Web 请求模块: {'可用' if request is not None else _WEB_IMPORT_ERROR}"
             )
-        if failed:
-            logger.warning("[磐石] 这些路由注册失败: " + "; ".join(failed))
         return self._registered
 
     def _wrap(self, handler: Callable) -> Callable:
