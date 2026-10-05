@@ -75,6 +75,52 @@ function showError(msg) {
   box.append(el("div", { class: "alert error", text: String(msg) }));
 }
 
+/**
+ * 从响应里把列表取出来，尽量宽容。
+ *
+ * 后端返回的是 `{items: [...]}`，但不同版本的 bridge 可能把它包一层
+ * （`{data: {...}}`）或转成字符串。线上出现过「后端日志说 items=1、
+ * 界面却是空的」，所以不能假定只有一种形状。
+ */
+function pickList(res, key) {
+  if (res === null || res === undefined) return null;
+  if (Array.isArray(res)) return res;
+  if (typeof res === "string") {
+    try {
+      return pickList(JSON.parse(res), key);
+    } catch (e) {
+      return null;
+    }
+  }
+  if (typeof res !== "object") return null;
+  if (Array.isArray(res[key])) return res[key];
+  for (const wrap of ["data", "result", "payload", "body"]) {
+    const inner = res[wrap];
+    if (inner === undefined || inner === null) continue;
+    const got = pickList(inner, key);
+    if (got) return got;
+  }
+  const arrs = Object.values(res).filter(Array.isArray);
+  if (arrs.length === 1) return arrs[0];
+  return null;
+}
+
+/** 把响应的形状压成一行，用于界面上回显。 */
+function shapeOf(res) {
+  try {
+    if (res === null || res === undefined) return String(res);
+    if (Array.isArray(res)) return `数组(${res.length})`;
+    if (typeof res !== "object") return `${typeof res}: ${String(res).slice(0, 80)}`;
+    return "{" + Object.entries(res).map(([k, v]) => {
+      if (Array.isArray(v)) return `${k}=数组(${v.length})`;
+      if (v && typeof v === "object") return `${k}=对象{${Object.keys(v).join(",")}}`;
+      return `${k}=${JSON.stringify(v)}`;
+    }).join(", ") + "}";
+  } catch (e) {
+    return "(无法描述)";
+  }
+}
+
 /* 自绘确认框：iframe 里原生 confirm() 可能被 allow-modals 拦掉且不报错 */
 function askConfirm({ title, message, confirmText = "确定", danger = false } = {}) {
   return new Promise((resolve) => {
@@ -400,13 +446,35 @@ async function renderItemsView(host, onBack) {
 
   let data = { items: [] };
   let settings = { enable: false };
+  let rawNote = "";
   try {
     const [itemsRes, setRes] = await Promise.all([
       apiGet("shop/items", {}),
       apiGet("shop/settings", {}).catch(() => ({})),
     ]);
-    data = itemsRes;
-    settings = { ...settings, ...setRes };
+    // 不假定返回形状：后端给 {items:[...]}，但 bridge 可能包一层
+    const list = pickList(itemsRes, "items") || [];
+    data = { items: list };
+    settings = { ...settings, ...(setRes && typeof setRes === "object" ? setRes : {}) };
+    // 回显一行，省得为了排查去开 F12
+    rawNote = `后端返回：${shapeOf(itemsRes)}　→　识别出 ${list.length} 件`;
+
+    // 再问一次后端的"自述"：内存里有多少、文件在哪、文件里有多少
+    try {
+      const dbg = await apiGet("shop/debug", {});
+      if (dbg && typeof dbg === "object") {
+        rawNote += `　||　后端内存 items=${dbg.items_count}`
+          + `　文件里 stored_items=${dbg.stored_items_count}`
+          + `　文件存在=${dbg.file_exists}`
+          + `　设置=${JSON.stringify(dbg.settings)}`;
+        if (dbg.file) rawNote += `　文件=${dbg.file}`;
+        if (dbg.items_count > 0 && list.length === 0) {
+          rawNote += "　← 后端有数据但没传到界面，请把这一行截图";
+        }
+      }
+    } catch (e) {
+      rawNote += `　||　诊断接口读取失败：${e.message || e}`;
+    }
   } catch (e) {
     wrap.append(el("div", {
       class: "alert error",
@@ -460,6 +528,7 @@ async function renderItemsView(host, onBack) {
       }),
     ]),
     items.table,
+    rawNote ? el("div", { class: "shop-raw-hint", text: rawNote }) : null,
     el("div", { class: "shop-actions" }, [
       el("button", {
         class: "btn primary", type: "button", text: "保存商品",

@@ -75,6 +75,17 @@ window.AstrBotPluginPage = {
     if (ep.endsWith("shop/items")) return { items: JSON.parse(JSON.stringify(items)) };
     if (ep.endsWith("shop/prizes")) return { prizes: JSON.parse(JSON.stringify(prizes)) };
     if (ep.endsWith("shop/settings")) return JSON.parse(JSON.stringify(settings));
+    if (ep.endsWith("shop/debug")) {
+      return {
+        settings: JSON.parse(JSON.stringify(settings)),
+        items_count: items.length,
+        prizes_count: prizes.length,
+        file: "/tmp/panshi_data.json",
+        file_exists: true,
+        stored_items_count: items.length,
+        stored_settings: JSON.parse(JSON.stringify(settings)),
+      };
+    }
     return {};
   },
   apiPost: async (endpoint, body) => {

@@ -167,6 +167,8 @@ class PanshiWebController:
             "shop/save-items": ("api_shop_save_items", {"POST"}),
             "shop/save-prizes": ("api_shop_save_prizes", {"POST"}),
             "shop/save-settings": ("api_shop_save_settings", {"POST"}),
+            # 诊断：把后端此刻的状态原样给前端看，便于定位「保存成功但界面为空」
+            "shop/debug": ("api_shop_debug", {"GET"}),
         }
 
     def _tail_of(self, request_: Any) -> str:
@@ -414,6 +416,37 @@ class PanshiWebController:
         return _ok({"items": shop.editable_items(),
                     "prizes": shop.editable_prizes(),
                     "message": "已恢复为配置里的默认商品与奖池"})
+
+    async def api_shop_debug(self):
+        """诊断：后端此刻的内存状态 + 数据文件情况。
+
+        只读，不改任何东西。用于排查「保存成功但界面显示为空」：
+        对比这里返回的 items 数量和界面上看到的，就能判断是
+        存储层、读取层还是渲染层的问题。
+        """
+        shop = self._shop()
+        if shop is None:
+            return _err("商城模块不可用", 503)
+        db = getattr(shop, "db", None)
+        info: dict = {
+            "settings": shop.editable_settings(),
+            "items_count": len(shop.editable_items()),
+            "prizes_count": len(shop.editable_prizes()),
+        }
+        if db is not None:
+            info["file"] = getattr(db, "file", "")
+            try:
+                import os as _os
+                info["file_exists"] = _os.path.exists(info["file"])
+                info["file_size"] = _os.path.getsize(info["file"]) \
+                    if info["file_exists"] else 0
+            except Exception as e:  # pragma: no cover
+                info["file_error"] = str(e)
+            raw_items = db.get_shop_items()
+            info["stored_items_count"] = len(raw_items) if raw_items else 0
+            info["stored_items"] = raw_items or []
+            info["stored_settings"] = db.get_shop_settings()
+        return _ok(info)
 
     async def api_shop_settings(self):
         shop = self._shop()
