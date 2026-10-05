@@ -263,8 +263,106 @@ def main():
     test_shop_probability()
     test_points_switch()
     test_simple_points_commands()
+    test_schema_loadable()
 
     print("ALL_SELFTEST_PASS")
+
+
+def test_schema_loadable():
+    """_conf_schema.json 必须能被 AstrBot 的配置解析器吃下去。
+
+    **回归背景（v1.8.3 线上事故）**：`shop.penalties` 被写成
+    ``type: object`` 却没给 ``items`` 子结构。AstrBot 的
+    ``_parse_schema`` 遇到 object 就递归去找 ``v["items"]``，
+    于是 ``KeyError: 'items'``，**整个插件加载失败**：
+
+        Exception: 加载插件「磐石 · 智能群管」时出现问题，原因：'items'
+
+    而当时我的测试**一个都没发现**——因为我只验证了「这是合法 JSON」，
+    没验证「AstrBot 能解析它」。合法 JSON 和合规 schema 是两回事。
+
+    AstrBot 的解析规则（读自 astrbot_config._parse_schema 的字节码常量）：
+
+    * ``type`` 不在支持列表里 → TypeError
+    * ``type == "object"`` → **必须**有 ``items``，并递归解析每一项
+    * ``type == "template_list"`` → 需要 ``templates``
+    * 其余类型 → 取 ``default``（缺省用 DEFAULT_VALUE_MAP 的零值）
+    * 没有 ``type`` → 不递归，按普通值处理
+    """
+    import json as _json
+    import os as _os
+
+    repo = _os.path.dirname(_os.path.abspath(__file__))
+    path = _os.path.join(repo, "_conf_schema.json")
+    with open(path, encoding="utf-8") as f:
+        schema = _json.load(f)
+
+    # AstrBot 支持的类型（取自 DEFAULT_VALUE_MAP 的键 + 两个结构类型）
+    SIMPLE = {"int", "float", "bool", "string", "text", "list", "dict"}
+    STRUCT = {"object", "template_list"}
+    problems: list[str] = []
+
+    def walk(node, path: str) -> None:
+        if not isinstance(node, dict):
+            return
+        t = node.get("type")
+
+        if t is not None and t not in SIMPLE | STRUCT:
+            problems.append(f"{path}: 不支持的 type={t!r}（AstrBot 会抛 TypeError）")
+
+        if t == "object":
+            # 这就是线上那个 KeyError
+            if "items" not in node:
+                problems.append(
+                    f"{path}: type=object 但缺少 items —— "
+                    f"AstrBot 解析时会 KeyError: 'items'，导致插件加载失败")
+            elif not isinstance(node["items"], dict):
+                problems.append(f"{path}: items 必须是对象")
+            else:
+                for k, v in node["items"].items():
+                    walk(v, f"{path}.{k}" if path else k)
+
+        if t == "template_list" and "templates" not in node:
+            problems.append(f"{path}: type=template_list 但缺少 templates")
+
+        # 递归只沿 items 走：object 之外的类型 AstrBot 不会往下钻
+        if t != "object":
+            for k, v in node.items():
+                if k in ("items", "default", "slider", "options", "templates"):
+                    continue
+                if isinstance(v, dict) and ("type" in v or "default" in v):
+                    walk(v, f"{path}.{k}" if path else k)
+
+    walk(schema, "")
+
+    # 顶层每个分组都应当是 object 且带 items
+    for k, v in schema.items():
+        if not isinstance(v, dict):
+            problems.append(f"顶层 {k} 不是对象")
+            continue
+        if v.get("type") != "object":
+            problems.append(f"顶层 {k} 的 type 应为 object，实际 {v.get('type')!r}")
+        elif "items" not in v:
+            problems.append(f"顶层 {k} 缺少 items")
+
+    assert not problems, "schema 有问题：\n  " + "\n  ".join(problems)
+    print(f"SCHEMA_LOADABLE_OK ({len(schema)} 个顶层分组，无 object 缺 items)")
+
+    # 每个配置项都要有 description，否则面板上是一串看不懂的键名
+    no_desc = []
+
+    def check_desc(node, path=""):
+        if not isinstance(node, dict):
+            return
+        if node.get("type") == "object":
+            for k, v in (node.get("items") or {}).items():
+                if isinstance(v, dict) and not str(v.get("description") or "").strip():
+                    no_desc.append(f"{path}.{k}" if path else k)
+                check_desc(v, f"{path}.{k}" if path else k)
+
+    check_desc(schema)
+    assert not no_desc, f"这些配置项缺少 description（面板上会显示成裸键名）：{no_desc}"
+    print("SCHEMA_DESC_OK (每项都有说明文字)")
 
 
 def test_simple_points_commands():
@@ -819,6 +917,21 @@ def test_shop_logic():
     print("SHOP_REWARD_OK (points/title/action/manual/none + 占位符替换)")
 
     # ---------------- 6. 违规扣分 ----------------
+    # 列表写法（现在面板里的标准写法）
+    rules_list = parse_penalties([
+        {"reason": "刷屏", "points": 20, "ban": True},
+        {"reason": "违禁词", "points": 50, "ban": True},
+        {"reason": "复读", "points": 10, "ban": False},
+        {"reason": "关掉的", "points": 99, "enabled": False},
+        {"points": 5},                      # 没有 reason -> 跳过
+    ])
+    assert rules_list["刷屏"].points == 20 and rules_list["刷屏"].ban is True
+    assert rules_list["复读"].ban is False
+    assert rules_list["关掉的"].enabled is False
+    assert "关掉的" in rules_list
+    assert len(rules_list) == 4, list(rules_list)
+
+    # 字典写法（旧格式，保留兼容）
     rules = parse_penalties({
         "刷屏": {"points": 20, "ban": True},
         "违禁词": 50,                    # 简写成数字也认
@@ -831,7 +944,8 @@ def test_shop_logic():
     assert rules["关掉的"].enabled is False
     assert parse_penalties(None) == {}
     assert parse_penalties("坏数据") == {}
-    print("SHOP_PENALTY_PARSE_OK (对象/数字简写/禁用/坏数据)")
+    assert parse_penalties([]) == {}
+    print("SHOP_PENALTY_PARSE_OK (列表/字典两种写法 + 禁用 + 坏数据)")
 
     # 扣分不下穿到负数
     assert apply_points_floor(100, -20) == (80, 20)

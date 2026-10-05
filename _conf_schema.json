@@ -534,30 +534,34 @@
       },
       "penalties": {
         "description": "违规扣积分",
-        "type": "object",
-        "default": {
-          "刷屏": {
+        "type": "list",
+        "hint": "每项字段：reason（风控原因，要和风控那侧的叫法一致：刷屏 / 违禁词 / 广告 / 复读）、points（扣多少积分，不会扣成负数）、ban（是否同时禁言，时长仍由「风控」组各自的配置决定）、enabled（是否启用这条）。",
+        "default": [
+          {
+            "reason": "刷屏",
             "points": 20,
             "ban": true,
             "enabled": true
           },
-          "违禁词": {
+          {
+            "reason": "违禁词",
             "points": 50,
             "ban": true,
             "enabled": true
           },
-          "广告": {
+          {
+            "reason": "广告",
             "points": 50,
             "ban": true,
             "enabled": true
           },
-          "复读": {
+          {
+            "reason": "复读",
             "points": 10,
             "ban": false,
             "enabled": true
           }
-        },
-        "hint": "键名要和风控原因一致：刷屏 / 违禁词 / 广告 / 复读。points = 扣多少积分（不会扣成负数），ban = 是否同时禁言（禁言时长仍由「风控」组里各自的时长决定），enabled = 是否启用这条。"
+        ]
       }
     }
   },

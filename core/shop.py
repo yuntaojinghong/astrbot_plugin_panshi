@@ -495,33 +495,55 @@ class PenaltyRule:
 
 
 def parse_penalties(raw) -> dict[str, PenaltyRule]:
-    """解析每条风控原因的扣分配置。
+    """解析「违规 → 扣多少积分」的配置。
 
-    配置形如::
+    接受**两种**写法：
 
-        {"刷屏": {"points": 20, "ban": true},
-         "违禁词": {"points": 50}}
+    1. 列表（推荐，也是面板里的标准写法）::
 
-    键是风控原因（与 guard 里传入的 reason 一致）。
+        [{"reason": "刷屏", "points": 20, "ban": true}, ...]
+
+    2. 字典（旧写法，保留兼容）::
+
+        {"刷屏": {"points": 20, "ban": true}, "违禁词": 50}
+
+    为什么推荐列表：AstrBot 的配置解析器遇到 ``type: object`` 会要求同时给出
+    ``items`` 子结构（用于描述 dict 里每个值的字段），少给就抛
+    ``KeyError: 'items'`` 并**导致整个插件加载失败**。
+    列表没有这个约束，和其它配置项（商品、奖池）写法也一致。
+
+    键是风控原因，与 ``guard`` 里传入的 reason 一致。
     """
     out: dict[str, PenaltyRule] = {}
-    if not isinstance(raw, dict):
-        return out
-    for reason, spec in raw.items():
+
+    def add(reason: str, spec) -> None:
         key = str(reason or "").strip()
         if not key:
-            continue
+            return
+        # 简写成数字：{"违禁词": 50} 或 "违禁词=50"
         if isinstance(spec, (int, float)) and not isinstance(spec, bool):
             out[key] = PenaltyRule(reason=key, points=max(0, int(spec)))
-            continue
+            return
         if not isinstance(spec, dict):
-            continue
+            return
         out[key] = PenaltyRule(
             reason=key,
             points=max(0, _as_int(spec.get("points", spec.get("扣分")), 0)),
             ban=_as_bool(spec.get("ban", spec.get("禁言", True)), True),
             enabled=_as_bool(spec.get("enabled", spec.get("启用", True)), True),
         )
+
+    if isinstance(raw, (list, tuple)):
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            add(str(item.get("reason") or item.get("原因") or ""), item)
+        return out
+
+    if isinstance(raw, dict):
+        # 旧写法：{"刷屏": {...}}
+        for reason, spec in raw.items():
+            add(reason, spec)
     return out
 
 
