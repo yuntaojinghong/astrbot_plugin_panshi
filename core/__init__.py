@@ -9,6 +9,9 @@ from .welcome import WelcomeHandle
 from .join import JoinHandle
 from .warning import WarningHandle
 from .activity import ActivityHandle
+from .shop import (ShopConfig, ShopItem, Prize, LotteryConfig, parse_config,
+                   parse_penalties, apply_points_floor)
+from .shop_handle import ShopHandle
 from .automate import AutomateHandle
 from .context import ContextCollector
 from .intent import IntentParser
@@ -31,6 +34,14 @@ __all__ = [
     "JoinHandle",
     "WarningHandle",
     "ActivityHandle",
+    "ShopConfig",
+    "ShopItem",
+    "Prize",
+    "LotteryConfig",
+    "parse_config",
+    "parse_penalties",
+    "apply_points_floor",
+    "ShopHandle",
     "AutomateHandle",
     "ContextCollector",
     "IntentParser",

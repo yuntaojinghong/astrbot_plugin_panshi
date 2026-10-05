@@ -39,6 +39,7 @@ from .core import (
 )
 from .core.at_chain import at_chain
 from .core.intent_executor import _as_bool, _as_int
+from .core.shop_handle import ShopHandle
 from .data import GroupInfoCache, Storage
 from .utils import (PermLevel, check_permission, check_permission_async,
                    parse_duration, parse_target, safe_int)
@@ -83,6 +84,8 @@ class PanshiPlugin(Star):
         self.join = JoinHandle(self.cfg, self.db)
         self.warning = WarningHandle(self.cfg, self.db)
         self.activity = ActivityHandle(self.cfg, self.db)
+        # 积分商城 / 抽奖 / 积分惩罚
+        self.shop = ShopHandle(self.cfg, self.db)
         self.interact = InteractHandle(self.cfg, self.db)
         # 面板 / 自检 / 配置向导
         self.panel = PanelHandle(self.cfg, self.db)
@@ -731,6 +734,26 @@ class PanshiPlugin(Star):
             yield event.plain_result(await self.activity.rank_messages(event))
         else:
             yield event.plain_result(await self.activity.rank_points(event))
+
+    # ========== 指令：积分商城 / 抽奖 ==========
+    @filter.command("商城", alias={"积分商城", "shop"})
+    async def cmd_shop(self, event: AstrMessageEvent):
+        """查看积分商城：/商城"""
+        yield event.plain_result(await self.shop.show_shop(event))
+
+    @filter.command("购买", alias={"兑换", "buy"})
+    async def cmd_buy(self, event: AstrMessageEvent, arg: str = ""):
+        """购买商品：/购买 <商品名>"""
+        key = arg.strip()
+        if not key:
+            yield event.plain_result("❓ 用法：/购买 <商品名>。用「/商城」查看可选商品。")
+            return
+        yield event.plain_result(await self.shop.buy(event, key))
+
+    @filter.command("抽奖", alias={"lottery", "抽一次"})
+    async def cmd_lottery(self, event: AstrMessageEvent):
+        """抽一次奖：/抽奖"""
+        yield event.plain_result(await self.shop.draw(event))
 
     # ========== 指令：互动工具 ==========
     @filter.command("投票", alias={"vote"})

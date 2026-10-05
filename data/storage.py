@@ -51,6 +51,8 @@ class Storage:
             "stats": {},
             # 自主还手的冷却与当日计数（按群），需持久化以便重启后仍然限流
             "defense": {},
+            # 积分商城的库存与销量（跨群全局）
+            "shop": {"stock": {}, "sold": {}},
         }
         self._load()
 
@@ -105,6 +107,141 @@ class Storage:
 
     def get_user(self, group_id, user_id) -> dict:
         return dict(self._user(group_id, user_id))
+
+    # ---------- 积分商城 / 抽奖 ---------- #
+    #
+    # 这些是**跨群全局**的：商品与奖池由管理员统一配置，积分本身按群隔离
+    # （复用 users 表的 points）。所以这里不再按 group 分表。
+    #
+    # 购买/抽奖记录保留在 users[key]["purchases"] / ["draws"] 里，便于限购统计。
+
+    def _shop_table(self) -> dict:
+        return self._data.setdefault("shop", {"stock": {}, "sold": {}})
+
+    def get_stock(self, item_id: str) -> int | None:
+        """剩余库存。``None`` = 不限量。"""
+        raw = self._shop_table()["stock"].get(str(item_id))
+        if raw is None:
+            return None
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            return None
+
+    def set_stock(self, item_id: str, value: int | None) -> None:
+        with self._lock:
+            t = self._shop_table()
+            if value is None:
+                t["stock"].pop(str(item_id), None)
+            else:
+                t["stock"][str(item_id)] = int(value)
+            self.save()
+
+    def decrement_stock(self, item_id: str, n: int = 1) -> bool:
+        """扣库存。不限量时直接成功；库存不足返回 False。
+
+        与 get_stock 之间有竞态风险，所以扣减在锁内用当前值重新判断，
+        不依赖调用方先前读到的数字。
+        """
+        with self._lock:
+            t = self._shop_table()
+            key = str(item_id)
+            cur = t["stock"].get(key)
+            if cur is None:
+                return True
+            try:
+                cur = int(cur)
+            except (TypeError, ValueError):
+                return True
+            if cur < n:
+                return False
+            t["stock"][key] = cur - n
+            self.save()
+            return True
+
+    def sold_count(self, item_id: str) -> int:
+        return int(self._shop_table()["sold"].get(str(item_id), 0) or 0)
+
+    def bump_sold(self, item_id: str, n: int = 1) -> None:
+        with self._lock:
+            t = self._shop_table()
+            key = str(item_id)
+            t["sold"][key] = int(t["sold"].get(key, 0) or 0) + n
+            self.save()
+
+    # ---- 每人限购 / 每人每日抽奖次数 ---- #
+
+    def _purchase_count(self, group_id, user_id, item_id: str,
+                        today: str = "") -> int:
+        u = self._user(group_id, user_id)
+        recs = u.get("purchases") or []
+        iid = str(item_id)
+        n = 0
+        for r in recs:
+            if not isinstance(r, dict) or str(r.get("item")) != iid:
+                continue
+            if today and str(r.get("date")) != today:
+                continue
+            n += 1
+        return n
+
+    def purchase_count_total(self, group_id, user_id, item_id: str) -> int:
+        return self._purchase_count(group_id, user_id, item_id)
+
+    def purchase_count_today(self, group_id, user_id, item_id: str) -> int:
+        return self._purchase_count(group_id, user_id, item_id,
+                                    time.strftime("%Y-%m-%d"))
+
+    def record_purchase(self, group_id, user_id, item_id: str,
+                        cost: int, note: str = "") -> None:
+        with self._lock:
+            u = self._user(group_id, user_id)
+            recs = u.setdefault("purchases", [])
+            recs.append({
+                "item": str(item_id), "cost": int(cost),
+                "date": time.strftime("%Y-%m-%d"), "ts": time.time(),
+                "note": str(note or ""),
+            })
+            # 只留最近 200 条，避免无限增长
+            if len(recs) > 200:
+                del recs[:-200]
+            self.save()
+
+    def _draw_count(self, group_id, user_id, today: str = "") -> int:
+        u = self._user(group_id, user_id)
+        recs = u.get("draws") or []
+        if not today:
+            return len(recs)
+        return sum(1 for r in recs
+                   if isinstance(r, dict) and str(r.get("date")) == today)
+
+    def draw_count_today(self, group_id, user_id) -> int:
+        return self._draw_count(group_id, user_id, time.strftime("%Y-%m-%d"))
+
+    def draw_count_total(self, group_id, user_id) -> int:
+        return self._draw_count(group_id, user_id)
+
+    def record_draw(self, group_id, user_id, prize_id: str,
+                    cost: int = 0, note: str = "") -> None:
+        with self._lock:
+            u = self._user(group_id, user_id)
+            recs = u.setdefault("draws", [])
+            recs.append({
+                "prize": str(prize_id), "cost": int(cost),
+                "date": time.strftime("%Y-%m-%d"), "ts": time.time(),
+                "note": str(note or ""),
+            })
+            if len(recs) > 200:
+                del recs[:-200]
+            self.save()
+
+    def recent_purchases(self, group_id, user_id, limit: int = 10) -> list[dict]:
+        recs = self._user(group_id, user_id).get("purchases") or []
+        return [r for r in recs if isinstance(r, dict)][-max(1, int(limit)):][::-1]
+
+    def recent_draws(self, group_id, user_id, limit: int = 10) -> list[dict]:
+        recs = self._user(group_id, user_id).get("draws") or []
+        return [r for r in recs if isinstance(r, dict)][-max(1, int(limit)):][::-1]
 
     # ---------- 积分 / 签到 ----------
     def add_points(self, group_id, user_id, amount: int) -> int:

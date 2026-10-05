@@ -259,8 +259,216 @@ def main():
     test_autonomous_enforcement()
     test_self_defense()
     test_welcome_self_and_at()
+    test_shop_logic()
 
     print("ALL_SELFTEST_PASS")
+
+
+def test_shop_logic():
+    """积分商城 / 抽奖 / 违规扣分的规则层。
+
+    这一层是纯计算，所以可以密集覆盖边界：
+    库存售罄、限购、积分不足、权重分布、保底、扣分不下穿到负数。
+    """
+    import random
+
+    from astrbot_plugin_panshi.core.shop import (
+        apply_points_floor, can_buy, can_draw, draw_prize, find_item,
+        listable_items, parse_config, parse_penalties, render_reward,
+        reward_points,
+    )
+
+    # ---------------- 1. 解析配置：坏条目跳过而不是整体失败 ----------------
+    cfg, notes = parse_config({
+        "enable": True,
+        "items": [
+            {"id": "a", "name": "头衔", "cost": 100, "reward": "title", "value": "大佬"},
+            {"name": "没写价格"},                       # 缺 cost -> 跳过
+            {"name": "负价格", "cost": -5},              # 负数 -> 跳过
+            "不是对象",                                  # 类型错 -> 跳过
+            {"name": "下架的", "cost": 10, "enabled": False},
+            {"name": "库存写错", "cost": 10, "stock": "abc"},  # 库存无效 -> 当不限量
+        ],
+        "lottery": {
+            "enable": True, "cost": 10, "daily_limit": 3, "pity": 5,
+            "prizes": [
+                {"id": "p1", "name": "谢谢参与", "weight": 60, "reward": "none"},
+                {"id": "p2", "name": "稀有", "weight": 1, "rare": True,
+                 "reward": "points", "value": "100"},
+            ],
+        },
+    })
+    assert cfg.enable is True
+    names = [i.name for i in cfg.items]
+    assert "头衔" in names and "下架的" in names, names
+    assert "没写价格" not in names and "负价格" not in names, names
+    assert len(cfg.items) == 3, names
+    # 库存写错时退化为不限量（比"卖不出去"友好）
+    assert cfg.items[2].stock is None, cfg.items[2]
+    assert any("价格无效" in n for n in notes), notes
+    print(f"SHOP_PARSE_OK (跳过 {len(notes)} 条坏配置，其余可用)")
+
+    # 上架过滤
+    assert [i.name for i in listable_items(cfg)] == ["头衔", "库存写错"], \
+        [i.name for i in listable_items(cfg)]
+
+    # 按 id / 名字都能找到
+    assert find_item(cfg, "头衔") is not None
+    assert find_item(cfg, "a") is not None
+    assert find_item(cfg, "不存在") is None
+
+    # ---------------- 2. 购买判定 ----------------
+    item = find_item(cfg, "头衔")
+
+    assert can_buy(item, points=100, stock=5, bought_total=0, bought_today=0).ok
+    assert not can_buy(item, points=99, stock=5, bought_total=0, bought_today=0).ok
+    assert "积分不足" in can_buy(item, points=0, stock=5,
+                                bought_total=0, bought_today=0).reason
+    assert "售罄" in can_buy(item, points=999, stock=0,
+                            bought_total=0, bought_today=0).reason
+
+    limited = find_item(cfg, "下架的")
+    # 限购
+    from astrbot_plugin_panshi.core.shop import ShopItem
+    li = ShopItem(item_id="x", name="限购品", cost=10, limit_per_user=2, limit_per_day=1)
+    assert can_buy(li, points=999, stock=None, bought_total=0, bought_today=0).ok
+    assert "限购上限" in can_buy(li, points=999, stock=None,
+                                bought_total=2, bought_today=0).reason
+    assert "今天" in can_buy(li, points=999, stock=None,
+                            bought_total=1, bought_today=1).reason
+    # 下架
+    assert "下架" in can_buy(limited, points=999, stock=None,
+                            bought_total=0, bought_today=0).reason
+    print("SHOP_BUY_CHECK_OK (积分/库存/限购/下架 各自给出准确原因)")
+
+    # ---------------- 3. 抽奖判定 ----------------
+    lot = cfg.lottery
+    assert can_draw(lot, points=10, drawn_today=0).ok
+    assert "积分不足" in can_draw(lot, points=9, drawn_today=0).reason
+    assert "今天已经抽过" in can_draw(lot, points=999, drawn_today=3).reason
+
+    from astrbot_plugin_panshi.core.shop import LotteryConfig
+    off = LotteryConfig(enable=False)
+    assert "未开启" in can_draw(off, points=999, drawn_today=0).reason
+    empty = LotteryConfig(enable=True, cost=0, prizes=[])
+    assert "奖池是空的" in can_draw(empty, points=999, drawn_today=0).reason
+    print("SHOP_DRAW_CHECK_OK (未开启/空奖池/次数上限/积分不足)")
+
+    # ---------------- 4. 权重与保底 ----------------
+    rnd = random.Random(12345)
+    counts = {}
+    for _ in range(3000):
+        p, _pity = draw_prize(lot, miss_streak=0, rng=rnd)
+        counts[p.name] = counts.get(p.name, 0) + 1
+    # 权重 60:1，稀有应当明显更少
+    assert counts.get("谢谢参与", 0) > counts.get("稀有", 0) * 10, counts
+
+    # 保底：连击达标必出稀有
+    forced, by_pity = draw_prize(lot, miss_streak=5, rng=rnd)
+    assert by_pity is True and forced.name == "稀有", (forced, by_pity)
+    # 未达保底不会强制
+    _p, by_pity2 = draw_prize(lot, miss_streak=4, rng=rnd)
+    assert by_pity2 is False
+    # pity=0 时关闭保底
+    nopity = LotteryConfig(enable=True, cost=0, pity=0, prizes=lot.prizes)
+    _p3, by_pity3 = draw_prize(nopity, miss_streak=999, rng=rnd)
+    assert by_pity3 is False, "pity=0 不应触发保底"
+
+    # 权重全为 0 → 走保底或返回 None，不能崩
+    zero = LotteryConfig(enable=True, prizes=[
+        type(lot.prizes[0])(prize_id="z", name="零权重", weight=0),
+    ])
+    assert draw_prize(zero, miss_streak=0, rng=rnd) == (None, False)
+    print("SHOP_DRAW_PRIZE_OK (权重分布合理 / 保底必中 / pity=0 关闭 / 全零权重不崩)")
+
+    # ---------------- 5. 奖励渲染与积分换算 ----------------
+    assert reward_points(type(lot.prizes[1])(prize_id="q", name="q",
+                                             reward="points", value="50")) == 50
+    assert reward_points(type(lot.prizes[1])(prize_id="q", name="q",
+                                             reward="title", value="x")) == 0
+    assert reward_points(None) == 0
+    assert render_reward("points", "30", user_id="1") == "30 积分"
+    assert render_reward("title", "学霸", user_id="1") == "头衔「学霸」"
+    assert render_reward("manual", "", user_id="1") == "需要管理员人工发放"
+    assert render_reward("none", "", user_id="1") == "谢谢参与"
+    # action 模板的两个占位符
+    got = render_reward("action", "setcard {user} {name}", user_id="42", nickname="小明")
+    assert got == "setcard 42 小明", got
+    print("SHOP_REWARD_OK (points/title/action/manual/none + 占位符替换)")
+
+    # ---------------- 6. 违规扣分 ----------------
+    rules = parse_penalties({
+        "刷屏": {"points": 20, "ban": True},
+        "违禁词": 50,                    # 简写成数字也认
+        "复读": {"points": 10, "ban": False},
+        "关掉的": {"points": 99, "enabled": False},
+    })
+    assert rules["刷屏"].points == 20 and rules["刷屏"].ban is True
+    assert rules["违禁词"].points == 50, rules["违禁词"]
+    assert rules["复读"].ban is False
+    assert rules["关掉的"].enabled is False
+    assert parse_penalties(None) == {}
+    assert parse_penalties("坏数据") == {}
+    print("SHOP_PENALTY_PARSE_OK (对象/数字简写/禁用/坏数据)")
+
+    # 扣分不下穿到负数
+    assert apply_points_floor(100, -20) == (80, 20)
+    assert apply_points_floor(10, -20) == (0, 10), "不能扣成负数"
+    assert apply_points_floor(0, -20) == (0, 0), "已为 0 时不再扣"
+    assert apply_points_floor(50, 30) == (80, -30), "加分时返回负数表示增加了多少"
+    print("SHOP_POINTS_FLOOR_OK (扣分不下穿到负数)")
+
+    # ---------------- 7. 存储：库存 / 限购计数 / 记录 ----------------
+    import tempfile
+
+    from astrbot_plugin_panshi.data import Storage
+
+    tmp = tempfile.mkdtemp(prefix="panshi_shop_")
+    db = Storage(os.path.join(tmp, "d.json"))
+    GID, UID = "1077250302", "2226175932"
+
+    # 不限量
+    assert db.get_stock("nope") is None
+    assert db.decrement_stock("nope") is True, "不限量应总是可扣"
+    # 有库存
+    db.set_stock("it1", 2)
+    assert db.get_stock("it1") == 2
+    assert db.decrement_stock("it1") is True and db.get_stock("it1") == 1
+    assert db.decrement_stock("it1") is True and db.get_stock("it1") == 0
+    assert db.decrement_stock("it1") is False, "库存为 0 时必须拒绝"
+    assert db.get_stock("it1") == 0, "拒绝时不能把库存扣成负数"
+
+    # 限购计数按天区分
+    assert db.purchase_count_total(GID, UID, "it1") == 0
+    db.record_purchase(GID, UID, "it1", 100)
+    db.record_purchase(GID, UID, "it1", 100)
+    db.record_purchase(GID, UID, "it2", 50)
+    assert db.purchase_count_total(GID, UID, "it1") == 2
+    assert db.purchase_count_today(GID, UID, "it1") == 2
+    assert db.purchase_count_total(GID, UID, "it2") == 1
+
+    # 抽奖计数与记录
+    assert db.draw_count_today(GID, UID) == 0
+    db.record_draw(GID, UID, "p1", 10, note="谢谢参与")
+    db.record_draw(GID, UID, "p2", 10, note="50 积分")
+    assert db.draw_count_today(GID, UID) == 2
+    assert db.draw_count_total(GID, UID) == 2
+    recs = db.recent_draws(GID, UID, limit=5)
+    assert len(recs) == 2 and recs[0]["prize"] == "p2", recs
+
+    # 记录只看自己的：换个用户应当是空的
+    assert db.purchase_count_total(GID, "999", "it1") == 0
+    assert db.draw_count_today(GID, "999") == 0
+
+    # 落盘往返
+    db.save()
+    db2 = Storage(os.path.join(tmp, "d.json"))
+    assert db2.get_stock("it1") == 0
+    assert db2.purchase_count_total(GID, UID, "it1") == 2
+    assert db2.draw_count_today(GID, UID) == 2
+    print("SHOP_STORAGE_OK (库存/限购/抽奖计数/按用户隔离/落盘往返)")
+
+    print("SHOP_LOGIC_DONE")
 
 
 def test_welcome_self_and_at():
@@ -1678,15 +1886,20 @@ def test_config_layer():
     cfg = PluginConfig(raw)
 
     # schema 快照应读到真实的 _conf_schema.json
-    # 分组：basic / guard / welcome / warning / smart / activity / automate / interact
+    # 分组会随功能增加，所以断言"包含哪些必需组"和"数量随时间只增不减"，
+    # 而不是写死一个数字——写死的话每加一个配置组都要改测试，
+    # 久而久之就没人维护这条断言了。
     groups = cfg.schema_snapshot()
-    assert len(groups) == 8, [g["key"] for g in groups]
     keys = [g["key"] for g in groups]
+    required = ["basic", "guard", "welcome", "warning", "smart",
+                "activity", "shop", "automate", "interact"]
+    missing = [k for k in required if k not in keys]
+    assert not missing, f"缺少配置分组 {missing}，实际 {keys}"
     assert keys[:2] == ["basic", "guard"], keys
-    assert "interact" in keys, keys
+    assert len(groups) >= len(required), [g["key"] for g in groups]
     total_fields = sum(len(g["fields"]) for g in groups)
     assert total_fields >= 40, total_fields
-    print(f"SCHEMA_OK (8 组 / {total_fields} 项)")
+    print(f"SCHEMA_OK ({len(groups)} 组 / {total_fields} 项)")
 
     # 意图闸门的两个新配置项必须存在（v1.6.0）
     smart_fields = {

@@ -243,7 +243,43 @@ class GuardHandle(BaseHandle):
         except Exception as e:
             logger.warning(f"[磐石] 警告升级检查失败: {e}")
 
+        # 积分惩罚：按风控原因扣分（可与禁言叠加）
+        try:
+            deduct = self._apply_points_penalty(event, reason, cfg)
+            if deduct:
+                msg += f"\n{deduct}"
+        except Exception as e:
+            logger.warning(f"[磐石] 积分惩罚失败（已忽略）: {e}")
+
         return msg
+
+    def _apply_points_penalty(self, event, reason: str, cfg) -> str:
+        """按配置扣积分。返回给用户看的说明；没配或没分可扣时返回空串。
+
+        扣分**不会把积分扣成负数**——负积分会让排行榜和商城都变得难以解释，
+        用户也容易当成 bug。想表达"欠着"的话应该用警告次数，不是负积分。
+        """
+        from .shop import apply_points_floor, parse_penalties
+
+        raw = cfg.shop if isinstance(cfg.shop, dict) else {}
+        rules = parse_penalties(raw.get("penalties", raw.get("惩罚", {})))
+        rule = rules.get(str(reason))
+        if rule is None or not rule.enabled or rule.points <= 0:
+            return ""
+
+        group_id = self.group_id(event)
+        user_id = self.sender_id(event)
+        cur = self.db.get_points(group_id, user_id)
+        new_points, actual = apply_points_floor(cur, -rule.points)
+        if actual <= 0:
+            return f"💎 当前积分为 {cur}，不再扣除（不会扣成负数）。"
+        self.db.add_points(group_id, user_id, -actual)
+        if actual < rule.points:
+            # 余额不够扣满：说清"本该扣多少、实际扣了多少"，
+            # 否则用户会以为规则没生效
+            return (f"💎 扣除 {actual} 积分（积分不足，本该扣 {rule.points}，"
+                    f"{cur} → {new_points}）")
+        return f"💎 同时扣除 {actual} 积分（{cur} → {new_points}）"
 
     async def _recall_last(self, event, user_id) -> None:
         """撤回该用户最近一条消息（若有缓存）。"""

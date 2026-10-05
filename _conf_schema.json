@@ -412,6 +412,155 @@
       }
     }
   },
+  "shop": {
+    "description": "积分商城与抽奖",
+    "type": "object",
+    "items": {
+      "enable": {
+        "description": "启用积分商城",
+        "type": "bool",
+        "default": false,
+        "hint": "开启后群友可用「/商城」查看、「/购买 <商品名>」下单，积分来自签到与发言奖励。"
+      },
+      "items": {
+        "description": "商品列表",
+        "type": "list",
+        "default": [
+          {
+            "id": "title_7d",
+            "name": "7天专属头衔",
+            "cost": 200,
+            "description": "自定义群头衔，7天后可再买",
+            "stock": 0,
+            "limit_per_user": 1,
+            "limit_per_day": 0,
+            "reward": "title",
+            "value": "群宠"
+          },
+          {
+            "id": "points_100",
+            "name": "100积分补给包",
+            "cost": 80,
+            "description": "用 80 积分换 100 积分（每人每天一次）",
+            "stock": -1,
+            "limit_per_user": 0,
+            "limit_per_day": 1,
+            "reward": "points",
+            "value": "100"
+          }
+        ],
+        "hint": "每项字段：id（唯一标识，可省略）、name（商品名，必填）、cost（价格）、description（说明）、stock（库存，留空或 -1 = 不限量，0 = 售罄）、limit_per_user（每人限购，0 = 不限）、limit_per_day（每日限购，0 = 不限）、reward（发放方式）、value（发放内容）、enabled（是否上架）。"
+      },
+      "lottery": {
+        "description": "抽奖",
+        "type": "object",
+        "items": {
+          "enable": {
+            "description": "启用抽奖",
+            "type": "bool",
+            "default": false
+          },
+          "cost": {
+            "description": "每次抽奖消耗积分",
+            "type": "int",
+            "default": 10,
+            "slider": {
+              "min": 0,
+              "max": 500,
+              "step": 1
+            }
+          },
+          "daily_limit": {
+            "description": "每人每日抽奖次数上限（0 = 不限）",
+            "type": "int",
+            "default": 3,
+            "slider": {
+              "min": 0,
+              "max": 50,
+              "step": 1
+            }
+          },
+          "pity": {
+            "description": "保底次数（连续这么多次没中「稀有」就必中，0 = 关闭）",
+            "type": "int",
+            "default": 10,
+            "slider": {
+              "min": 0,
+              "max": 100,
+              "step": 1
+            },
+            "hint": "只对标记了 rare=是 的奖品生效。保底计数跨天累计。"
+          },
+          "prizes": {
+            "description": "奖池",
+            "type": "list",
+            "default": [
+              {
+                "id": "thanks",
+                "name": "谢谢参与",
+                "weight": 60,
+                "rare": false,
+                "reward": "none",
+                "value": ""
+              },
+              {
+                "id": "pts_5",
+                "name": "5 积分",
+                "weight": 30,
+                "rare": false,
+                "reward": "points",
+                "value": "5"
+              },
+              {
+                "id": "pts_50",
+                "name": "50 积分",
+                "weight": 9,
+                "rare": false,
+                "reward": "points",
+                "value": "50"
+              },
+              {
+                "id": "title_rare",
+                "name": "限定头衔",
+                "weight": 1,
+                "rare": true,
+                "reward": "title",
+                "value": "欧皇"
+              }
+            ],
+            "hint": "每项字段：id、name（奖品名，必填）、weight（相对权重，越大越容易中）、rare（是否稀有，供保底使用）、reward（points/title/action/manual/none）、value（发放内容）、enabled。权重是相对值，不需要加起来等于 100。"
+          }
+        }
+      },
+      "penalties": {
+        "description": "违规扣积分",
+        "type": "object",
+        "default": {
+          "刷屏": {
+            "points": 20,
+            "ban": true,
+            "enabled": true
+          },
+          "违禁词": {
+            "points": 50,
+            "ban": true,
+            "enabled": true
+          },
+          "广告": {
+            "points": 50,
+            "ban": true,
+            "enabled": true
+          },
+          "复读": {
+            "points": 10,
+            "ban": false,
+            "enabled": true
+          }
+        },
+        "hint": "键名要和风控原因一致：刷屏 / 违禁词 / 广告 / 复读。points = 扣多少积分（不会扣成负数），ban = 是否同时禁言（禁言时长仍由「风控」组里各自的时长决定），enabled = 是否启用这条。"
+      }
+    }
+  },
   "automate": {
     "description": "自动化",
     "type": "object",
