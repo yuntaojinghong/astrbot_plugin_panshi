@@ -497,6 +497,30 @@ def test_points_switch():
     assert getattr(PanshiPlugin, "cmd_chances", None) is not None, "缺少 /抽奖概率 指令"
     print("SWITCH_COMMANDS_OK (/积分开关 + /抽奖概率)")
 
+    # ---------- 每个指令都必须真的"有入口" ----------
+    # 回归背景：`ShopHandle.my_records` 写好了、测试也覆盖了，
+    # 但**没有任何指令或工具调用它**——购买/抽奖记录因此根本查不到。
+    # 光测"函数能跑"发现不了这种问题，必须检查"函数被谁调用"。
+    import inspect as _inspect
+    from astrbot_plugin_panshi.core.shop_handle import ShopHandle
+
+    src_all = ""
+    for _p in ("main.py", "core/guard.py", "core/interact.py",
+               "core/intent_executor.py", "core/panel.py"):
+        _f = os.path.join(os.path.dirname(os.path.dirname(
+            _inspect.getfile(ShopHandle))), _p)
+        if os.path.exists(_f):
+            with open(_f, encoding="utf-8") as fh:
+                src_all += fh.read()
+
+    # 这些是给用户用的功能，必须能从指令或 LLM 工具到达
+    for meth in ("show_shop", "buy", "draw", "my_records", "toggle",
+                 "show_chances"):
+        assert f".{meth}(" in src_all, (
+            f"ShopHandle.{meth} 没有任何入口（指令/工具都没调用它），"
+            f"用户根本用不到")
+    print("SHOP_ENTRYPOINTS_OK (商城/购买/抽奖/记录/开关/概率 都有指令入口)")
+
 
 def test_shop_logic():
     """积分商城 / 抽奖 / 违规扣分的规则层。

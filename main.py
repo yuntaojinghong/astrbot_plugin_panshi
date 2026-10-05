@@ -768,6 +768,11 @@ class PanshiPlugin(Star):
         """查看本群奖池概率：/抽奖概率"""
         yield event.plain_result(await self.shop.show_chances(event))
 
+    @filter.command("消费记录", alias={"积分记录", "我的记录"})
+    async def cmd_consumption(self, event: AstrMessageEvent):
+        """查看积分消费与抽奖记录：/消费记录"""
+        yield event.plain_result(await self.shop.my_records(event))
+
     # ========== 指令：互动工具 ==========
     @filter.command("投票", alias={"vote"})
     async def cmd_vote(self, event: AstrMessageEvent, arg: str = ""):
