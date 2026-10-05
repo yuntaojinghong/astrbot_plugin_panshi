@@ -19,14 +19,13 @@ from astrbot.api import logger
 # 配置分组的展示顺序（与 _conf_schema.json 的 key 一致）
 GROUP_ORDER = ["basic", "guard", "welcome", "warning", "smart", "activity", "automate", "interact"]
 
-#: 不显示在插件面板上的分组。
+#: 不显示在插件面板上的分组。目前为空。
 #:
-#: ``shop`` 的设置（商品、奖池、开关、消耗）已经搬到顶栏的「🛒 商品」与
-#: 「🎰 抽奖」两个页面，在那儿改更直观；这里不再重复一份，
-#: 免得两处各有一套、用户不知道哪个生效。
-#: schema 里仍然保留该组——AstrBot 原生配置页还能改，
-#: 而且默认值要从 schema 里取。
-HIDDEN_GROUPS = {"shop"}
+#: 之前这里放过 ``shop``——它的设置搬到了顶栏的「🛒 商品」与「🎰 抽奖」
+#: 两个页面。但只在这里过滤挡不住 AstrBot 原生配置页，用户照样能看到
+#: 那个组。所以最后是把整个组从 _conf_schema.json 删掉：
+#: 代码里对每项都有默认值，配置里没有这一组也能跑。
+HIDDEN_GROUPS: set[str] = set()
 
 GROUP_ICONS = {
     "basic": "⚙️",

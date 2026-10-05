@@ -437,21 +437,11 @@ def test_schema_renders_in_ui():
           "复杂结构改由插件自己的面板页或指令填写。")
     print("SCHEMA_RENDERS_OK (没有 default 是对象/对象数组的配置项)")
 
-    # 抽奖字段不该再有 object 外壳
-    shop = schema["shop"]["items"]
-    assert "lottery" not in shop, (
-        "shop.lottery 又变回 object 嵌套了 —— 它会显示成 [object Object]")
-    for key in ("lottery_enable", "lottery_cost", "lottery_daily_limit",
-                "lottery_pity", "lottery_prizes"):
-        assert key in shop, f"缺少摊平后的抽奖字段 {key}"
-    print("SCHEMA_FLAT_LOTTERY_OK (抽奖字段已摊平，无 object 外壳)")
-
-    # 内容型字段必须是 string 且默认为空
-    for key in ("items", "lottery_prizes", "penalties"):
-        f = shop[key]
-        assert f.get("type") == "string", (key, f.get("type"))
-        assert f.get("default") == "", (key, f.get("default"))
-    print("SCHEMA_CONTENT_EMPTY_OK (商品/奖池/扣分默认留空，由面板填写)")
+    # 抽奖字段原先被摊平在 shop 组里。现在整组删掉了（设置搬到了面板的
+    # 两个页面），所以这里只断言"没有再冒出对象嵌套"——
+    # 渲染层的那类问题由上面的 SCHEMA_RENDERS_OK 覆盖全 schema。
+    assert "shop" not in schema, "shop 组应当已删除"
+    print("SCHEMA_FLAT_LOTTERY_OK (shop 组已整体移除，不再有 object 嵌套)")
 
     # 摊平后的键名必须真的被读取——只改 schema 不改代码的话，
     # 用户在配置页填了抽奖设置却完全不生效，而且不会有任何报错。
@@ -501,13 +491,16 @@ def test_schema_renders_in_ui():
     assert not tags, f"schema 里有 HTML 标签，配置页只会原样显示：{tags}"
     print("SCHEMA_NO_HTML_OK (说明文字是纯文本，不会显示成标签原文)")
 
-    # 说明要短——用户明确说过「不要留者还写一大段话」
-    for key in ("items", "penalties", "lottery_prizes"):
-        hint = shop[key].get("hint") or ""
-        assert len(hint) <= 90, (
-            f"shop.{key} 的说明 {len(hint)} 字，太长了（配置页显示不下，"
-            f"用户要求简短）：{hint}")
-    print("SCHEMA_HINT_SHORT_OK (内容型字段说明都在 90 字以内)")
+    # 说明要短——用户明确说过「不要留者还写一大段话」。
+    # shop 组已经删了，这里检查剩下来的所有分组。
+    _long = []
+    for _gkey, _gnode in schema.items():
+        for _fkey, _fnode in (_gnode.get("items") or {}).items():
+            _hint = (_fnode or {}).get("hint") or ""
+            if len(_hint) > 120:
+                _long.append(f"{_gkey}.{_fkey}（{len(_hint)} 字）")
+    assert not _long, f"这些说明太长，配置页显示不下：{_long}"
+    print("SCHEMA_HINT_SHORT_OK (所有字段说明都在 120 字以内)")
 
     # 升级后，用户配置里遗留的对象数组要被清掉。
     # 不清的话，schema 改了也没用——配置页读的是配置里的**实际值**，
@@ -3033,22 +3026,35 @@ def test_config_layer():
     assert total_fields >= 40, total_fields
     print(f"SCHEMA_OK ({len(groups)} 组 / {total_fields} 项)")
 
-    # shop 组**不在面板里显示**：它的设置已经搬到顶栏的「🛒 商品」与
-    # 「🎰 抽奖」两个页面，避免两处各有一套、用户不知道哪个生效。
-    # 但 schema 里必须保留——AstrBot 原生配置页还能改，
-    # parse_config 的默认值也从那儿来。
-    from astrbot_plugin_panshi.config.plugin_config import HIDDEN_GROUPS
-    assert "shop" in HIDDEN_GROUPS, HIDDEN_GROUPS
-    assert "shop" not in keys, f"shop 组不该出现在面板里：{keys}"
+    # shop 这一组**已从 schema 里删掉**。
+    #
+    # 它的设置都搬到了顶栏的「🛒 商品」与「🎰 抽奖」两个页面。
+    # 一开始我只是在自己的面板里隐藏它，结果 AstrBot 原生配置页照样显示——
+    # 用户看到的还是那个「积分商城与抽奖」卡片。所以要删就得从 schema 删。
+    #
+    # 删掉是安全的：parse_config 对每一项都有代码内默认值，
+    # 而面板里改的值存在 storage，不在配置里。
+    assert "shop" not in keys, f"面板里不该有 shop 组：{keys}"
     import json as _json2
     import os as _os2
     _schema_path = _os2.path.join(
         _os2.path.dirname(_os2.path.abspath(__file__)), "_conf_schema.json")
     with open(_schema_path, encoding="utf-8") as _f:
         _raw_schema = _json2.load(_f)
-    assert "shop" in _raw_schema, "schema 里必须保留 shop 组（默认值来源）"
-    print("SCHEMA_HIDDEN_SHOP_OK (面板不显示 shop 组；schema 仍保留)")
+    assert "shop" not in _raw_schema, (
+        "schema 里不该再有 shop 组——只在自己的面板里隐藏挡不住 "
+        "AstrBot 原生配置页，用户照样能看到那个卡片")
+    print("SCHEMA_NO_SHOP_GROUP_OK (schema 里已无 shop 组，原生配置页也不会显示)")
 
+    # 没有 shop 配置组时，代码默认值必须齐全
+    from astrbot_plugin_panshi.core.shop import parse_config as _parse_shop
+    _empty, _ = _parse_shop({})
+    assert _empty.enable is False and _empty.lottery.enable is False
+    assert _empty.lottery.cost == 10, _empty.lottery
+    assert _empty.lottery.daily_limit == 3, _empty.lottery
+    assert _empty.lottery.pity == 10, _empty.lottery
+    assert _empty.items == [] and _empty.lottery.prizes == []
+    print("SCHEMA_SHOP_DEFAULTS_IN_CODE_OK (删掉配置组后，默认值由代码提供)")
     # 三个版本号必须一致。
     #
     # 回归背景：__init__.py 一直停在 1.6.2，而 metadata.yaml 已经到 v1.9.8，
