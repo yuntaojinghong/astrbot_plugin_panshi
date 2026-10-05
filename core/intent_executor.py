@@ -65,7 +65,8 @@ def _as_int(value, default: int) -> int:
 class IntentExecutor:
     """执行智能识别的结果。"""
 
-    def __init__(self, config, storage, context, normal, warning, automate=None):
+    def __init__(self, config, storage, context, normal, warning,
+                 automate=None, activity=None):
         self.cfg = config
         self.db = storage
         self.ctx = context
@@ -73,6 +74,8 @@ class IntentExecutor:
         self.warning = warning
         # AutomateHandle（可选）：set_curfew 需要它即时启停宵禁任务
         self.automate = automate
+        # ActivityHandle（可选）：加/扣积分需要它（自然语言通道）
+        self.activity = activity
         # 待确认操作: {(gid, uid): {"intent": dict, "expire": ts}}
         self._pending_confirm: dict[tuple, dict] = {}
 
@@ -136,6 +139,12 @@ class IntentExecutor:
             return ats[0] if ats else None
         if target == "recent_offender":
             return self.ctx.find_recent_offender(str(event.get_group_id()))
+        # 「我 / 自己 / 本人」→ 发送者本人。
+        # 必须在这里兜住：否则（比如 LLM 直接给出 target="我"）它会走到下面
+        # 的昵称模糊匹配，匹配不到就把字符串 "我" 当成 QQ 号用——于是凭空
+        # 多出一个叫"我"的假用户。本地解析那边已经直接给 QQ 号了，这里是第二道。
+        if target in ("我", "自己", "本人", "我本人", "我自己"):
+            return str(event.get_sender_id())
         if target.isdigit():
             return target
 
@@ -245,7 +254,30 @@ class IntentExecutor:
             return self._banword(event, str(intent.get("content", "")), add=True)
         if action == "banword_del":
             return self._banword(event, str(intent.get("content", "")), add=False)
+        if action in ("add_points", "sub_points"):
+            return await self._adjust_points(event, intent, target, sub=(action == "sub_points"))
         return None
+
+    # ========== 加 / 扣积分（自然语言） ==========
+    async def _adjust_points(self, event, intent: dict, target, *, sub: bool) -> str:
+        """执行「加分 / 扣分」。
+
+        为什么放在意图通道里：用户想要的是 `加分@张三 10` 这种**不打斜杠**的
+        写法，斜杠指令接不住；同时这里天然经过权限门槛（main 的 6b 步会先
+        校验管理员），所以不会变成普通群友给自己加分。
+        """
+        if self.activity is None:
+            return "🤔 积分功能暂时不可用。"
+        uid = str(target or "").strip()
+        if not uid or uid == "recent_offender":
+            return ("🤔 没认出要给谁加减分。可以写成「加分@张三 10」，"
+                    "引用他的消息发「加分 10」，或「给我加 10」。")
+        amount = _as_int(intent.get("amount"), 0)
+        if amount <= 0:
+            return "🤔 没看懂要加/扣多少分。写成「加分@张三 10」这样。"
+        delta = -amount if sub else amount
+        return await self.activity.adjust_points(
+            event, uid, delta, str(intent.get("reason", "") or ""))
 
     # ========== 违禁词维护（自然语言） ==========
     def _banword(self, event, word: str, add: bool) -> str:

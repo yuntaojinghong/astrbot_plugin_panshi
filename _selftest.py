@@ -384,6 +384,7 @@ def main():
     test_points_shared_across_groups()
     test_games()
     test_points_earning_ways()
+    test_points_natural_language()
     test_curfew_intent()
     test_curfew_lift_reporting()
     test_per_group_runtime()
@@ -3536,6 +3537,103 @@ def test_guard_punish_reports_failure():
         print(f"GUARD_PUNISH_NO_RECALL_HONEST_OK ({no_recall})")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_points_natural_language():
+    """加减分：不打斜杠的自然写法 + 「我」指代自己。
+
+    用户要的用法：「加分@张三 10」；给自己加就写「我」。
+    """
+    from astrbot.api.message_components import At, Reply
+
+    from astrbot_plugin_panshi.config import PluginConfig
+    from astrbot_plugin_panshi.core.local_intent import LocalIntentParser
+    from astrbot_plugin_panshi.utils import parse_target, self_target
+
+    class _Ev:
+        bot = None
+
+        def __init__(self, uid=7, gid=100, ats=(), text="", reply=None):
+            self._uid, self._gid = uid, gid
+            self._ats, self.message_str, self._reply = ats, text, reply
+
+        def get_group_id(self):
+            return self._gid
+
+        def get_sender_id(self):
+            return self._uid
+
+        def get_self_id(self):
+            return 99
+
+        def get_sender_name(self):
+            return f"用户{self._uid}"
+
+        def get_messages(self):
+            # 必须用真正的组件类型：代码里是 isinstance(seg, At) 判断的
+            segs = []
+            if self._reply:
+                segs.append(Reply(id="m1", sender_id=self._reply))
+            segs += [At(qq=q) for q in self._ats]
+            return segs
+
+    # ---- 「我」只能是独立成词的 ----
+    assert self_target(_Ev(text="加分 我 10"), "加分 我 10") == "7"
+    assert self_target(_Ev(text="加分@我 10"), "加分@我 10") == "7"
+    assert self_target(_Ev(text="我给他加10分"), "我给他加10分") is None, \
+        "「我给他加10分」里的「我」是主语，不该被当成目标"
+    assert self_target(_Ev(text="加分@张三 10"), "加分@张三 10") is None
+    print("SELF_TARGET_TOKEN_OK (只有独立成词的「我」才指代自己)")
+
+    # ---- 斜杠指令通道：parse_target 认「我」 ----
+    assert parse_target(_Ev(text="加分 我 10"), "我 10")[0] == "7"
+    assert parse_target(_Ev(text="加分 我 10", reply="555"), "我 10")[0] == "7", \
+        "写了「我」却被顺手引用的消息带偏了"
+    assert parse_target(_Ev(text="加分 10", reply="555"), "10")[0] == "555", \
+        "没写「我」时应当仍按引用走"
+    print("PARSE_TARGET_SELF_OK (写了「我」优先，不写仍按引用)")
+
+    # ---- 自然语言通道：不打斜杠 ----
+    p = LocalIntentParser(PluginConfig({}))
+
+    it = p.parse(_Ev(uid=7, ats=[1001], text="加分@某人 10"), "加分@某人 10")
+    assert it and it["action"] == "add_points" and it["amount"] == 10, it
+    assert it["target"] == "1001", it
+    print(f"NL_ADD_AT_OK ({it})")
+
+    it = p.parse(_Ev(uid=7, ats=[1001], text="扣@张三 5分"), "扣@张三 5分")
+    assert it and it["action"] == "sub_points" and it["amount"] == 5, it
+    print(f"NL_SUB_OK ({it})")
+
+    it = p.parse(_Ev(uid=7, text="给我加20分"), "给我加20分")
+    assert it and it["action"] == "add_points" and it["target"] == "7", it
+    print(f"NL_SELF_COMPACT_OK ({it})")
+
+    it = p.parse(_Ev(uid=7, text="加分 我 10"), "加分 我 10")
+    assert it and it["target"] == "7" and it["amount"] == 10, it
+    print(f"NL_SELF_TOKEN_OK ({it})")
+
+    # 「帮我@张三 加10分」的目标是张三，不是"我"
+    it = p.parse(_Ev(uid=7, ats=[1001], text="帮我@张三 加10分"), "帮我@张三 加10分")
+    assert it and it["target"] == "1001", it
+    print(f"NL_HELP_ME_TARGET_OTHERS_OK ({it})")
+
+    it = p.parse(_Ev(uid=7, ats=[1002], text="奖励@李四 50 表现好"), "奖励@李四 50 表现好")
+    assert it and it["action"] == "add_points" and it["amount"] == 50, it
+    print(f"NL_REWARD_OK ({it})")
+
+    # 否定不能被执行
+    assert p.parse(_Ev(uid=7, text="别扣分"), "别扣分") is None, "「别扣分」被当成了指令"
+    print("NL_NEGATION_OK (「别扣分」不会被解析成扣分)")
+
+    # QQ 号不能被当成数量
+    it = p.parse(_Ev(uid=7, ats=[1001], text="加分@张三 2226175932"), "加分@张三 2226175932")
+    assert it is None, f"QQ 号被当成了数量：{it}"
+    print("NL_QQ_NOT_AMOUNT_OK (QQ 号不会被当成数量)")
+
+    # 认不出目标就放弃，绝不猜
+    assert p.parse(_Ev(uid=7, text="加分 10"), "加分 10") is None
+    print("NL_NO_TARGET_GIVES_UP_OK (认不出目标就不执行)")
 
 
 def test_points_earning_ways():

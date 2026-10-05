@@ -282,6 +282,10 @@ def strip_amount(text: str, amount: int) -> str:
     # 去掉 @某人 文本与独立出现的 QQ 号，再清掉多余分隔符
     raw = re.sub(r"@\S+", " ", raw)
     raw = re.sub(r"(?<!\d)\d{%d,}(?!\d)" % _QQ_MIN_DIGITS, " ", raw)
+    # 指代自己的词不是"理由"，别让它出现在回执的括号里
+    # （「加分 我 10」不该显示成「已给 X 加 10 积分（我）」）
+    raw = re.sub(r"^\s*(?:我|自己|本人|我本人|我自己|俺)\s*", "", raw)
+    raw = re.sub(r"(?:给|帮|替)\s*我\s*", " ", raw)
     return re.sub(r"\s+", " ", raw).strip(" ,，。.、:：")
 
 
@@ -301,16 +305,53 @@ def parse_switch(text: str) -> bool | None:
     return None
 
 
+#: 指代「我自己」的词。必须**独立成词**才算（见 :func:`self_target`）。
+_SELF_TOKENS = {"我", "自己", "本人", "我本人", "我自己", "俺"}
+
+#: 切分"词"用的分隔符。切分符里带 ``@``，于是 ``加分@我 10`` 也能命中。
+_TOKEN_SPLIT_RE = re.compile(r"[\s,，。、;；:：!！?？~～@]+")
+
+
+def self_target(event, text: str) -> str | None:
+    """文本里出现独立成词的「我 / 自己 / 本人」时，返回发送者自己的 QQ。
+
+    为什么要"独立成词"：像「我给他加10分」里的「我」只是句子主语，并不是操作
+    对象。按空格与标点切分后**整词**命中才算，避免把主语当成目标。
+
+    切分符包含 ``@``，所以 ``加分@我 10`` 这种最自然的写法也能命中。
+
+    Returns:
+        发送者 QQ；文本里没有指代自己时返回 ``None``。
+    """
+    if not text:
+        return None
+    tokens = [t for t in _TOKEN_SPLIT_RE.split(str(text)) if t]
+    if not any(t in _SELF_TOKENS for t in tokens):
+        return None
+    try:
+        sid = str(event.get_sender_id() or "").strip()
+    except Exception:
+        return None
+    return sid or None
+
+
 def parse_target(event, arg_text: str = "") -> tuple[str | None, str]:
     """从消息事件中解析操作目标。
 
-    优先级：引用消息 > @某人 > 文本中的 QQ 号 > 文本中 @的昵称。
-    返回值：(user_id 或 None, 来源说明)
+    优先级：**显式写的「我」** > 引用消息 > @某人 > 文本中的 QQ 号。
+
+    为什么「我」排最前：用户既然指名"我"，就不该被"顺手引用了一条别人的
+    消息"覆盖掉——那种情况下按引用走会把分加错人。
 
     Args:
         event: AstrMessageEvent
         arg_text: 指令后的参数文本，用于兜底匹配 QQ 号
     """
+    # 0. 显式指代自己
+    me = self_target(event, arg_text or _safe_message_str(event))
+    if me:
+        return me, "我"
+
     # 1. 引用消息
     reply_id = get_reply_id_safe(event)
     if reply_id:

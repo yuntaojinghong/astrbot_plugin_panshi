@@ -50,7 +50,7 @@ _INTENT_HINTS = [
 VALID_ACTIONS = {    "ban", "unban", "kick", "block", "recall", "purge", "whole_ban",
     "warn", "set_card", "set_title", "set_admin", "unset_admin",
     "notice", "set_name", "essence", "query_warn", "set_curfew",
-    "banword_add", "banword_del", "none",
+    "banword_add", "banword_del", "add_points", "sub_points", "none",
 }
 
 SYSTEM_PROMPT = """你是一个 QQ 群管理助理的意图解析器。请把用户的话翻译成结构化 JSON 操作。
@@ -75,6 +75,8 @@ SYSTEM_PROMPT = """你是一个 QQ 群管理助理的意图解析器。请把用
 - set_curfew    设置宵禁（夜间自动全体禁言），参数: enable(true/false，可选), start(开始时间), end(结束时间)
 - banword_add   添加违禁词，参数: content(要添加的词)
 - banword_del   删除违禁词，参数: content(要删除的词)
+- add_points    给某人加积分，参数: target, amount(正整数), reason(可选)
+- sub_points    给某人扣积分，参数: target, amount(正整数), reason(可选)
 - none          无法识别或不需要操作
 
 解析 target 时的规则（重要）：
@@ -93,6 +95,12 @@ SYSTEM_PROMPT = """你是一个 QQ 群管理助理的意图解析器。请把用
 解析违禁词操作的规则：
 - "把XX加进违禁词/屏蔽词" -> banword_add；"把XX从违禁词里删掉/移除" -> banword_del。
 - XX 原样放入 content，去掉"加进违禁词"等动词短语，只留词本身。
+
+解析加/扣积分的规则：
+- "给@张三 加10分""给张三奖励20积分" -> add_points；"扣@张三 5分""罚他10分" -> sub_points。
+- amount 只说数字本身（"10"，不要带"分"）；扣分也用正数，靠 action 区分方向。
+- **用户说"我 / 自己"时，target 一律填 "我"**（例如"给我加10分" -> target: "我"）。
+- 句中夹着的"多少分"不是数量的话（如"他扣了3次分"）不要解析成 sub_points。
 
 只输出 JSON，不要任何解释。格式：
 {"action": "...", "target": "...", "duration": 秒数, "reason": "...", "content": "...", "name": "...", "title": "...", "count": 数字, "enable": true/false, "start": "HH:MM", "end": "HH:MM"}

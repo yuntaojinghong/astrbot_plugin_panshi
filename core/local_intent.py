@@ -19,7 +19,7 @@ import re
 
 from astrbot.api import logger
 
-from ..utils import parse_duration
+from ..utils import parse_amount, parse_duration, self_target
 
 # ---------- 否定判定 ----------
 #
@@ -40,7 +40,8 @@ _NEGATION_ACTION_RE = re.compile(
     r"(?:别|不要|不用|不必|无需|甭|请勿|拒绝)\s*"
     r"(?:再|去|给我|给他|把他|把她|把|帮忙|帮我|随便|乱)?\s*"
     r"(?:禁言|解禁|踢|拉黑|撤回|删|清理|清屏|净化|全禁|全体禁言|闭嘴|"
-    r"警告|改名|改名片|头衔|上管|下管|公告|设精|精华|群名|封|处理|管|安排|宵禁)"
+    r"警告|改名|改名片|头衔|上管|下管|公告|设精|精华|群名|封|处理|管|安排|宵禁|"
+    r"加分|加积分|给分|涨分|奖励|扣分|减分|扣积分|减积分|罚分)"
 )
 
 # 表示「否定整个后续动作」的收尾词：出现在动作词之前时一律放弃解析。
@@ -82,6 +83,34 @@ _ESSENCE_WORDS = ("设为精华", "加精", "设精", "精华")
 _CURFEW_WORDS = ("宵禁", "夜间禁言", "夜间全体禁言", "夜间模式")
 _BANWORD_ADD_WORDS = ("加入违禁词", "添加违禁词", "加到违禁词", "屏蔽词加", "把.*加到违禁词")
 _BANWORD_DEL_WORDS = ("删除违禁词", "移除违禁词", "从违禁词里删", "去掉违禁词")
+
+# 加 / 扣积分。
+#
+# 用户希望的是最自然的写法：「加分@张三 10」「扣@张三 5分」「给我加20分」。
+# 这些都不带斜杠，所以走本地规则通道（本模块），而不是斜杠指令。
+#
+# 注意先判「扣」再判「加」：两者是独立词，但「扣分」更危险，
+# 被判错方向的代价更大，所以让它先匹配、更早定型。
+_ADD_POINTS_WORDS = ("加分", "加积分", "给分", "涨分", "奖励", "加一点分", "加点分")
+_SUB_POINTS_WORDS = ("扣分", "减分", "扣积分", "减积分", "罚分", "扣点分", "扣一点分")
+
+# 识别用的正则：还要认「加10分」这种带数字的写法（`_ADD_POINTS_WORDS`
+# 是整词匹配，抓不到中间夹数字的情况）。
+# 放宽一点没关系 —— 这个分支必须**同时**拿到目标和数量才会真的执行，
+# 所以"像加分但不是"的句子最终会因为找不到目标而放弃。
+_ADD_POINTS_RE = re.compile(
+    r"加分|加积分|给分|涨分|奖励|加\s*\d+\s*(?:积分|分|点)"
+)
+_SUB_POINTS_RE = re.compile(
+    r"扣分|减分|扣积分|减积分|罚分|扣\s*\d+\s*(?:积分|分|点)|减\s*\d+\s*(?:积分|分|点)"
+)
+
+# 「给自己加减分」的紧凑写法。中文一般不空格，所以除了「独立成词的我」
+# （见 utils.parser.self_target），还要认「给我加10分」「加我10分」。
+_SELF_POINT_PATTERNS = (
+    re.compile(r"(?:给|帮|替)\s*我"),
+    re.compile(r"(?:加|扣|减|奖|罚)\s*我(?:自己|本人)?"),
+)
 
 # 中文数字 -> 阿拉伯数字（仅覆盖常见量级）
 _CN_NUM = {
@@ -223,6 +252,17 @@ class LocalIntentParser:
         if not text:
             return None
 
+        # 指代自己分两档，优先级不同（见 _parse_points）：
+        #   strict —— 独立成词的「我 / 自己 / 本人」，最强信号；
+        #   loose  —— 「给我加10分」这类紧凑写法，弱于 @/引用。
+        # 都要在**去掉 @段与礼貌前缀之前**判定：
+        #   · 「加分@我 10」里的 @我 会被下面的正则连 @ 一起削掉；
+        #   · 「给我加10分」里的「给我」可能是礼貌前缀的一部分。
+        self_token = self_target(event, text)
+        self_loose = self_token or (
+            self._sender(event)
+            if any(p.search(text) for p in _SELF_POINT_PATTERNS) else None)
+
         # 去掉 @机器人 段与礼貌前缀
         # 去掉 @提及本身。注意**不能**用 ``@\S+``：它会一路吃掉后面紧邻的时长，
         # 于是「禁言@张三10分钟」被削成「禁言」，时长退化成默认 60 秒。
@@ -283,6 +323,15 @@ class LocalIntentParser:
         if any(re.search(w, text) for w in _BANWORD_DEL_WORDS):
             word = self._extract_banword(text, add=False)
             return {"action": "banword_del", "content": word} if word else None
+
+        # 3) 加 / 扣积分（不打斜杠的自然写法：加分@张三 10 / 给我加20分 / 扣@张三 5）
+        #    先判「扣」：被扣错方向的代价比加错更大。
+        if _SUB_POINTS_RE.search(text):
+            return self._parse_points(text, event, target_from_ctx,
+                                      self_token, self_loose, sub=True)
+        if _ADD_POINTS_RE.search(text):
+            return self._parse_points(text, event, target_from_ctx,
+                                      self_token, self_loose, sub=False)
 
         # 4) 踢出并拉黑（要先于「踢出」判断）
         if any(w in text for w in _BLOCK_WORDS):
@@ -360,6 +409,55 @@ class LocalIntentParser:
         return None
 
     # ---------- 目标解析 ----------
+    @staticmethod
+    def _sender(event) -> str:
+        try:
+            return str(event.get_sender_id() or "").strip()
+        except Exception:
+            return ""
+
+    def _parse_points(self, text: str, event, target_from_ctx: str | None,
+                      self_token: str | None, self_loose: str | None,
+                      *, sub: bool) -> dict | None:
+        """解析「加 / 扣积分」：目标 + 数量。
+
+        数量交给 :func:`parse_amount` —— 它会排除 QQ 号那种长数字，
+        否则「加分@某人 2226175932」会被当成"加 22 亿分"。
+
+        目标的优先级（重要，别调换）：
+          1. **独立成词的「我 / 自己 / 本人」** —— 用户既然指名"我"，就不该
+             被"顺手引用了别人的消息"带偏；
+          2. 引用 / @ 出来的对象；
+          3. 「给我加 10」这类紧凑写法（弱于 @：'帮我@张三 加10分' 的目标是张三，
+             不是"我"）；
+          4. 文本里显式写的 QQ 号。
+
+        Returns:
+            意图 dict；数量和目标缺一不可，缺了返回 ``None``（不执行）。
+        """
+        amount, _why = parse_amount(text, default=None)
+        if amount is None or int(amount) == 0:
+            return None
+
+        target = self_token or target_from_ctx or self_loose
+        if not target:
+            target = self._resolve(text, None, event)
+        if not target:
+            return None
+
+        reason = self._strip_words(text, _ADD_POINTS_WORDS + _SUB_POINTS_WORDS)
+        # 理由里通常还夹着数量、@残留和指代自己的词，这些都清掉才像理由
+        reason = re.sub(r"[+-]?\s*\d+\s*(?:积分|分|点|points?)?", " ", reason)
+        reason = re.sub(r"@\S+", " ", reason)
+        reason = re.sub(r"(?:给|帮|替)?\s*(?:我|自己|本人|我本人|我自己|俺)\s*", " ", reason)
+        reason = " ".join(reason.split()).strip("，。,.、 ")
+        return {
+            "action": "sub_points" if sub else "add_points",
+            "target": str(target),
+            "amount": abs(int(amount)),
+            "reason": reason[:30],
+        }
+
     def _target_from_event(self, event) -> str | None:
         """从事件的引用 / @ 中取出目标（最可靠）。"""
         # 引用消息

@@ -1,7 +1,7 @@
 """磐石插件的通用工具函数。"""
 
 from .parser import (parse_duration, format_duration, parse_target, safe_int,
-                     parse_amount, parse_switch,
+                     parse_amount, parse_switch, self_target,
                      strip_amount)
 from .helpers import (
     get_ats,
@@ -29,6 +29,7 @@ __all__ = [
     "safe_int",
     "parse_amount",
     "parse_switch",
+    "self_target",
     "strip_amount",
     "get_ats",
     "get_nickname",

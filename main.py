@@ -117,7 +117,8 @@ class PanshiPlugin(Star):
         # 本地规则解析器：无需 LLM，常见自然语言指令的兜底
         self.local_intent = LocalIntentParser(self.cfg)
         self.executor = IntentExecutor(
-            self.cfg, self.db, self.ctx, self.normal, self.warning, self.automate
+            self.cfg, self.db, self.ctx, self.normal, self.warning,
+            self.automate, self.activity,
         )
 
         # 已解析的群列表（宵禁用）
@@ -905,7 +906,9 @@ class PanshiPlugin(Star):
         if amount is None:
             yield event.plain_result(
                 f"❓ 没看懂要给多少积分（{why}）。\n"
-                f"用法：/加分 @某人 10 [理由]，或引用他的消息发 /加分 10。")
+                f"用法：/加分 @某人 10 [理由]，或引用他的消息发 /加分 10。\n"
+                f"给自己加就写：/加分 我 10\n"
+                f"（也可以不打斜杠，直接发「加分@某人 10」。）")
             return
         # 默认加分时长写 -10 这种负数时按扣分处理，避免出现"加 -10 分"
         reason = strip_amount(arg, amount)
@@ -923,7 +926,9 @@ class PanshiPlugin(Star):
         if amount is None:
             yield event.plain_result(
                 f"❓ 没看懂要扣多少积分（{why}）。\n"
-                f"用法：/扣分 @某人 10 [理由]，或引用他的消息发 /扣分 10。")
+                f"用法：/扣分 @某人 10 [理由]，或引用他的消息发 /扣分 10。\n"
+                f"扣自己的就写：/扣分 我 10\n"
+                f"（也可以不打斜杠，直接发「扣分@某人 5」。）")
             return
         reason = strip_amount(arg, amount)
         yield event.plain_result(
@@ -1595,9 +1600,14 @@ HELP_TEXT = """🪨 磐石 · 智能群管
 【群活跃】
 /签到  /积分 [@某人]  /排行 [积分|发言]
 /商城  /购买 <商品名>  /抽奖  /消费记录
+/加分 @某人 <数量> [理由]  — 加积分
+/扣分 @某人 <数量> [理由]  — 扣积分
+   （给自己操作就写「我」：/加分 我 10、/扣分 我 5）
 💡 不打斜杠也能用：直接发「积分」「签到」「积分排行」「积分商城」「抽奖」
    等词即可（整句精确匹配，不会抢群里的正常聊天）。
    想关掉或自定义，见「互动工具 → 裸词快捷触发」。
+💡 加减分也可以不打斜杠，直接说人话：
+   「加分@张三 10」「扣@张三 5」「给我加20分」「奖励@李四 50 表现好」
 💡 想让所有群共用一份积分（签到每天只算一次、扣分跨群生效），
    见「群积分 → 积分跨群共用」。
 💡 怎么赚积分：签到（连签有加成、当天第一个签到有早鸟奖）、

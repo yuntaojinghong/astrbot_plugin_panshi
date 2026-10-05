@@ -4,13 +4,13 @@
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0.html)
 [![AstrBot](https://img.shields.io/badge/AstrBot-4.24.2%2B-orange.svg)](https://github.com/AstrBotDevs/AstrBot)
-[![Version](https://img.shields.io/badge/version-v1.13.0-green.svg)](https://github.com/yuntaojinghong/astrbot_plugin_panshi/releases)
+[![Version](https://img.shields.io/badge/version-v1.14.0-green.svg)](https://github.com/yuntaojinghong/astrbot_plugin_panshi/releases)
 
 一个为 [AstrBot](https://github.com/AstrBotDevs/AstrBot) 打造的 QQ 群管理插件，基于 NapCat / OneBot v11（`aiocqhttp`）协议。
 
 **🌐 项目主页：** https://yuntaojinghong.github.io/astrbot_plugin_panshi/
 
-> **当前版本 v1.13.0** · 48 个指令 · 8 个 LLM 工具 · 10 类功能 · 9 组配置
+> **当前版本 v1.14.0** · 48 个指令 · 8 个 LLM 工具 · 10 类功能 · 9 组配置
 
 
 ## ✨ 特色
@@ -123,6 +123,11 @@ git clone https://github.com/yuntaojinghong/astrbot_plugin_panshi.git
 | `/签到` | 每日签到得积分 |
 | `/积分 [@某人]` | 查询积分 |
 | `/排行 [积分\|发言]` | 排行榜 |
+| `/加分 @某人 <数量> [理由]` | 加积分。给自己加写 `/加分 我 10` |
+| `/扣分 @某人 <数量> [理由]` | 扣积分。扣自己写 `/扣分 我 5` |
+
+> **不打斜杠也能用**：`加分@张三 10`、`扣@张三 5`、`奖励@李四 50 表现好`、
+> `给我加20分`。详细见下方更新日志 v1.14.0。
 
 ### 互动玩法
 | 指令 | 说明 |
@@ -347,6 +352,22 @@ python _selftest.py
 ## 📝 更新日志
 
 完整历史见 [Releases 页面](https://github.com/yuntaojinghong/astrbot_plugin_panshi/releases)。
+
+### v1.14.0 — 加减分支持自然语言与「我」
+- **不打斜杠也能加减分**，直接用自然语言：
+  - `加分@张三 10`、`扣@张三 5`（目标取 @ 的人）
+  - `奖励@李四 50 表现好`（末尾当作理由）
+  - `给我加20分`、`加我10分`
+- **「我 / 自己 / 本人」= 发送者本人**，斜杠指令与自然语言都支持：
+  `/加分 我 10`、`加分 我 10`、`扣分 我 5`。
+  - 只认**独立成词**的「我」：「我给他加10分」里的「我」是主语，不会被当成目标。
+  - 用户写了「我」时**优先于顺手引用的消息**——否则会把分加错人。
+- 安全细节：
+  - 「加分@某人 2226175932」不会把 QQ 号当数量（沿用 `parse_amount` 的 QQ 号排除）；
+  - 「别扣分」不会被解析成扣分指令（否定判定已覆盖加/扣分）；
+  - 目标认不出来就**不执行**，绝不瞎猜；
+  - 意图通道里把 `target="我"` 显式映射到发送者，避免凭空多出一个叫"我"的假用户。
+- 这类自然语言加减分走**本地规则通道**（免 token），且照样经过管理员权限门槛。
 
 ### v1.13.0 — 面板显示「机器人在群里的身份」+ 退群立刻从列表移除
 - **新增身份徽章**：群列表里每个群后面显示机器人是本群 **群主 / 管理员 /
